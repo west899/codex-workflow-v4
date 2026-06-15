@@ -1,0 +1,16 @@
+# BEGIN CODEX WORKFLOW V2
+.DS_Store
+*.swp
+*.swo
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+.codex-log/
+.agent/active-task
+.codex-workflow-backup/
+# END CODEX WORKFLOW V2

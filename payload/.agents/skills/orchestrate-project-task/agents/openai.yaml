@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Task Orchestrator"
+  short_description: "Coordinate planning, implementation, review, and evidence"
+  default_prompt: "Use $orchestrate-project-task to run this project task through planning, implementation, independent review, and verification."
+policy:
+  allow_implicit_invocation: false

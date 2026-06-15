@@ -1,0 +1,17 @@
+{
+  "id": "RP-001",
+  "reported_by": "developer|reviewer|coordinator",
+  "problem": "Observed process failure or reusable improvement",
+  "evidence": [
+    "Task event, user correction, failed check, or review finding"
+  ],
+  "recurrence": "single|repeated",
+  "target": "task-only|AGENTS.md|skill:<name>|script:<path>|CI|DECISIONS.md",
+  "proposed_change": "Smallest enforceable change",
+  "status": "proposed|recorded|rejected|deferred|implemented",
+  "decision_by": null,
+  "decision_role": "coordinator|user",
+  "decision_at": null,
+  "decision_source": null,
+  "implemented_in": []
+}

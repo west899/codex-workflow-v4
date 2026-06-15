@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "task_id": "YYYYMMDD-short-slug",
+  "status": "planned",
+  "source": {
+    "type": "mvp_backlog|incident|maintenance|user_directive",
+    "reference": "MVP-001 or source identifier",
+    "priority_reason": "Why this is the next authorized task"
+  },
+  "request": "Raw user-visible task",
+  "scope": {
+    "in": [],
+    "out": []
+  },
+  "planning": {
+    "level": "small|medium|large",
+    "exec_plan": null,
+    "steps": []
+  },
+  "implementation_authorization": {
+    "authorized": false,
+    "authorized_by": null,
+    "authorized_at": null,
+    "source": null
+  },
+  "risk": {
+    "product_scope": false,
+    "sensitive_data": false,
+    "destructive_change": false,
+    "irreversible_architecture": false,
+    "production_release": false
+  },
+  "base_commit": null,
+  "acceptance": [
+    {
+      "id": "AC-001",
+      "criterion": "Observable behavior",
+      "status": "pending",
+      "evidence": []
+    }
+  ],
+  "developer": {
+    "agent_id": null,
+    "worktree_hash": null,
+    "commands": [
+      {
+        "command": "example command",
+        "exit_code": null,
+        "expected_failure": false,
+        "result": null
+      }
+    ],
+    "handoff": null
+  },
+  "review": {
+    "agent_id": null,
+    "reviewed_worktree_hash": null,
+    "status": "pending",
+    "findings": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 0,
+      "p3": 0
+    },
+    "requirement_checklist": [],
+    "accepted_findings": [],
+    "summary": null
+  },
+  "human_approvals": [],
+  "process_retrospective": {
+    "completed": false,
+    "completed_by": null,
+    "completed_at": null,
+    "questions": {
+      "repeated_problem_found": false,
+      "guidance_gap_found": false,
+      "deterministic_check_candidate_found": false
+    },
+    "summary": null
+  },
+  "rule_proposals": [],
+  "remaining_risks": []
+}

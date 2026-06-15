@@ -1,0 +1,6 @@
+interface:
+  display_name: "Independent Project Reviewer"
+  short_description: "Review correctness, security, regressions, and tests"
+  default_prompt: "Use $review-project-change to independently review the current changes against requirements and evidence."
+policy:
+  allow_implicit_invocation: false

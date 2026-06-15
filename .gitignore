@@ -1,0 +1,18 @@
+.DS_Store
+
+# Local editor and assistant settings
+.claude/settings.local.json
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local environment files
+.env
+.env.*
+!.env.example

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Developer"
+  short_description: "Plan and implement verified project changes"
+  default_prompt: "Use $implement-project-task to plan, implement, test, and document this confirmed project task."
+policy:
+  allow_implicit_invocation: false
