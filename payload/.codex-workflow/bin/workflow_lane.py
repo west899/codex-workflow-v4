@@ -20,19 +20,32 @@ from typing import Any
 
 from workflow_common import (
     WorkflowDataError,
+    closeout_state_fingerprint,
     current_branch,
     fault_injection,
     git,
     is_ancestor,
     load_record,
+    local_bootstrap_policy_gate,
     rev_parse,
     utc_now,
+    validate_workflow_schema,
 )
 from workflow_lock import (
     AdvisoryLock,
     LockUnavailable,
+    PersistentRoleLock,
+    PersistentRoleLockError,
+    acquire_role_lock,
     canonical_resource_key,
+    heartbeat_role_lock,
+    read_role_lock,
+    release_role_lock,
     resource_key_digest,
+    role_lock_guard_path,
+    role_lock_status,
+    takeover_role_lock,
+    validate_role_lock_access,
 )
 from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json, normalize_repo_path
 from workflow_state import StateError, mutate_record
@@ -79,6 +92,37 @@ def parser() -> argparse.ArgumentParser:
 
     heartbeat = sub.add_parser("heartbeat")
     heartbeat.add_argument("--lane", required=True)
+
+    lock_status = sub.add_parser("lock-status")
+    lock_status.add_argument("role", choices=("coordinator", "integrator"))
+
+    lock_acquire = sub.add_parser("lock-acquire")
+    lock_acquire.add_argument("role", choices=("coordinator", "integrator"))
+    lock_acquire.add_argument("--lease-seconds", type=int, default=900)
+    lock_acquire.add_argument("--owner-id")
+    lock_acquire.add_argument("--apply", action="store_true")
+
+    lock_heartbeat = sub.add_parser("lock-heartbeat")
+    lock_heartbeat.add_argument("role", choices=("coordinator", "integrator"))
+    lock_heartbeat.add_argument("--token", required=True)
+    lock_heartbeat.add_argument("--generation", required=True, type=int)
+    lock_heartbeat.add_argument("--lease-seconds", type=int, default=900)
+
+    lock_release = sub.add_parser("lock-release")
+    lock_release.add_argument("role", choices=("coordinator", "integrator"))
+    lock_release.add_argument("--token", required=True)
+    lock_release.add_argument("--generation", required=True, type=int)
+    lock_release.add_argument("--apply", action="store_true")
+
+    lock_takeover = sub.add_parser("lock-takeover")
+    lock_takeover.add_argument("role", choices=("coordinator", "integrator"))
+    lock_takeover.add_argument("--expected-token", required=True)
+    lock_takeover.add_argument("--expected-generation", required=True, type=int)
+    lock_takeover.add_argument("--approved-by", required=True)
+    lock_takeover.add_argument("--approval-ref", required=True)
+    lock_takeover.add_argument("--lease-seconds", type=int, default=900)
+    lock_takeover.add_argument("--owner-id")
+    lock_takeover.add_argument("--apply", action="store_true")
 
     expand = sub.add_parser("expand-resources")
     expand.add_argument("lane_id")
@@ -155,6 +199,7 @@ def parser() -> argparse.ArgumentParser:
     remote_release = sub.add_parser("remote-release")
     remote_release.add_argument("record")
     remote_release.add_argument("--remote")
+    remote_release.add_argument("--expected-claim-oid")
     remote_release.add_argument("--apply", action="store_true")
     return result
 
@@ -191,6 +236,133 @@ def _owner_id(paths: WorkflowPaths, supplied: str | None) -> str:
     owner = str(uuid.uuid4())
     identity_path.write_text(owner + "\n", encoding="utf-8")
     return owner
+
+
+def _coordinator_lock(paths: WorkflowPaths, action: str, *, apply: bool) -> PersistentRoleLock | AdvisoryLock:
+    if not apply:
+        validate_role_lock_access(paths.shared_runtime, "coordinator")
+        return AdvisoryLock(role_lock_guard_path(paths.shared_runtime, "coordinator"), timeout=2)
+    return PersistentRoleLock(paths.shared_runtime, "coordinator", action=action)
+
+
+def _role_lock_preview(paths: WorkflowPaths, role: str, *, expected_token: str | None = None, expected_generation: int | None = None) -> dict[str, Any]:
+    current = role_lock_status(paths.shared_runtime, role)
+    status = current.get("effective_status")
+    if expected_token is not None:
+        if status != "stale":
+            raise LaneError(f"Persistent {role} lock takeover requires a stale active lease.")
+        if current.get("token") != expected_token or current.get("generation") != expected_generation:
+            raise LaneError(f"Persistent {role} lock changed before takeover; token/generation CAS failed.")
+        return current
+    if status == "active":
+        raise LaneError(
+            f"Persistent {role} lock is held by token {current.get('token')} generation {current.get('generation')}."
+        )
+    if status == "stale":
+        raise LaneError(
+            f"Persistent {role} lock is stale; explicit takeover is required with "
+            f"token {current.get('token')} generation {current.get('generation')}."
+        )
+    return current
+
+
+def _validate_role_lease_seconds(value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise LaneError("Persistent role lock lease_seconds must be a positive integer.")
+
+
+def lock_status(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    print(json.dumps(role_lock_status(paths.shared_runtime, args.role), ensure_ascii=False, sort_keys=True))
+
+
+def lock_acquire(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    _validate_role_lease_seconds(args.lease_seconds)
+    current = _role_lock_preview(paths, args.role)
+    if not args.apply:
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "role": args.role,
+                    "generation": int(current.get("generation", 0)) + 1,
+                    "lease_seconds": args.lease_seconds,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    lease = acquire_role_lock(
+        paths.shared_runtime,
+        args.role,
+        action="manual-acquire",
+        lease_seconds=args.lease_seconds,
+        owner_id=args.owner_id,
+    )
+    print(json.dumps({"apply": True, **lease.public()}, ensure_ascii=False, sort_keys=True))
+
+
+def lock_heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    _validate_role_lease_seconds(args.lease_seconds)
+    lease = heartbeat_role_lock(
+        paths.shared_runtime,
+        args.role,
+        token=args.token,
+        generation=args.generation,
+        lease_seconds=args.lease_seconds,
+    )
+    print(json.dumps({"heartbeat": True, **lease.public()}, ensure_ascii=False, sort_keys=True))
+
+
+def lock_release(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    current = read_role_lock(paths.shared_runtime, args.role)
+    if current is None or current.get("state") != "active":
+        raise LaneError(f"Persistent {args.role} lock is not active.")
+    if current.get("token") != args.token or current.get("generation") != args.generation:
+        raise LaneError(f"Persistent {args.role} lock token/generation does not match the supplied lease.")
+    if not args.apply:
+        print(json.dumps({"apply": False, "role": args.role, "generation": args.generation}, ensure_ascii=False, sort_keys=True))
+        return
+    released = release_role_lock(
+        paths.shared_runtime, args.role, token=args.token, generation=args.generation
+    )
+    print(json.dumps({"apply": True, **released, "effective_status": "released"}, ensure_ascii=False, sort_keys=True))
+
+
+def lock_takeover(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    _validate_role_lease_seconds(args.lease_seconds)
+    current = _role_lock_preview(
+        paths,
+        args.role,
+        expected_token=args.expected_token,
+        expected_generation=args.expected_generation,
+    )
+    if not args.apply:
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "role": args.role,
+                    "generation": int(current["generation"]) + 1,
+                    "approved_by": args.approved_by,
+                    "approval_ref": args.approval_ref,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    lease = takeover_role_lock(
+        paths.shared_runtime,
+        args.role,
+        expected_token=args.expected_token,
+        expected_generation=args.expected_generation,
+        approved_by=args.approved_by,
+        approval_ref=args.approval_ref,
+        lease_seconds=args.lease_seconds,
+        owner_id=args.owner_id,
+    )
+    print(json.dumps({"apply": True, "takeover": True, **lease.public()}, ensure_ascii=False, sort_keys=True))
 
 
 def _default_record(paths: WorkflowPaths, task_id: str) -> str:
@@ -382,7 +554,7 @@ def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         resources=resources, mode="local_worktree",
     )
     paths.ensure_runtime()
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "claim", apply=args.apply):
         _assert_claims_available(paths, args.task_id, resources, branch, worktree)
         if worktree.exists():
             raise LaneError(f"Requested worktree path already exists: {worktree}")
@@ -443,7 +615,7 @@ def adopt(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         mode="local_worktree",
     )
     paths.ensure_runtime()
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "adopt", apply=args.apply):
         _assert_claims_available(paths, args.task_id, resources, branch, paths.root)
         if not args.apply:
             print(json.dumps({"apply": False, "dirty_diff_sha256": digest, **payload}, ensure_ascii=False, sort_keys=True))
@@ -795,7 +967,7 @@ def rebuild(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if paths.layout.get("parallel", {}).get("mode") != "local_worktree":
         raise LaneError("rebuild requires local_worktree mode in layout.json.")
     paths.ensure_runtime()
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "rebuild", apply=args.apply):
         lanes: list[dict[str, Any]] = []
         queues: list[dict[str, Any]] = []
         for root in _worktree_roots(paths):
@@ -903,7 +1075,7 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     registry_path, payload = _registry(paths, args.lane_id)
     additions = [canonical_resource_key(item) for item in args.add]
     new_resources = sorted(set(payload.get("resource_keys", [])) | set(additions))
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "expand-resources", apply=args.apply):
         for _, existing in _existing_resource_claims(paths):
             if existing.get("lane_id") == args.lane_id:
                 continue
@@ -935,7 +1107,7 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 
 
 def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "queue", apply=args.apply):
         registry_path, payload = _registry(paths, args.lane_id)
         if _effective_status(payload) != "verified":
             raise LaneError("Only a verified lane can enter the integration queue.")
@@ -954,6 +1126,12 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         integration = queued_record.get("integration") or {}
         if integration.get("status") != "pending":
             raise LaneError("prepare-integration must run before queue.")
+        if integration.get("mode") == "local_bootstrap":
+            local_bootstrap_policy_gate(
+                lane_paths.layout.get("integration_policy"),
+                lane_paths.tracked("backlog").read_text(encoding="utf-8"),
+                task_id=queued_record.get("task_id"),
+            )
         snapshot = _verified_snapshot(queued_record)
         queue_id = str(uuid.uuid4())
         queue_payload = {
@@ -982,6 +1160,12 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             integration = record.get("integration") or {}
             if integration.get("status") != "pending":
                 raise StateError("prepare-integration must run before queue.")
+            if integration.get("mode") == "local_bootstrap":
+                local_bootstrap_policy_gate(
+                    lane_paths.layout.get("integration_policy"),
+                    lane_paths.tracked("backlog").read_text(encoding="utf-8"),
+                    task_id=record.get("task_id"),
+                )
             if _verified_snapshot(record) != snapshot:
                 raise StateError("Verified task snapshot changed during queue admission.")
             integration.update(
@@ -1110,7 +1294,7 @@ def _reset_after_base_refresh(record: dict[str, Any], base_ref: str, base_commit
 def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     """Record a manually completed local-lane rebase and invalidate old evidence."""
 
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "refresh-base", apply=args.apply):
         registry_path, payload = _registry(paths, args.lane_id)
         if payload.get("mode") != "local_worktree":
             raise LaneError("refresh-base only supports local_worktree lanes.")
@@ -1216,7 +1400,7 @@ def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if not args.apply:
         print(json.dumps({"apply": False, "lane_id": args.lane_id, "owner_generation": previous_generation + 1, "owner_id": new_owner}, sort_keys=True))
         return
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "recover-lane", apply=args.apply):
         _, current = _registry(paths, args.lane_id)
         if current.get("owner_generation") != previous_generation or current.get("claim_id") != payload.get("claim_id"):
             raise LaneError("Lane changed during takeover CAS.")
@@ -1322,7 +1506,7 @@ def release_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if not args.apply:
         print(json.dumps({"apply": False, "lane_id": args.lane_id, "confirmed": confirmed, "would_remove_runtime": [str(item) for item in candidates], "worktree_preserved": str(worktree), "branch_preserved": payload.get("branch")}, ensure_ascii=False, sort_keys=True))
         return
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _coordinator_lock(paths, "release-lane", apply=args.apply):
         for candidate in candidates:
             if not candidate.is_file():
                 continue
@@ -1519,6 +1703,9 @@ def _remote_claim_identity(record: dict[str, Any]) -> dict[str, Any]:
     branch = lane.get("branch")
     if not isinstance(branch, str) or not branch.startswith("codex/task/"):
         raise LaneError("Remote task record lane.branch must use the codex/task namespace.")
+    lane_id = lane.get("lane_id")
+    if not isinstance(lane_id, str) or not lane_id:
+        raise LaneError("Remote task record lane.lane_id is invalid.")
     generation = lane.get("owner_generation")
     if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
         raise LaneError("Remote task record lane.owner_generation is invalid.")
@@ -1538,6 +1725,7 @@ def _remote_claim_identity(record: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "task_id": task_id,
+        "lane_id": lane_id,
         "claim_id": claim_id,
         "owner_generation": generation,
         "owner_id": owner_id,
@@ -1553,6 +1741,7 @@ def _remote_claim_ref(task_id: str) -> str:
 
 
 def _claim_payload(
+    paths: WorkflowPaths,
     record: dict[str, Any],
     lease_revision: int,
     lease_seconds: int,
@@ -1580,6 +1769,12 @@ def _claim_payload(
     }
     if transfer is not None:
         payload["transfer"] = transfer
+    validate_workflow_schema(
+        paths,
+        "remote-claim-v1.schema.json",
+        payload,
+        label="Remote claim payload",
+    )
     return payload
 
 
@@ -1599,6 +1794,14 @@ def _commit_tree(paths: WorkflowPaths, tree: str, message: str, parent: str | No
 
 
 def _claim_commit(paths: WorkflowPaths, payload: dict[str, Any], parent: str | None = None) -> str:
+    # Keep this writer boundary defensive even if a future caller bypasses
+    # _claim_payload.
+    validate_workflow_schema(
+        paths,
+        "remote-claim-v1.schema.json",
+        payload,
+        label="Remote claim payload",
+    )
     blob = subprocess.run(
         ["git", "-C", str(paths.root), "hash-object", "-w", "--stdin"],
         input=(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
@@ -1628,6 +1831,12 @@ def _task_record_commit(
     *,
     message: str,
 ) -> str:
+    validate_workflow_schema(
+        paths,
+        "task-record-v3.schema.json",
+        record,
+        label="Remote transfer task record",
+    )
     entry = git(paths, "ls-tree", parent, "--", relative).stdout.strip()
     fields = entry.split(None, 2)
     if len(fields) != 3 or fields[1] != "blob" or not re.fullmatch(r"100[0-7]{3}", fields[0]):
@@ -1644,22 +1853,27 @@ def _task_record_commit(
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = str(Path(directory) / "index")
 
-        def indexed_git(*arguments: str, input_text: str | None = None) -> str:
+        def indexed_git(*arguments: str, input_data: bytes | None = None) -> str:
             result = subprocess.run(
                 ["git", "-C", str(paths.root), *arguments],
-                input=input_text,
+                input=input_data,
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 env=env,
             )
             if result.returncode != 0:
-                raise LaneError((result.stderr or result.stdout).strip())
-            return result.stdout.strip()
+                detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+                raise LaneError(detail)
+            return result.stdout.decode("utf-8", errors="replace").strip()
 
         indexed_git("read-tree", parent)
-        indexed_git("update-index", "--add", "--index-info", input_text=f"{mode} {blob}\t{relative}\n")
+        # Use raw bytes so Windows cannot translate the record terminator to
+        # CRLF and accidentally create a second path ending in a hidden '\r'.
+        indexed_git(
+            "update-index",
+            "--add",
+            "--index-info",
+            input_data=f"{mode} {blob}\t{relative}\n".encode("utf-8"),
+        )
         tree = indexed_git("write-tree")
     return _commit_tree(paths, tree, message, parent)
 
@@ -1688,6 +1902,12 @@ def _read_remote_claim(paths: WorkflowPaths, remote: str, claim_ref: str) -> tup
         raise LaneError(f"Remote claim payload is invalid: {exc}") from exc
     if not isinstance(payload, dict):
         raise LaneError("Remote claim payload must be an object.")
+    validate_workflow_schema(
+        paths,
+        "remote-claim-v1.schema.json",
+        payload,
+        label="Remote claim payload",
+    )
     return oid, payload
 
 
@@ -1754,7 +1974,7 @@ def remote_claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         raise LaneError("Current runtime owner ID does not match the remote task assignment.")
     if current_branch(paths) != identity["branch"]:
         raise LaneError("Current HEAD must be the committed assigned task branch.")
-    payload = _claim_payload(record, 1, args.lease_seconds)
+    payload = _claim_payload(paths, record, 1, args.lease_seconds)
     claim_ref = _remote_claim_ref(identity["task_id"])
     refs = [payload["task_ref"], claim_ref, *payload["resource_refs"]]
     existing = [ref for ref in refs if _remote_ref_oid(paths, remote, ref)]
@@ -1792,7 +2012,7 @@ def remote_heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     old_oid, old = _read_remote_claim(paths, remote, claim_ref)
     _validate_remote_claim_binding(identity, old)
     _require_live_remote_claim(old, action="Remote heartbeat")
-    payload = _claim_payload(record, old["lease_revision"] + 1, args.lease_seconds)
+    payload = _claim_payload(paths, record, old["lease_revision"] + 1, args.lease_seconds)
     commit = _claim_commit(paths, payload, old_oid)
     refs = _remote_claim_refs(old, claim_ref)
     _assert_remote_refs_at(paths, remote, refs, old_oid)
@@ -1899,7 +2119,19 @@ def _remote_transfer(
         transfer_kind=transfer_kind,
         approval=approval,
     )
-    payload = _claim_payload(updated, old["lease_revision"] + 1, args.lease_seconds, transfer=transfer)
+    validate_workflow_schema(
+        paths,
+        "task-record-v3.schema.json",
+        updated,
+        label="Remote transfer task record",
+    )
+    payload = _claim_payload(
+        paths,
+        updated,
+        old["lease_revision"] + 1,
+        args.lease_seconds,
+        transfer=transfer,
+    )
     if not args.apply:
         print(
             json.dumps(
@@ -1965,27 +2197,173 @@ def remote_handoff(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     _remote_transfer(paths, args, transfer_kind="handoff")
 
 
+def _remote_target_branch_ref(remote: str, target_ref: str) -> str:
+    prefix = f"refs/remotes/{remote}/"
+    if not target_ref.startswith(prefix) or target_ref == prefix:
+        raise LaneError(
+            f"Remote release requires integration.target_ref under {prefix}."
+        )
+    return "refs/heads/" + target_ref[len(prefix):]
+
+
+def _remote_closeout_proof(
+    paths: WorkflowPaths,
+    remote: str,
+    record_path: Path,
+    record: dict[str, Any],
+) -> dict[str, str]:
+    integration = record.get("integration") or {}
+    target_ref = integration.get("target_ref")
+    if not isinstance(target_ref, str) or not target_ref:
+        raise LaneError("Remote release requires a tracked integration target ref.")
+    remote_target_ref = _remote_target_branch_ref(remote, target_ref)
+    remote_target_oid = _remote_ref_oid(paths, remote, remote_target_ref)
+    if remote_target_oid is None:
+        raise LaneError(f"Remote target ref does not exist: {remote_target_ref}")
+    try:
+        local_target_oid = rev_parse(paths, target_ref)
+    except WorkflowDataError as exc:
+        raise LaneError(
+            f"Remote target ref is not available locally; fetch {remote} before release."
+        ) from exc
+    if local_target_oid != remote_target_oid:
+        raise LaneError(
+            f"Remote target ref advanced to {remote_target_oid}; fetch {remote} before release."
+        )
+
+    record_relative = paths.relative(record_path)
+    backlog_relative = paths.relative(paths.tracked("backlog"))
+    try:
+        target_record_raw = git(paths, "show", f"{target_ref}:{record_relative}").stdout
+        target_backlog = git(paths, "show", f"{target_ref}:{backlog_relative}").stdout
+        target_record = json.loads(target_record_raw)
+    except (WorkflowDataError, json.JSONDecodeError) as exc:
+        raise LaneError(
+            "Remote target does not contain a readable integrated task record and Backlog closeout."
+        ) from exc
+    if not isinstance(target_record, dict):
+        raise LaneError("Remote target task record root must be an object.")
+    validate_workflow_schema(
+        paths,
+        "task-record-v3.schema.json",
+        target_record,
+        label="Remote target task record",
+    )
+    if (target_record.get("integration") or {}).get("status") != "integrated":
+        raise LaneError("Remote target task record is not integrated.")
+
+    current_identity = _remote_claim_identity(record)
+    target_identity = _remote_claim_identity(target_record)
+    for field in (
+        "task_id",
+        "lane_id",
+        "claim_id",
+        "owner_generation",
+        "owner_id",
+        "branch",
+        "resource_keys",
+        "resource_refs",
+    ):
+        if target_identity[field] != current_identity[field]:
+            raise LaneError(f"Remote target task ownership differs from the release record: {field}.")
+
+    target_integration = target_record["integration"]
+    expected_fingerprint = target_integration.get("closeout_state_fingerprint")
+    actual_fingerprint = closeout_state_fingerprint(target_record, target_backlog)
+    if not isinstance(expected_fingerprint, str) or expected_fingerprint != actual_fingerprint:
+        raise LaneError("Remote target closeout state fingerprint is missing or stale.")
+    result_commit = target_integration.get("result_commit")
+    if not isinstance(result_commit, str) or not is_ancestor(
+        paths, result_commit, remote_target_oid
+    ):
+        raise LaneError("Remote target does not contain the exact integrated result commit.")
+    return {
+        "target_ref": target_ref,
+        "remote_target_ref": remote_target_ref,
+        "target_oid": remote_target_oid,
+        "closeout_state_fingerprint": actual_fingerprint,
+    }
+
+
 def remote_release(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     remote, config = _remote_config(paths, args.remote)
     _require_remote_claimed_config(config)
-    _, record = load_record(paths, args.record)
+    record_path, record = load_record(paths, args.record)
     if (record.get("integration") or {}).get("status") != "integrated":
         raise LaneError("Remote claim release requires integrated tracked state.")
+    closeout = _remote_closeout_proof(paths, remote, record_path, record)
     identity = _remote_claim_identity(record)
     claim_ref = _remote_claim_ref(identity["task_id"])
     old_oid, payload = _read_remote_claim(paths, remote, claim_ref)
+    expected_oid = args.expected_claim_oid
+    if expected_oid is not None:
+        if not re.fullmatch(r"[0-9a-f]{40,64}", expected_oid):
+            raise LaneError("Remote release expected claim OID is invalid.")
+        if expected_oid != old_oid:
+            raise LaneError(
+                f"Remote release expected claim OID {expected_oid}, but the current claim is {old_oid}; no refs were deleted."
+            )
+    elif args.apply:
+        raise LaneError(
+            "Remote release --apply requires --expected-claim-oid from a fresh dry-run."
+        )
     _validate_remote_claim_binding(identity, payload)
     refs = _remote_claim_refs(payload, claim_ref)
     _assert_remote_refs_at(paths, remote, refs, old_oid)
     leases = [f"--force-with-lease={ref}:{old_oid}" for ref in refs]
     deletes = [f":{ref}" for ref in refs]
     if not args.apply:
-        print(json.dumps({"apply": False, "remote": remote, "expected_oid": old_oid, "delete_refs": refs}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "remote": remote,
+                    "expected_oid": old_oid,
+                    "delete_refs": refs,
+                    **closeout,
+                },
+                sort_keys=True,
+            )
+        )
         return
     result = git(paths, "push", "--atomic", *leases, remote, *deletes, check=False)
     if result.returncode != 0:
         raise LaneError("Remote release CAS failed; claims were not safely released: " + (result.stderr or result.stdout).strip())
-    print(f"REMOTE_RELEASED task={record.get('task_id')}")
+    remaining = [ref for ref in refs if _remote_ref_oid(paths, remote, ref) is not None]
+    if remaining:
+        raise LaneError(
+            "Atomic remote release returned success but refs remain; freeze cleanup and inspect: "
+            + ", ".join(remaining)
+        )
+
+    local_ref_removed = git(
+        paths, "update-ref", "-d", claim_ref, old_oid, check=False
+    ).returncode == 0
+    _remove_remote_pointer_if_matches(
+        paths,
+        _remote_lane_pointer(paths, record_path, record, identity["owner_id"]),
+    )
+    audit = {
+        "task_id": identity["task_id"],
+        "claim_id": identity["claim_id"],
+        "owner_generation": identity["owner_generation"],
+        "expected_claim_oid": old_oid,
+        "released_refs": refs,
+        "remote": remote,
+        **closeout,
+        "released_at": utc_now(),
+        "local_claim_ref_removed": local_ref_removed,
+    }
+    atomic_write_json(
+        paths.shared_runtime
+        / "audit"
+        / f"remote-release-{_safe_id(identity['task_id'])}.json",
+        audit,
+    )
+    print(
+        f"REMOTE_RELEASED task={record.get('task_id')} expected_oid={old_oid} "
+        f"target={closeout['target_oid']}"
+    )
 
 
 def main() -> None:
@@ -2001,6 +2379,16 @@ def main() -> None:
             list_lanes(paths, args)
         elif args.command == "heartbeat":
             heartbeat(paths, args)
+        elif args.command == "lock-status":
+            lock_status(paths, args)
+        elif args.command == "lock-acquire":
+            lock_acquire(paths, args)
+        elif args.command == "lock-heartbeat":
+            lock_heartbeat(paths, args)
+        elif args.command == "lock-release":
+            lock_release(paths, args)
+        elif args.command == "lock-takeover":
+            lock_takeover(paths, args)
         elif args.command == "expand-resources":
             expand_resources(paths, args)
         elif args.command == "queue":
@@ -2028,7 +2416,7 @@ def main() -> None:
         elif args.command == "remote-release":
             remote_release(paths, args)
     except (
-        LaneError, WorkflowDataError, WorkflowPathError, StateError,
+        LaneError, PersistentRoleLockError, WorkflowDataError, WorkflowPathError, StateError,
         LockUnavailable, OSError, subprocess.CalledProcessError, ValueError,
     ) as exc:
         print(f"[workflow-lane] ERROR: {exc}", file=sys.stderr)

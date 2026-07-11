@@ -22,14 +22,24 @@ from workflow_common import (
     git,
     is_ancestor,
     load_record,
+    local_bootstrap_policy_gate,
     read_embedded_json,
     rev_parse,
     snapshot_id,
     unlock_ready_dependencies,
     update_backlog_status,
     utc_now,
+    validate_workflow_schema,
 )
-from workflow_lock import AdvisoryLock, LockUnavailable, resource_key_digest
+from workflow_lock import (
+    AdvisoryLock,
+    LockUnavailable,
+    PersistentRoleLock,
+    PersistentRoleLockError,
+    resource_key_digest,
+    role_lock_guard_path,
+    validate_role_lock_access,
+)
 from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json, atomic_write_text
 
 
@@ -70,19 +80,27 @@ def parser() -> argparse.ArgumentParser:
     integration = record_command("prepare-integration")
     integration.add_argument("--mode", choices=("local_bootstrap", "remote_pr_ci"), required=True)
 
+    def add_integrator_lease_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--integrator-token")
+        command.add_argument("--integrator-generation", type=int)
+
     local = record_command("prepare-local-closeout")
     local.add_argument("--target-ref", required=True)
     local.add_argument("--result-commit", required=True)
+    add_integrator_lease_arguments(local)
 
     remote = record_command("prepare-remote-closeout")
     remote.add_argument("--evidence-json", required=True)
+    add_integrator_lease_arguments(remote)
 
     confirm = record_command("confirm-closeout")
     confirm.add_argument("--target-ref", required=True)
     confirm.add_argument("--closeout-commit", required=True)
+    add_integrator_lease_arguments(confirm)
 
     reconcile = record_command("reconcile")
     reconcile.add_argument("--target-ref", required=True)
+    add_integrator_lease_arguments(reconcile)
 
     invalidate = record_command("invalidate-integration")
     invalidate.add_argument("--reason", required=True)
@@ -149,6 +167,12 @@ def mutate_record(
             print("STATE_NOOP")
             return path, current
         updated["generation"] = expected + 1
+        validate_workflow_schema(
+            paths,
+            "task-record-v3.schema.json",
+            updated,
+            label="Updated task record",
+        )
         if apply:
             atomic_write_json(path, updated)
             reread = json.loads(path.read_text(encoding="utf-8"))
@@ -178,6 +202,30 @@ def _policy(paths: WorkflowPaths) -> dict[str, Any]:
     if not isinstance(policy, dict) or not isinstance(policy.get("policy_id"), str):
         raise StateError("layout integration_policy is invalid.")
     return policy
+
+
+def _role_lock_context(
+    paths: WorkflowPaths,
+    role: str,
+    action: str,
+    *,
+    apply: bool,
+    token: str | None = None,
+    generation: int | None = None,
+) -> PersistentRoleLock | AdvisoryLock:
+    if not apply:
+        validate_role_lock_access(
+            paths.shared_runtime, role, token=token, generation=generation
+        )
+        return AdvisoryLock(role_lock_guard_path(paths.shared_runtime, role), timeout=2)
+    return PersistentRoleLock(
+        paths.shared_runtime,
+        role,
+        action=action,
+        token=token,
+        generation=generation,
+        release_on_exit=token is None,
+    )
 
 
 def _queue_entry_for_record(paths: WorkflowPaths, record: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
@@ -388,12 +436,11 @@ def prepare_integration(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if integration.get("status") not in {"not_ready", "pending"}:
             raise StateError("Integration is not in a preparable state.")
         if args.mode == "local_bootstrap":
-            local = policy.get("local_bootstrap") or {}
-            if local.get("enabled") is not True:
-                raise StateError("Local bootstrap is disabled by policy.")
-            allowed = local.get("allowed_task_ids") or []
-            if record.get("task_id") not in allowed:
-                raise StateError("Task is not in the local bootstrap allowlist.")
+            local_bootstrap_policy_gate(
+                policy,
+                paths.tracked("backlog").read_text(encoding="utf-8"),
+                task_id=record.get("task_id"),
+            )
             target_ref = policy.get("local_target_ref")
             approval = [
                 item for item in record.get("human_approvals", [])
@@ -441,6 +488,9 @@ def _prepare_closeout_commit(
     expected_generation: int | None,
     apply: bool,
     evidence: dict[str, Any],
+    *,
+    integrator_token: str | None = None,
+    integrator_generation: int | None = None,
 ) -> None:
     paths.ensure_runtime()
     record_path, initial = load_record(paths, relative)
@@ -448,7 +498,16 @@ def _prepare_closeout_commit(
     if not isinstance(expected, int):
         raise StateError("Task generation is invalid.")
     backlog_path = paths.tracked("backlog")
-    with AdvisoryLock(paths.shared_runtime / "locks" / "integrator.lock", timeout=2):
+    with _role_lock_context(
+        paths,
+        "integrator",
+        "prepare-closeout",
+        apply=apply,
+        token=integrator_token,
+        generation=integrator_generation,
+    ) as integrator_lock:
+        if isinstance(integrator_lock, PersistentRoleLock):
+            integrator_lock.heartbeat()
         with AdvisoryLock(record_lock_path(paths, record_path), timeout=2):
             _, current = load_record(paths, relative)
             if current.get("generation") != expected:
@@ -471,6 +530,12 @@ def _prepare_closeout_commit(
             backlog, unlocked = unlock_ready_dependencies(backlog)
             fingerprint = closeout_state_fingerprint(updated, backlog)
             updated["integration"]["closeout_state_fingerprint"] = fingerprint
+            validate_workflow_schema(
+                paths,
+                "task-record-v3.schema.json",
+                updated,
+                label="Updated task record",
+            )
             if not apply:
                 print(
                     json.dumps(
@@ -510,12 +575,14 @@ def _prepare_closeout_commit(
                 paths.shared_runtime / "audit" / f"closeout-{updated.get('task_id')}.json",
                 journal,
             )
+            if isinstance(integrator_lock, PersistentRoleLock):
+                integrator_lock.heartbeat()
             print(f"CLOSEOUT_PREPARED commit={closeout_commit} fingerprint={fingerprint}")
 
 
 def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     # Keep queue admission and closeout preparation in one runtime critical section.
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+    with _role_lock_context(paths, "coordinator", "prepare-local-closeout", apply=args.apply):
         _, record = load_record(paths, args.record)
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
         if not isinstance(expected_generation, int):
@@ -524,6 +591,11 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
         verification = record.get("verification") or {}
         if integration.get("mode") != "local_bootstrap" or integration.get("status") not in {"pending", "queued"}:
             raise StateError("Local closeout requires pending or queued local_bootstrap integration.")
+        local_bootstrap_policy_gate(
+            _policy(paths),
+            paths.tracked("backlog").read_text(encoding="utf-8"),
+            task_id=record.get("task_id"),
+        )
         lane = record.get("lane") or {}
         if integration.get("status") == "queued":
             _require_queue_head(paths, record)
@@ -552,6 +624,8 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
                 "ci_checks": [],
                 "evidence": [{"kind": "local_ancestry", "verified_at": utc_now()}],
             },
+            integrator_token=args.integrator_token,
+            integrator_generation=args.integrator_generation,
         )
 
 
@@ -591,7 +665,13 @@ def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> N
         {"kind": "remote_ff", "verified_at": utc_now()}
     ]
     _prepare_closeout_commit(
-        paths, args.record, args.expected_generation, args.apply, evidence
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        evidence,
+        integrator_token=args.integrator_token,
+        integrator_generation=args.integrator_generation,
     )
 
 
@@ -603,6 +683,12 @@ def _show_json_at(paths: WorkflowPaths, reference: str, relative: str) -> dict[s
         raise StateError(f"Target task record is invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise StateError("Target task record must be an object.")
+    validate_workflow_schema(
+        paths,
+        "task-record-v3.schema.json",
+        payload,
+        label="Target task record",
+    )
     return payload
 
 
@@ -709,6 +795,9 @@ def _confirm(
     target_ref: str,
     closeout_commit: str,
     apply: bool,
+    *,
+    integrator_token: str | None = None,
+    integrator_generation: int | None = None,
 ) -> None:
     target_oid = rev_parse(paths, target_ref)
     closeout_oid = rev_parse(paths, closeout_commit)
@@ -726,41 +815,69 @@ def _confirm(
     if expected != actual:
         raise StateError("Target closeout state fingerprint does not match the prepared state.")
     if not apply:
-        print(
-            json.dumps(
-                {
-                    "apply": False,
-                    "target_ref": target_ref,
-                    "target_commit": target_oid,
-                    "closeout_commit": closeout_oid,
-                    "closeout_state_fingerprint": actual,
-                    "would_release_lane": target_record.get("lane", {}).get("lane_id"),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+        with _role_lock_context(
+            paths,
+            "integrator",
+            "confirm-closeout",
+            apply=False,
+            token=integrator_token,
+            generation=integrator_generation,
+        ):
+            print(
+                json.dumps(
+                    {
+                        "apply": False,
+                        "target_ref": target_ref,
+                        "target_commit": target_oid,
+                        "closeout_commit": closeout_oid,
+                        "closeout_state_fingerprint": actual,
+                        "would_release_lane": target_record.get("lane", {}).get("lane_id"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
             )
-        )
         return
-    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
-        released = _release_claims(paths, target_record)
-        journal_path = paths.shared_runtime / "audit" / f"closeout-{target_record.get('task_id')}.json"
-        journal = {
-            "task_id": target_record.get("task_id"),
-            "record": record_relative,
-            "target_ref": target_ref,
-            "target_commit": target_oid,
-            "closeout_commit": closeout_oid,
-            "closeout_state_fingerprint": actual,
-            "confirmed": True,
-            "confirmed_at": utc_now(),
-            "released": released,
-        }
-        atomic_write_json(journal_path, journal)
+    with _role_lock_context(paths, "coordinator", "confirm-closeout", apply=True):
+        with _role_lock_context(
+            paths,
+            "integrator",
+            "confirm-closeout",
+            apply=True,
+            token=integrator_token,
+            generation=integrator_generation,
+        ) as integrator_lock:
+            if isinstance(integrator_lock, PersistentRoleLock):
+                integrator_lock.heartbeat()
+            released = _release_claims(paths, target_record)
+            journal_path = paths.shared_runtime / "audit" / f"closeout-{target_record.get('task_id')}.json"
+            journal = {
+                "task_id": target_record.get("task_id"),
+                "record": record_relative,
+                "target_ref": target_ref,
+                "target_commit": target_oid,
+                "closeout_commit": closeout_oid,
+                "closeout_state_fingerprint": actual,
+                "confirmed": True,
+                "confirmed_at": utc_now(),
+                "released": released,
+            }
+            atomic_write_json(journal_path, journal)
+            if isinstance(integrator_lock, PersistentRoleLock):
+                integrator_lock.heartbeat()
     print(f"CLOSEOUT_CONFIRMED commit={closeout_oid} released={len(released)}")
 
 
 def confirm_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    _confirm(paths, args.record, args.target_ref, args.closeout_commit, args.apply)
+    _confirm(
+        paths,
+        args.record,
+        args.target_ref,
+        args.closeout_commit,
+        args.apply,
+        integrator_token=args.integrator_token,
+        integrator_generation=args.integrator_generation,
+    )
 
 
 def reconcile(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -772,7 +889,15 @@ def reconcile(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         raise StateError("Target ref has no integrated closeout state to reconcile.")
     # The target head is a conservative recoverable closeout witness.  It may be
     # newer than the original closeout commit, but contains the exact state.
-    _confirm(paths, args.record, args.target_ref, target_oid, args.apply)
+    _confirm(
+        paths,
+        args.record,
+        args.target_ref,
+        target_oid,
+        args.apply,
+        integrator_token=args.integrator_token,
+        integrator_generation=args.integrator_generation,
+    )
 
 
 def invalidate(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -818,7 +943,10 @@ def main() -> None:
             reconcile(paths, args)
         elif command == "invalidate-integration":
             invalidate(paths, args)
-    except (StateError, WorkflowDataError, WorkflowPathError, LockUnavailable, OSError, subprocess.CalledProcessError) as exc:
+    except (
+        StateError, PersistentRoleLockError, WorkflowDataError, WorkflowPathError,
+        LockUnavailable, OSError, subprocess.CalledProcessError,
+    ) as exc:
         print(f"[workflow-state] ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 

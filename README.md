@@ -11,7 +11,7 @@ V3 优先支持同机多线：每个 task 独占一个 claim、branch、Git link
 | 根目录混放 AGENTS/PROJECT/PLAN/DECISIONS/scripts/.agent | 只保留 Codex 发现入口；主体集中到 `.codex-workflow/`；manifest 区分 package/project/merge/runtime 所有权 |
 | `verified` 后手工改 Backlog、删 pointer | `prepare-integration → prepare-closeout → confirm/reconcile`；exact commit + state fingerprint 后才释放 claim |
 | Q-001 至 Q-007 后直接拆 Backlog | 增加第 2A 步 Requirements Brief 反馈校准和批准 fingerprint |
-| 单 active pointer、共享工作树 | common-dir claim/resource/queue/heartbeat + 每 worktree 私有 lane pointer；本地多 lane 隔离 |
+| 单 active pointer、共享工作树 | common-dir claim/resource/queue/heartbeat、Coordinator/Integrator 持久租约 + 每 worktree 私有 lane pointer；本地多 lane 隔离 |
 | 不同机器无互斥 | `remote_preassigned` 优先；可选 `remote_claimed` atomic multi-ref、heartbeat、stale takeover 和 handoff，atomic 不可用时 fail closed |
 
 四类状态不能混称：task 的本地合同状态、Backlog durable 状态、lane effective 状态和 integration 状态分别管理。`completed/verified` 不等于 `done`，本地 done 不等于远端已同步，done 不等于 released。
@@ -68,6 +68,12 @@ AGENTS.md                              # 薄发现入口，marker 合并
 
 linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git rev-parse --git-common-dir` 定位，lane pointer 从 `git rev-parse --git-dir` 定位；不在项目根制造 `.agent`、`.codex-log` 或 backup 目录。
 
+## JSON Schema 结构门禁
+
+`task-record-v3`（含其 `lane-v1` 引用）、`requirements-v1` 和 `remote-claim-v1` 是强制结构门禁，不是只供阅读的示例。Requirements snapshot/gate 读取 Brief 时、所有 V3 task record 读取时、state/lane 写入更新前，以及远端 claim 的生成、提交、读取和远端 closeout 证明时都会 fail-closed 校验。字段缺失、类型/枚举/长度/模式不符或引用的 lane 无效时，命令不写 task record、queue、closeout 或远端 claim/ref。
+
+校验器只实现包内四份 schema 使用的受限 JSON Schema 子集，随包以 Python 标准库运行；若后续 schema 引入未实现的关键字，也会停止而不是静默忽略。历史 V2 record 仅保留读取兼容，不能借此绕过 V3 写入门禁。
+
 ## 最短正确流程
 
 1. 目标发现：只写有用户来源的 PROJECT 事实。
@@ -100,9 +106,15 @@ py -3 .codex-workflow/bin/workflow_lane.py remote-claim <record> [--lease-second
 py -3 .codex-workflow/bin/workflow_lane.py remote-heartbeat <record> [--lease-seconds <seconds>] [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py remote-takeover <record> --owner-id <new-uuid> --approved-by <person> --approval-ref <evidence> [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py remote-handoff <record> --owner-id <current-uuid> --to-owner-id <new-uuid> [--apply]
-py -3 .codex-workflow/bin/workflow_lane.py remote-release <record> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-release <record>
+py -3 .codex-workflow/bin/workflow_lane.py remote-release <record> --expected-claim-oid <dry-run-oid> --apply
 py -3 .codex-workflow/bin/workflow_lane.py list --all --json
 py -3 .codex-workflow/bin/workflow_lane.py heartbeat --lane <lane-id>
+py -3 .codex-workflow/bin/workflow_lane.py lock-status coordinator|integrator
+py -3 .codex-workflow/bin/workflow_lane.py lock-acquire integrator --apply
+py -3 .codex-workflow/bin/workflow_lane.py lock-heartbeat integrator --token <token> --generation <generation>
+py -3 .codex-workflow/bin/workflow_lane.py lock-takeover integrator --expected-token <old-token> --expected-generation <old-generation> --approved-by <human> --approval-ref <evidence> --apply
+py -3 .codex-workflow/bin/workflow_lane.py lock-release integrator --token <token> --generation <generation> --apply
 py -3 .codex-workflow/bin/workflow_lane.py queue <lane-id> [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py refresh-base <lane-id> --base main [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py recover <lane-id> --takeover [--apply]
@@ -129,7 +141,7 @@ py -3 .codex-workflow/bin/workflow_state.py reconcile <record> --target-ref <ref
 python -B verify_package.py
 ```
 
-回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、真实双 linked worktree 隔离、lane-local Stop、两条 local lane 的排队/串行 closeout/rebase 后重新验证、local bootstrap 两阶段 closeout、remote_preassigned 的双 clone PR/closeout 恢复，以及 bare remote 原子竞争/heartbeat/atomic 不支持 fail-closed。
+回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、Coordinator/Integrator 持久租约的 stale 零写入与 CAS takeover、canonical delivery 的文本/二进制/mode/Git-index symlink/rename-as-delete+add/merge conflict fixture、真实双 linked worktree 隔离、lane-local Stop、两条 local lane 的排队/串行 closeout/rebase 后重新验证、local bootstrap 两阶段 closeout及到期零写入、remote_preassigned 的双 clone PR/closeout 恢复，以及 bare remote 原子竞争/heartbeat/atomic 不支持 fail-closed。
 
 ## Codex 发现入口依据
 

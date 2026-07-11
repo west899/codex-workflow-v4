@@ -27,6 +27,12 @@ py -3 .codex-workflow/bin/workflow_check.py requirements-gate .codex-workflow/go
 py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs/MVP-001.json
 ```
 
+### 3.1 JSON Schema 结构门禁
+
+四份随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` 在所有 V3 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
+
+校验器仅支持这四份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
+
 ## 4. 单线与本地多线
 
 默认 `parallel.mode=single`。需要同机并行时，由用户批准把它改为 `local_worktree`，设置合理的 `max_local_lanes`，运行 manual 的 advisory-lock probe，然后每个任务单独 claim：
@@ -47,6 +53,29 @@ py -3 .codex-workflow/bin/workflow_lane.py heartbeat --lane <lane-id>
 
 heartbeat 是唯一默认直接写 runtime 的 lane 命令；它不改 Git 跟踪内容，且 token/generation 不匹配即拒绝。
 
+### 4.1 Coordinator / Integrator 持久租约
+
+共享写入另有两类本机持久租约：`locks/coordinator.lock.json` 保护 claim、queue、registry 和 runtime claim 的协调写入；`locks/integrator.lock.json` 保护目标分支的 closeout 与 claim 释放。每份记录含 token、generation、随机 owner/session、PID、heartbeat 和 TTL；旁边的 `.guard` 是短时 OS advisory guard。普通 `--apply` 命令自动取得并按同一 token 释放租约；进程崩溃时 OS guard 会释放，但 JSON 会保留为 active/stale，后续命令绝不自动清除或接管。
+
+当一次人工集成跨越外部 ff、PR 或 CI 等多个命令时，先显式持有 Integrator 租约，保存输出的 token/generation，并把它传给 closeout/confirm：
+
+```text
+py -3 .codex-workflow/bin/workflow_lane.py lock-acquire integrator --apply
+py -3 .codex-workflow/bin/workflow_lane.py lock-heartbeat integrator --token <token> --generation <generation>
+py -3 .codex-workflow/bin/workflow_state.py prepare-local-closeout <record> --target-ref <ref> --result-commit <sha> --integrator-token <token> --integrator-generation <generation> --apply
+py -3 .codex-workflow/bin/workflow_state.py confirm-closeout <record> --target-ref <ref> --closeout-commit <sha> --integrator-token <token> --integrator-generation <generation> --apply
+py -3 .codex-workflow/bin/workflow_lane.py lock-release integrator --token <token> --generation <generation> --apply
+```
+
+`lock-heartbeat` 是 token/generation 精确匹配时的 runtime 续租例外。若 TTL 已过，只能先检查并带已知旧 token/generation、人工批准人与批准来源显式接管；takeover 输出新的活跃租约，完成工作后仍须显式 release：
+
+```text
+py -3 .codex-workflow/bin/workflow_lane.py lock-status integrator
+py -3 .codex-workflow/bin/workflow_lane.py lock-takeover integrator --expected-token <old-token> --expected-generation <old-generation> --approved-by <human> --approval-ref <evidence> --apply
+```
+
+Coordinator 的 claim、queue、registry 和 release 命令会自动持有并释放同类租约；`lock-status/takeover/release coordinator` 用于观察或恢复崩溃留下的租约，不要在普通 claim 前手工留下一个 active Coordinator 租约。两个 takeover 竞争时只有一个 compare-and-swap 能成功；错误 token、generation、活跃租约或缺少审批都 fail closed。
+
 ## 5. Developer、Reviewer 与 sealed snapshot
 
 Developer 只修改 lane 的 allowed paths，形成干净、可恢复的 delivery commit，再提交 evidence JSON：
@@ -65,11 +94,11 @@ py -3 .codex-workflow/bin/workflow_check.py gate <record>
 py -3 .codex-workflow/bin/workflow_state.py mark-verified <record> --apply
 ```
 
-delivery hash 绑定 base；patch hash 对 canonical entries 去掉 base identity；snapshot ID 再绑定 task/lane/branch。二进制、mode 和关闭 rename 猜测后的 delete/add 都进入 canonical delta。可变 task/PLAN/Backlog 状态不进入产品 delivery hash，但由独立门禁验证。
+delivery hash 绑定 base；patch hash 对 canonical entries 去掉 base identity；snapshot ID 再绑定 task/lane/branch。二进制、mode、symlink 的旧/新目标和关闭 rename 猜测后的 delete/add 都进入 canonical delta；merge conflict 只摘要 base 到最终 resolved tree 的实际差异。专门 fixture 用 Git index 构造 symlink，因此不依赖 Windows 创建 symlink 的权限。可变 task/PLAN/Backlog 状态不进入产品 delivery hash，但由独立门禁验证。
 
 ## 6. local bootstrap 收尾
 
-仅当 layout 策略启用、task 在 allowlist、Review/gate 通过且用户批准精确 task/target/snapshot/delivery hash 时使用。先记录 approval，再准备集成：
+仅当 layout 策略启用、task 在 allowlist、Review/gate 通过且用户批准精确 task/target/snapshot/delivery hash 时使用。`allowed_task_ids` 是唯一且有顺序的列表，`expires_after_task` 必须是其中一个 Backlog task；只有列表中位于该 task 之前（含自身）的 task 可用。截止 task 的 Backlog durable status 一旦成为 `done`，新的 `prepare-integration --mode local_bootstrap`、已有 pending task 的 `integration-preflight`、入队及 local closeout 都会 fail closed，不增加 record generation、不创建 queue/closeout 状态；此后改用 `remote_pr_ci`。先记录 approval，再准备集成：
 
 ```text
 py -3 .codex-workflow/bin/workflow_state.py record-approval <record> --approval-json approval.json --apply
@@ -82,7 +111,7 @@ py -3 .codex-workflow/bin/workflow_state.py prepare-integration <record> --mode 
 py -3 .codex-workflow/bin/workflow_lane.py queue <lane-id> --priority 100 --apply
 ```
 
-入队会将 sealed snapshot 的 `delivery_commit`、hash 和实际 `changed_paths` 写入 queue entry，并逐一验证已排队 lane 的 registry、token、generation 和 task record。后入队 lane 的实际路径与任一已排队 lane 重叠时会被拒绝；路径比较使用跨平台规范形式，大小写或 Unicode 等价路径也会停止入队。queue 会写入 task record，所以 Integrator 在 ff-only 前先把该 record 的 prepared/queued 状态提交到 lane branch。将 task branch 以 ff-only 集成到配置的本地目标分支。这是 Integrator 的显式 Git 操作，脚本不会替用户自动 merge。目标 worktree 必须干净，且 exact verified commit 已在 target ref 中。然后：
+入队会将 sealed snapshot 的 `delivery_commit`、hash 和实际 `changed_paths` 写入 queue entry，并逐一验证已排队 lane 的 registry、token、generation 和 task record。后入队 lane 的实际路径与任一已排队 lane 重叠时会被拒绝；路径比较使用跨平台规范形式，大小写或 Unicode 等价路径也会停止入队。queue 会写入 task record，所以 Integrator 在 ff-only 前先把该 record 的 prepared/queued 状态提交到 lane branch。将 task branch 以 ff-only 集成到配置的本地目标分支。这是 Integrator 的显式 Git 操作，脚本不会替用户自动 merge。若该人工步骤跨多个命令，先按 4.1 显式持有 Integrator 租约，并在后续 closeout/confirm 传入同一 token/generation。目标 worktree 必须干净，且 exact verified commit 已在 target ref 中。然后：
 
 ```text
 py -3 .codex-workflow/bin/workflow_state.py prepare-local-closeout <record> --target-ref refs/heads/main --result-commit <exact-main-sha> --apply
@@ -98,7 +127,7 @@ prepare 生成只含 task/Backlog/依赖解锁状态的 closeout commit 和 fing
 py -3 .codex-workflow/bin/workflow_state.py prepare-integration <record> --mode remote_pr_ci --apply
 ```
 
-外部执行 push、产品 PR、CI 和人工合并；本工作流不会自动完成这些操作。V3.0 只接受严格 ff 证明。fetch 后提供 evidence JSON（target_ref、target_parent、pr_head_commit、result_commit、merge_strategy=`ff`、PR URL、全部 success 的 CI checks），从最新目标基线创建 closeout commit：
+外部执行 push、产品 PR、CI 和人工合并；本工作流不会自动完成这些操作。V3.0 只接受严格 ff 证明。跨这些外部步骤时可按 4.1 持有同一 Integrator 租约；fetch 后提供 evidence JSON（target_ref、target_parent、pr_head_commit、result_commit、merge_strategy=`ff`、PR URL、全部 success 的 CI checks），从最新目标基线创建 closeout commit：
 
 ```text
 py -3 .codex-workflow/bin/workflow_state.py prepare-remote-closeout <record> --evidence-json remote.json --apply
@@ -168,6 +197,16 @@ py -3 .codex-workflow/bin/workflow_lane.py remote-handoff <record> --owner-id <c
 ```
 
 handoff 使用同一组 atomic CAS 更新 task branch 与所有 claim refs，并撤销交出者的本地 pointer。接收者 fetch/checkout 更新后的 task branch，再运行 `resume-remote <record> --owner-id <new-uuid> --apply` 写入自己的 pointer；只有接收者能继续 heartbeat。任一 CAS 失败的一方冻结并保留本地工作。不支持 atomic multi-ref 时自动 claim 模式 fail closed，退回人工预分配。远端 claim 只提供合作式互斥，不替代权限和审批。
+
+远端 claim/resource refs 只能在 closeout 状态已经出现在最新远端目标 ref 后释放。先 fetch 目标分支并 dry-run，记录输出的 exact claim OID；再把该 OID 作为 CAS token 显式应用：
+
+```text
+git fetch origin --prune
+py -3 .codex-workflow/bin/workflow_lane.py remote-release <record>
+py -3 .codex-workflow/bin/workflow_lane.py remote-release <record> --expected-claim-oid <dry-run-oid> --apply
+```
+
+命令会交叉检查远端 advertised target 与本地 remote-tracking ref、目标 ref 中的 integrated task record、Backlog 和 closeout fingerprint，再以 `push --atomic` 和每个 ref 的 expected OID 一次删除 task claim 与全部 resource claims。缺少 token、claim 在 dry-run 后被 heartbeat/handoff 推进、任一 resource ref 漂移或 target 未含 closeout时均零删除失败。成功后保留 task branch，移除匹配的本地 pointer，并在 git-common-dir audit 中记录 target/OID/refs；另一 clone 执行 fetch --prune 后应看不到 claim/resource refs。
 
 ## 10. 状态报告语言
 

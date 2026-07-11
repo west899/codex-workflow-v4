@@ -100,6 +100,34 @@ def requirements_fingerprint(metadata: dict, markdown: str) -> str:
     return hashlib.sha256(canonical_json(payload) + b"\0" + normalized_markdown(markdown).encode("utf-8")).hexdigest()
 
 
+def closeout_fingerprint(record: dict, backlog_text: str) -> str:
+    integration = record.get("integration") or {}
+    state = {
+        "task_id": record.get("task_id"),
+        "integration": {
+            key: integration.get(key)
+            for key in (
+                "status",
+                "mode",
+                "policy_id",
+                "source_ref",
+                "target_ref",
+                "target_parent",
+                "pr_head_commit",
+                "result_commit",
+                "merge_strategy",
+                "queue_id",
+                "closeout_commit",
+                "pr_url",
+                "ci_checks",
+                "evidence",
+            )
+        },
+        "backlog": normalized_markdown(backlog_text),
+    }
+    return hashlib.sha256(canonical_json(state)).hexdigest()
+
+
 def approved_requirements(target: Path, *, brief_id: str = "REQ-001") -> tuple[Path, str]:
     metadata = {
         "schema_version": 1,
@@ -212,4 +240,3 @@ def write_record(target: Path, record: dict) -> Path:
 
 def record_relative(record_path: Path, target: Path) -> str:
     return record_path.relative_to(target).as_posix()
-

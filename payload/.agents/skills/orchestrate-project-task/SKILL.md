@@ -36,7 +36,7 @@ Select a durable `ready` Backlog item or record a typed exception. Create `state
 - Medium: ordered record steps and a PLAN summary.
 - Large/high-risk: ExecPlan under `state/plans/`; get user approval for scope or irreversible choices.
 
-Run preflight before delegation. All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
+Run preflight before delegation. `requirements-v1`、`task-record-v3`（含 `lane-v1`）和 `remote-claim-v1` 都是强制结构门禁：Brief/record/claim 读写前会 fail closed 校验，错误时修复源数据或受管 schema/实现并补测试，绝不通过手改 JSON 绕开。All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
 
 ## 4. Choose single or isolated lane
 
@@ -74,14 +74,14 @@ Report `verified`, not done. Multiple verified lanes may coexist.
 
 ## 7. Prepare serial integration
 
-For local bootstrap, first record the user's exact task/target/snapshot/delivery-hash approval, and confirm the task is in the enabled allowlist. For the standard path select remote PR/CI:
+For local bootstrap, first record the user's exact task/target/snapshot/delivery-hash approval. Confirm the enabled policy has a unique ordered allowlist, its `expires_after_task` is a Backlog task in that list, the current task is at or before that cutoff, and the cutoff task is not durable `done`. Preparation, integration preflight, queue admission, and local closeout enforce the same rule without record/queue/closeout mutation on failure. After expiry, select remote PR/CI:
 
 ```text
 py -3 .codex-workflow/bin/workflow_state.py prepare-integration <record> --mode local_bootstrap|remote_pr_ci --apply
 py -3 .codex-workflow/bin/workflow_lane.py queue <lane-id> --apply
 ```
 
-For local worktree lanes, queue priority orders serial closeout; lower values run first and only the queue head may prepare local closeout. Queue admission compares each sealed delivery snapshot's actual changed paths against every queued lane, including case and Unicode-equivalent paths under the cross-platform canonical form. A conflict stops the later lane before its tracked integration state changes. Commit the prepared/queued task record to its lane branch before the Integrator performs the external ff-only product integration. Only one Integrator may advance the target branch. The workflow never auto-pushes, opens/merges PRs, resolves conflicts, force-updates refs, releases or deploys. Main advancement, rebase, conflict resolution or CI repair that changes content returns the task to Developer and invalidates verification. After a local lane has been manually rebased onto the advanced target, require a clean worktree and run:
+For local worktree lanes, queue priority orders serial closeout; lower values run first and only the queue head may prepare local closeout. Queue admission compares each sealed delivery snapshot's actual changed paths against every queued lane, including case and Unicode-equivalent paths under the cross-platform canonical form. A conflict stops the later lane before its tracked integration state changes. Commit the prepared/queued task record to its lane branch before the Integrator performs the external ff-only product integration. Only one Integrator may advance the target branch. For an external integration spanning commands, acquire `workflow_lane.py lock-acquire integrator --apply`, preserve its token/generation, heartbeat it at long boundaries, pass both values to prepare/confirm closeout, then release it. A stale Coordinator/Integrator lease must be inspected and explicitly taken over with known old token/generation plus human approval; never delete its runtime JSON or wait for TTL to clear it. The workflow never auto-pushes, opens/merges PRs, resolves conflicts, force-updates refs, releases or deploys. Main advancement, rebase, conflict resolution or CI repair that changes content returns the task to Developer and invalidates verification. After a local lane has been manually rebased onto the advanced target, require a clean worktree and run:
 
 ```text
 py -3 .codex-workflow/bin/workflow_lane.py refresh-base <lane-id> --base main --apply
@@ -102,6 +102,8 @@ py -3 .codex-workflow/bin/workflow_state.py confirm-closeout <record> --target-r
 ```
 
 Use `reconcile` after an interrupted closeout. Only confirm releases matching runtime claims. It never deletes branch/worktree. Output next-ready candidates, but do not auto-claim them.
+
+For `remote_claimed`, fetch the latest remote target after closeout confirmation, run `remote-release <record>` as a dry-run, then apply only with its exact `--expected-claim-oid`. Release must prove the remote target contains the integrated task/Backlog fingerprint and atomically delete the task claim plus every resource claim. OID drift is a zero-delete CAS failure; preserve the task branch.
 
 ## 9. Report exact distinctions
 

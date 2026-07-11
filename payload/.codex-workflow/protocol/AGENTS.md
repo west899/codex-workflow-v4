@@ -20,6 +20,7 @@ py -3 .codex-workflow/bin/workflow_check.py manual
 - 目标版本进入 Backlog 前必须完成第 2A 步需求反馈校准：复述、纠偏、正常/边界/失败/非目标样例、阻断问题关闭，以及精确 fingerprint 批准。
 - Requirements 的 `brief_id + revision + target_release + fingerprint` 必须与 PROJECT、Backlog 和任务来源一致；实质修改后旧批准自动失效。
 - incident、maintenance 和明确 user directive 可以不建立完整版本 Brief，但仍必须有当前任务的范围、非目标、验收、风险和实现授权。
+- `requirements-v1`、`task-record-v3`（含 `lane-v1` 引用）和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/claim 的读取、V3 状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
 
 ## 3. 四类状态不能混称
 
@@ -57,6 +58,8 @@ task record 只通过 `workflow_state.py`/`workflow_lane.py` 的受限子命令�
 9. main 前进后，未集成 lane 先由人 rebase 并保持干净，再用 `workflow_lane.py refresh-base <lane-id> --base main --apply` 更新 base；该操作清空旧 snapshot、Review、approval 和 integration 证据，随后重新验证。
 10. `remote_claimed` heartbeat 只接受未过期的 active lease；stale takeover 必须有批准证据，并在同一次 atomic CAS 内更新 task ref、claim/resource refs、assignment 和 owner generation；handoff 使用同一事务，失败者冻结且保留本地提交。
 11. release 默认不删除 branch/worktree。
+12. Coordinator/Integrator 的本机持久租约必须以 token/generation、owner PID/session、heartbeat 和 TTL 记录；TTL 只标记 stale，不自动释放。接管必须用已知旧 token/generation、人工批准和 OS guard CAS；跨命令集成必须持有并传递同一 Integrator token。
+13. canonical delivery delta 必须按 POSIX 路径排序并编码状态、旧/新路径、blob OID、mode；symlink 还必须编码旧/新目标，rename 必须以 delete+add 表示。任何内容修复（包括 merge conflict resolution）都以最终 base-to-result tree 重新摘要并重新验证。
 
 本地多线必须显式把 `layout.json` 的 `parallel.mode` 设置为 `local_worktree`，并通过安装/手工 lock probe。默认 single 仍可使用相同 record/gate，但不提供并行隔离。
 
@@ -85,10 +88,11 @@ Requirements approved
 
 ## 7. 集成模式
 
-- `local_bootstrap`：只在策略 enable、task allowlist、未过期、独立 review/gate 和精确 snapshot 人工批准全部成立时使用；产品集成必须 ff-only。
+- `local_bootstrap`：只在策略 enable、task 位于唯一有序 allowlist 的 `expires_after_task` 之前或等于它、该截止 task 尚未在 Backlog durable `done`、独立 review/gate 和精确 snapshot 人工批准全部成立时使用；prepare、integration-preflight、queue 和 local closeout 共用机械到期门禁，失败不写 task record/queue/closeout；产品集成必须 ff-only。
 - `remote_pr_ci`：标准模式。产品 branch 经外部 push/PR/CI/人工合并；随后从最新远端目标基线制作只含流程状态的 closeout commit，再经外部 closeout PR/CI/人工合并。
 - V3.0 远端产品和 closeout 证明只允许严格 fast-forward；普通 merge、squash/rebase 在 canonical merge-delta 证明完整前 fail closed。
 - 脚本不自动执行远端 push、PR、merge、force、发布或部署。`remote_claimed` 的 atomic ref 操作只管理合作式租约，不赋予产品集成权限。
+- `remote-release` 必须先证明最新远端 target 含 integrated closeout/fingerprint；apply 必须绑定 fresh dry-run 的 expected claim OID，并在一个 atomic push 中删除 task/resource claim refs。任何 OID 漂移都零删除停止。
 
 ## 8. 完成与恢复禁区
 

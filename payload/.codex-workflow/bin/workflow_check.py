@@ -21,6 +21,7 @@ from workflow_common import (
     is_ancestor,
     is_mutable_control_path,
     load_record,
+    local_bootstrap_policy_gate,
     read_embedded_json,
     read_requirements_brief,
     rev_parse,
@@ -109,9 +110,12 @@ def _strings(value: Any, checks: Checks, name: str, *, non_empty: bool = True) -
     return result
 
 
-def requirements_gate(path: Path, checks: Checks) -> Any:
+def requirements_gate(paths: WorkflowPaths, path: Path, checks: Checks) -> Any:
     try:
-        brief = read_requirements_brief(path)
+        brief = read_requirements_brief(
+            path,
+            schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+        )
     except (OSError, WorkflowDataError) as exc:
         checks.error(str(exc))
         return None
@@ -321,6 +325,10 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
 
         for task_id in by_id:
             visit(task_id)
+        try:
+            local_bootstrap_policy_gate(paths.layout.get("integration_policy"), text)
+        except WorkflowDataError as exc:
+            checks.error(str(exc))
 
 
 def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
@@ -448,7 +456,11 @@ def _validate_record_basics(paths: WorkflowPaths, record: dict[str, Any], checks
                     checks.error(f"Task requirements baseline field {field} is stale.")
             brief_id = baseline.get("brief_id")
             if brief_id:
-                requirements_gate(paths.tracked("requirements") / f"{brief_id}.md", checks)
+                requirements_gate(
+                    paths,
+                    paths.tracked("requirements") / f"{brief_id}.md",
+                    checks,
+                )
 
 
 def _delivery_snapshot(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) -> dict[str, Any] | None:
@@ -570,6 +582,14 @@ def integration_preflight(paths: WorkflowPaths, record: dict[str, Any], checks: 
     if mode not in {"local_bootstrap", "remote_pr_ci"}:
         checks.error("Integration mode has not been prepared.")
     if mode == "local_bootstrap":
+        try:
+            local_bootstrap_policy_gate(
+                paths.layout.get("integration_policy"),
+                paths.tracked("backlog").read_text(encoding="utf-8"),
+                task_id=record.get("task_id"),
+            )
+        except (OSError, WorkflowDataError) as exc:
+            checks.error(str(exc))
         target_ref = integration.get("target_ref")
         snapshot = verification.get("snapshot_id")
         approvals = record.get("human_approvals") or []
@@ -651,7 +671,10 @@ def main() -> None:
                 requirements_root = paths.tracked("requirements")
                 if requirements_root not in candidate.parents:
                     raise WorkflowPathError("Requirements brief must be under the configured requirements directory.")
-                brief = read_requirements_brief(candidate)
+                brief = read_requirements_brief(
+                    candidate,
+                    schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+                )
                 payload = {
                     "brief_id": brief.metadata.get("brief_id"),
                     "revision": brief.metadata.get("revision"),
@@ -659,7 +682,7 @@ def main() -> None:
                     "fingerprint": brief.fingerprint,
                 }
                 if mode == "requirements-gate":
-                    requirements_gate(candidate, checks)
+                    requirements_gate(paths, candidate, checks)
             except (OSError, WorkflowDataError, WorkflowPathError) as exc:
                 checks.error(str(exc))
     elif mode in {"preflight", "snapshot", "gate", "integration-preflight", "closeout-gate"}:

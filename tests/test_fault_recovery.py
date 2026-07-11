@@ -45,6 +45,26 @@ class LocalFaultRecoveryTests(unittest.TestCase):
     ) -> dict[str, object]:
         target = root / "project"
         self._assert_ok(install_project(target, parallel_mode="local_worktree"))
+        if integration_mode == "local_bootstrap":
+            layout_path = target / ".codex-workflow/layout.json"
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            layout["integration_policy"]["local_bootstrap"].update(
+                {
+                    "enabled": True,
+                    "allowed_task_ids": [task_id],
+                    "expires_after_task": task_id,
+                }
+            )
+            layout_path.write_text(
+                json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            backlog_path = target / ".codex-workflow/state/MVP_BACKLOG.md"
+            backlog_path.write_text(
+                backlog_path.read_text(encoding="utf-8").replace(
+                    "| draft | none |", "| ready | none |", 1
+                ),
+                encoding="utf-8",
+            )
         base = create_baseline(target)
         record_path = write_record(
             target,
