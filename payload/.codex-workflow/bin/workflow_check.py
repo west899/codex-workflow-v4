@@ -593,14 +593,19 @@ def closeout_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) 
         return
     if integration.get("status") not in {"merged_pending_closeout", "integrated"}:
         checks.error("Closeout gate requires merged_pending_closeout or integrated state.")
-    for field in ("target_ref", "result_commit", "closeout_commit", "closeout_state_fingerprint"):
+    for field in ("target_ref", "result_commit", "closeout_state_fingerprint"):
         checks.require_text(integration.get(field), f"task.integration.{field}")
     target_ref = integration.get("target_ref")
+    result_commit = integration.get("result_commit")
     closeout_commit = integration.get("closeout_commit")
-    if isinstance(target_ref, str) and isinstance(closeout_commit, str):
+    if closeout_commit is not None and (not isinstance(closeout_commit, str) or not closeout_commit.strip()):
+        checks.error("task.integration.closeout_commit must be null or non-empty text.")
+    if isinstance(target_ref, str) and isinstance(result_commit, str):
         try:
             target_oid = rev_parse(paths, target_ref)
-            if not is_ancestor(paths, closeout_commit, target_oid):
+            if not is_ancestor(paths, result_commit, target_oid):
+                checks.error("Target ref does not contain the exact integrated result commit.")
+            if isinstance(closeout_commit, str) and not is_ancestor(paths, closeout_commit, target_oid):
                 checks.error("Target ref does not contain the exact closeout commit.")
         except WorkflowDataError as exc:
             checks.error(str(exc))

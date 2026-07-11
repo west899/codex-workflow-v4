@@ -9,6 +9,8 @@ import hashlib
 import json
 import subprocess
 import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +18,7 @@ from workflow_common import (
     WorkflowDataError,
     canonical_delivery,
     closeout_state_fingerprint,
+    fault_injection,
     git,
     is_ancestor,
     load_record,
@@ -175,6 +178,75 @@ def _policy(paths: WorkflowPaths) -> dict[str, Any]:
     if not isinstance(policy, dict) or not isinstance(policy.get("policy_id"), str):
         raise StateError("layout integration_policy is invalid.")
     return policy
+
+
+def _queue_entry_for_record(paths: WorkflowPaths, record: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Read the exact runtime queue entry bound to a tracked task record."""
+
+    integration = record.get("integration") or {}
+    lane = record.get("lane") or {}
+    queue_id = integration.get("queue_id")
+    if not isinstance(queue_id, str):
+        raise StateError("Queued integration has no queue ID.")
+    try:
+        uuid.UUID(queue_id)
+    except ValueError as exc:
+        raise StateError("Queued integration has an invalid queue ID.") from exc
+    path = paths.shared_runtime / "queue" / f"{queue_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StateError(f"Queued integration has no readable queue entry: {exc}") from exc
+    expected = {
+        "queue_id": queue_id,
+        "lane_id": lane.get("lane_id"),
+        "task_id": record.get("task_id"),
+        "claim_id": lane.get("claim_id"),
+        "owner_generation": lane.get("owner_generation"),
+        "queue_priority": integration.get("queue_priority"),
+        "queued_at": integration.get("queued_at"),
+    }
+    if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in expected.items()):
+        raise StateError("Runtime queue entry does not match the task lane token, generation, or priority.")
+    return path, payload
+
+
+def _queue_sort_key(payload: dict[str, Any]) -> tuple[int, datetime, str]:
+    priority = payload.get("queue_priority")
+    queued_at = payload.get("queued_at")
+    queue_id = payload.get("queue_id")
+    if not isinstance(priority, int) or isinstance(priority, bool):
+        raise StateError("Runtime queue entry has an invalid priority.")
+    if not isinstance(queued_at, str) or not isinstance(queue_id, str):
+        raise StateError("Runtime queue entry has an invalid ordering key.")
+    try:
+        queued_time = datetime.fromisoformat(queued_at.replace("Z", "+00:00"))
+        uuid.UUID(queue_id)
+    except ValueError as exc:
+        raise StateError("Runtime queue entry has an invalid timestamp or ID.") from exc
+    return priority, queued_time, queue_id
+
+
+def _require_queue_head(paths: WorkflowPaths, record: dict[str, Any]) -> None:
+    _, current = _queue_entry_for_record(paths, record)
+    entries: list[dict[str, Any]] = []
+    for path in sorted((paths.shared_runtime / "queue").glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StateError(f"Runtime queue entry is unreadable: {path}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise StateError(f"Runtime queue entry is invalid: {path}")
+        _queue_sort_key(payload)
+        entries.append(payload)
+    if not entries:
+        raise StateError("Runtime queue unexpectedly has no entries.")
+    head = min(entries, key=_queue_sort_key)
+    if head.get("queue_id") != current.get("queue_id"):
+        raise StateError(
+            "Local closeout requires the queue head; "
+            f"queue {head.get('queue_id')} for lane {head.get('lane_id')} precedes this task."
+        )
 
 
 def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -442,35 +514,45 @@ def _prepare_closeout_commit(
 
 
 def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    _, record = load_record(paths, args.record)
-    integration = record.get("integration") or {}
-    verification = record.get("verification") or {}
-    if integration.get("mode") != "local_bootstrap" or integration.get("status") != "pending":
-        raise StateError("Local closeout requires pending local_bootstrap integration.")
-    if integration.get("target_ref") != args.target_ref:
-        raise StateError("Target ref differs from the prepared integration policy.")
-    target_oid = rev_parse(paths, args.target_ref)
-    result_oid = rev_parse(paths, args.result_commit)
-    if target_oid != result_oid:
-        raise StateError("--result-commit must equal the current exact target ref.")
-    delivery_commit = verification.get("delivery_commit")
-    if not isinstance(delivery_commit, str) or not is_ancestor(paths, delivery_commit, result_oid):
-        raise StateError("Target ref does not contain the exact verified delivery commit.")
-    _prepare_closeout_commit(
-        paths,
-        args.record,
-        args.expected_generation,
-        args.apply,
-        {
-            "target_ref": args.target_ref,
-            "target_parent": result_oid,
-            "result_commit": result_oid,
-            "pr_head_commit": delivery_commit,
-            "merge_strategy": "ff",
-            "ci_checks": [],
-            "evidence": [{"kind": "local_ancestry", "verified_at": utc_now()}],
-        },
-    )
+    # Keep queue admission and closeout preparation in one runtime critical section.
+    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+        _, record = load_record(paths, args.record)
+        expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
+        if not isinstance(expected_generation, int):
+            raise StateError("Task generation is invalid.")
+        integration = record.get("integration") or {}
+        verification = record.get("verification") or {}
+        if integration.get("mode") != "local_bootstrap" or integration.get("status") not in {"pending", "queued"}:
+            raise StateError("Local closeout requires pending or queued local_bootstrap integration.")
+        lane = record.get("lane") or {}
+        if integration.get("status") == "queued":
+            _require_queue_head(paths, record)
+        elif lane.get("mode") == "local_worktree":
+            raise StateError("Local worktree lanes must enter the integration queue before closeout.")
+        if integration.get("target_ref") != args.target_ref:
+            raise StateError("Target ref differs from the prepared integration policy.")
+        target_oid = rev_parse(paths, args.target_ref)
+        result_oid = rev_parse(paths, args.result_commit)
+        if target_oid != result_oid:
+            raise StateError("--result-commit must equal the current exact target ref.")
+        delivery_commit = verification.get("delivery_commit")
+        if not isinstance(delivery_commit, str) or not is_ancestor(paths, delivery_commit, result_oid):
+            raise StateError("Target ref does not contain the exact verified delivery commit.")
+        _prepare_closeout_commit(
+            paths,
+            args.record,
+            expected_generation,
+            args.apply,
+            {
+                "target_ref": args.target_ref,
+                "target_parent": result_oid,
+                "result_commit": result_oid,
+                "pr_head_commit": delivery_commit,
+                "merge_strategy": "ff",
+                "ci_checks": [],
+                "evidence": [{"kind": "local_ancestry", "verified_at": utc_now()}],
+            },
+        )
 
 
 def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -530,6 +612,7 @@ def _show_text_at(paths: WorkflowPaths, reference: str, relative: str) -> str:
 
 def _release_claims(paths: WorkflowPaths, record: dict[str, Any]) -> list[str]:
     lane = record.get("lane") or {}
+    integration = record.get("integration") or {}
     claim_id = lane.get("claim_id")
     owner_generation = lane.get("owner_generation")
     task_id = record.get("task_id")
@@ -549,6 +632,7 @@ def _release_claims(paths: WorkflowPaths, record: dict[str, Any]) -> list[str]:
     ]
     for key in lane.get("resource_keys", []):
         candidates.append(paths.shared_runtime / "resources" / f"{resource_key_digest(key)}.json")
+    validated_candidates: list[Path] = []
     for candidate in candidates:
         if not candidate.is_file():
             continue
@@ -558,8 +642,34 @@ def _release_claims(paths: WorkflowPaths, record: dict[str, Any]) -> list[str]:
             raise StateError(f"Refusing to remove unreadable runtime claim: {candidate}")
         if payload.get("claim_id") != claim_id or payload.get("owner_generation") != owner_generation:
             raise StateError(f"Runtime claim token/generation mismatch: {candidate}")
-        candidate.unlink()
-        released.append(str(candidate))
+        validated_candidates.append(candidate)
+    queue_id = integration.get("queue_id")
+    queue_to_remove: Path | None = None
+    queue_path: Path | None = None
+    if queue_id is not None:
+        if not isinstance(queue_id, str):
+            raise StateError("Integrated task queue ID is invalid.")
+        try:
+            uuid.UUID(queue_id)
+        except ValueError as exc:
+            raise StateError("Integrated task queue ID is invalid.") from exc
+        queue_path = paths.shared_runtime / "queue" / f"{queue_id}.json"
+        if queue_path.is_file():
+            try:
+                queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                raise StateError(f"Refusing to remove unreadable runtime queue entry: {queue_path}")
+            expected_queue = {
+                "queue_id": queue_id,
+                "lane_id": lane.get("lane_id"),
+                "task_id": task_id,
+                "claim_id": claim_id,
+                "owner_generation": owner_generation,
+            }
+            if not isinstance(queue_payload, dict) or any(
+                queue_payload.get(field) != expected for field, expected in expected_queue.items()
+            ):
+                raise StateError(f"Runtime queue token/generation mismatch: {queue_path}")
     pointer = paths.lane_runtime / "lane.json"
     if lane_worktree is not None and lane_worktree.is_dir():
         try:
@@ -572,8 +682,24 @@ def _release_claims(paths: WorkflowPaths, record: dict[str, Any]) -> list[str]:
         except (OSError, json.JSONDecodeError):
             raise StateError("Refusing to remove an unreadable lane pointer.")
         if payload.get("claim_id") == claim_id and payload.get("owner_generation") == owner_generation:
-            pointer.unlink()
-            released.append(str(pointer))
+            pointer_to_remove = pointer
+        else:
+            pointer_to_remove = None
+    else:
+        pointer_to_remove = None
+    if queue_path is not None and queue_path.is_file():
+        queue_to_remove = queue_path
+    for index, candidate in enumerate(validated_candidates):
+        candidate.unlink()
+        released.append(str(candidate))
+        if index == 0:
+            fault_injection("confirm-after-first-release")
+    if queue_to_remove is not None:
+        queue_to_remove.unlink()
+        released.append(str(queue_to_remove))
+    if pointer_to_remove is not None:
+        pointer_to_remove.unlink()
+        released.append(str(pointer_to_remove))
     return released
 
 
@@ -615,20 +741,21 @@ def _confirm(
             )
         )
         return
-    released = _release_claims(paths, target_record)
-    journal_path = paths.shared_runtime / "audit" / f"closeout-{target_record.get('task_id')}.json"
-    journal = {
-        "task_id": target_record.get("task_id"),
-        "record": record_relative,
-        "target_ref": target_ref,
-        "target_commit": target_oid,
-        "closeout_commit": closeout_oid,
-        "closeout_state_fingerprint": actual,
-        "confirmed": True,
-        "confirmed_at": utc_now(),
-        "released": released,
-    }
-    atomic_write_json(journal_path, journal)
+    with AdvisoryLock(paths.shared_runtime / "locks" / "claims-global.lock", timeout=2):
+        released = _release_claims(paths, target_record)
+        journal_path = paths.shared_runtime / "audit" / f"closeout-{target_record.get('task_id')}.json"
+        journal = {
+            "task_id": target_record.get("task_id"),
+            "record": record_relative,
+            "target_ref": target_ref,
+            "target_commit": target_oid,
+            "closeout_commit": closeout_oid,
+            "closeout_state_fingerprint": actual,
+            "confirmed": True,
+            "confirmed_at": utc_now(),
+            "released": released,
+        }
+        atomic_write_json(journal_path, journal)
     print(f"CLOSEOUT_CONFIRMED commit={closeout_oid} released={len(released)}")
 
 

@@ -23,6 +23,10 @@ from support import (
 
 
 class RemoteClaimEndToEndTests(unittest.TestCase):
+    def _write_json(self, path: Path, payload: dict) -> Path:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
+
     def _prepare_clone(self, clone: Path, suffix: str) -> str:
         configure_git(clone)
         branch = f"codex/task/MVP-REMOTE-{suffix}"
@@ -142,7 +146,209 @@ class RemoteClaimEndToEndTests(unittest.TestCase):
             refs = run(["git", "--git-dir", str(bare), "for-each-ref", "refs/heads/codex/claims", "--format=%(refname)"], cwd=root)
             self.assertEqual(refs.stdout.strip(), "")
 
+    def test_remote_pr_closeout_is_confirmed_by_a_second_clone_and_unblocks_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed = root / "seed"
+            self.assertEqual(install_project(seed).returncode, 0)
+            backlog_path = seed / ".codex-workflow/state/MVP_BACKLOG.md"
+            backlog = backlog_path.read_text(encoding="utf-8").replace("| draft | none |", "| ready | none |", 1)
+            backlog += "| OPS-001 | Should | Follow-up becomes available | MVP-001 | REQ-F-001 | none | blocked | dependencies | - | - | - |\n"
+            backlog_path.write_text(backlog, encoding="utf-8")
+            base = create_baseline(seed)
+            record_path = write_record(
+                seed,
+                basic_v3_record(
+                    base,
+                    task_id="MVP-001",
+                    allowed_paths=["src/remote/**"],
+                    resources=["path:src/remote"],
+                ),
+            )
+            commit_all(seed, "authorize remote task")
+            owner_id = str(uuid.uuid4())
+            relative = record_relative(record_path, seed)
+            preassigned = run(
+                workflow_command(seed, "workflow_lane.py", "preassign", relative, "--owner-id", owner_id, "--apply"),
+                cwd=seed,
+            )
+            self.assertEqual(preassigned.returncode, 0, preassigned.stderr)
+            assigned_main = commit_all(seed, "preassign remote task")
+            assigned_record = json.loads(record_path.read_text(encoding="utf-8"))
+            branch = assigned_record["lane"]["branch"]
+
+            bare = root / "remote.git"
+            initialized = run(["git", "init", "--bare", str(bare)], cwd=root)
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            git(seed, "remote", "add", "origin", str(bare))
+            git(seed, "push", "-u", "origin", "main")
+            self.assertEqual(
+                run(["git", "--git-dir", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"], cwd=root).returncode,
+                0,
+            )
+
+            developer = root / "developer"
+            recovery = root / "recovery"
+            for clone in (developer, recovery):
+                cloned = run(["git", "clone", str(bare), str(clone)], cwd=root)
+                self.assertEqual(cloned.returncode, 0, cloned.stderr)
+                configure_git(clone)
+
+            wrong_branch = run(
+                workflow_command(developer, "workflow_lane.py", "resume-remote", relative, "--owner-id", owner_id, "--apply"),
+                cwd=developer,
+            )
+            self.assertNotEqual(wrong_branch.returncode, 0)
+            self.assertIn("does not match remote assignment branch", wrong_branch.stderr)
+            self.assertFalse((developer / ".git/codex-workflow-v3/lane.json").exists())
+            git(developer, "switch", "-c", branch, "origin/main")
+            resumed = run(
+                workflow_command(developer, "workflow_lane.py", "resume-remote", relative, "--owner-id", owner_id, "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            resumed_again = run(
+                workflow_command(developer, "workflow_lane.py", "resume-remote", relative, "--owner-id", owner_id, "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(resumed_again.returncode, 0, resumed_again.stderr)
+            self.assertIn("existing=true", resumed_again.stdout)
+            preflight = run(workflow_command(developer, "workflow_check.py", "preflight", relative), cwd=developer)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
+            product = developer / "src/remote/feature.txt"
+            product.parent.mkdir(parents=True)
+            product.write_text("remote delivery\n", encoding="utf-8")
+            delivery_commit = commit_all(developer, "remote delivery")
+            developer_evidence = self._write_json(
+                root / "developer-evidence.json",
+                {
+                    "agent_id": "developer-1",
+                    "commands": [{"command": "python -m unittest", "exit_code": 0, "expected_failure": False, "result": "passed"}],
+                    "handoff": "Remote delivery is ready for review.",
+                },
+            )
+            recorded = run(
+                workflow_command(
+                    developer,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(developer_evidence),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=developer,
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            pending_record = json.loads((developer / relative).read_text(encoding="utf-8"))
+            review_evidence = self._write_json(
+                root / "review-evidence.json",
+                {
+                    "agent_id": "reviewer-1",
+                    "snapshot_id": pending_record["verification"]["snapshot_id"],
+                    "status": "pass",
+                    "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+                    "requirement_checklist": ["AC-001 is observable"],
+                    "accepted_findings": [],
+                    "summary": "Independent review passed.",
+                },
+            )
+            reviewed = run(
+                workflow_command(developer, "workflow_state.py", "record-review", relative, "--review-json", str(review_evidence), "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+            acceptance_evidence = self._write_json(
+                root / "acceptance-evidence.json",
+                {
+                    "acceptance": [{"id": "AC-001", "status": "passed", "evidence": ["developer command and reviewer report"]}],
+                    "process_retrospective": {
+                        "completed": True,
+                        "completed_by": "coordinator-1",
+                        "completed_at": "2026-07-11T00:00:00Z",
+                        "questions": {"repeated_problem_found": False, "guidance_gap_found": False, "deterministic_check_candidate_found": False},
+                        "summary": "No reusable workflow gap found.",
+                    },
+                    "rule_proposals": [],
+                    "remaining_risks": [],
+                },
+            )
+            completed = run(
+                workflow_command(developer, "workflow_state.py", "complete-task", relative, "--acceptance-json", str(acceptance_evidence), "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            gate = run(workflow_command(developer, "workflow_check.py", "gate", relative), cwd=developer)
+            self.assertEqual(gate.returncode, 0, gate.stderr)
+            verified = run(workflow_command(developer, "workflow_state.py", "mark-verified", relative, "--apply"), cwd=developer)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            prepared = run(
+                workflow_command(developer, "workflow_state.py", "prepare-integration", relative, "--mode", "remote_pr_ci", "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+
+            git(developer, "push", "origin", f"{delivery_commit}:refs/heads/{branch}")
+            git(developer, "push", "origin", f"{delivery_commit}:refs/heads/main")
+            git(developer, "fetch", "origin", "main")
+            commit_all(developer, "record verified remote state")
+            git(developer, "push", "origin", f"HEAD:refs/heads/{branch}")
+            remote_evidence = self._write_json(
+                root / "remote-evidence.json",
+                {
+                    "target_ref": "refs/remotes/origin/main",
+                    "target_parent": assigned_main,
+                    "pr_head_commit": delivery_commit,
+                    "result_commit": delivery_commit,
+                    "merge_strategy": "ff",
+                    "pr_url": "https://example.invalid/pull/1",
+                    "ci_checks": [{"name": "test", "status": "success"}],
+                },
+            )
+            closeout = run(
+                workflow_command(developer, "workflow_state.py", "prepare-remote-closeout", relative, "--evidence-json", str(remote_evidence), "--apply"),
+                cwd=developer,
+            )
+            self.assertEqual(closeout.returncode, 0, closeout.stderr)
+            closeout_commit = closeout.stdout.split("commit=", 1)[1].split()[0]
+            git(developer, "push", "origin", f"{closeout_commit}:refs/heads/{branch}")
+            git(developer, "push", "origin", f"{closeout_commit}:refs/heads/main")
+
+            git(recovery, "fetch", "origin", "main")
+            git(recovery, "merge", "--ff-only", "origin/main")
+            confirmed = run(
+                workflow_command(
+                    recovery,
+                    "workflow_state.py",
+                    "confirm-closeout",
+                    relative,
+                    "--target-ref",
+                    "refs/remotes/origin/main",
+                    "--closeout-commit",
+                    closeout_commit,
+                    "--apply",
+                ),
+                cwd=recovery,
+            )
+            self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+            final_record = json.loads((recovery / relative).read_text(encoding="utf-8"))
+            self.assertEqual(final_record["integration"]["status"], "integrated")
+            self.assertEqual(final_record["integration"]["result_commit"], delivery_commit)
+            final_backlog = (recovery / ".codex-workflow/state/MVP_BACKLOG.md").read_text(encoding="utf-8")
+            statuses = {
+                line.split("|")[1].strip(): line.split("|")[7].strip()
+                for line in final_backlog.splitlines()
+                if line.startswith("| MVP-") or line.startswith("| OPS-")
+            }
+            self.assertEqual(statuses["MVP-001"], "done")
+            self.assertEqual(statuses["OPS-001"], "ready")
+            closeout_gate = run(workflow_command(recovery, "workflow_check.py", "closeout-gate", relative), cwd=recovery)
+            self.assertEqual(closeout_gate.returncode, 0, closeout_gate.stderr)
+            self.assertEqual(git(recovery, "status", "--porcelain").stdout, "")
+
 
 if __name__ == "__main__":
     unittest.main()
-

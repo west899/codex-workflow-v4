@@ -15,6 +15,8 @@ Read root/protocol/project governance, active Requirements baseline, Backlog ite
 - Requirements baseline is current when applicable;
 - the worktree has no unrelated changes.
 
+For a `remote_preassigned` lane, first fetch the assignment, check out its exact branch, and run `workflow_lane.py resume-remote <record> --owner-id <assigned-uuid> --apply`. A branch, owner, claim or generation mismatch blocks work.
+
 Never switch to another lane, write the Coordinator/main worktree, edit another task record, or modify Backlog/PLAN/manifest. Expand resources through `workflow_lane.py expand-resources` before touching additional paths.
 
 ## 2. Explore and plan inside scope
@@ -40,7 +42,8 @@ py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery
 
 Evidence names the Developer agent, exact commands/exit codes/results and handoff. Do not write review fields, verification passed, integration or Backlog state.
 
+When Coordinator has advanced the target and instructed a local lane to rebase, complete the rebase first and wait for `workflow_lane.py refresh-base` to reset the old state. Then create a new clean delivery commit and repeat the full Developer evidence flow; the prior snapshot, review and approval no longer bind to the refreshed base.
+
 ## 5. Handoff
 
 Return behavior delivered, changed interfaces, delivery commit/hash/snapshot, exact evidence, assumptions/deviations, remaining risks, Reviewer focus areas and process-improvement candidates. A candidate includes concrete evidence, recurrence, smallest enforceable target and suggested change. Explicitly say what remains unverified. Never call the work done, synced, released or independently reviewed.
-

@@ -12,7 +12,7 @@ V3 优先支持同机多线：每个 task 独占一个 claim、branch、Git link
 | `verified` 后手工改 Backlog、删 pointer | `prepare-integration → prepare-closeout → confirm/reconcile`；exact commit + state fingerprint 后才释放 claim |
 | Q-001 至 Q-007 后直接拆 Backlog | 增加第 2A 步 Requirements Brief 反馈校准和批准 fingerprint |
 | 单 active pointer、共享工作树 | common-dir claim/resource/queue/heartbeat + 每 worktree 私有 lane pointer；本地多 lane 隔离 |
-| 不同机器无互斥 | `remote_preassigned` 优先；可选 `remote_claimed` atomic multi-ref/CAS heartbeat，atomic 不可用时 fail closed |
+| 不同机器无互斥 | `remote_preassigned` 优先；可选 `remote_claimed` atomic multi-ref、heartbeat、stale takeover 和 handoff，atomic 不可用时 fail closed |
 
 四类状态不能混称：task 的本地合同状态、Backlog durable 状态、lane effective 状态和 integration 状态分别管理。`completed/verified` 不等于 `done`，本地 done 不等于远端已同步，done 不等于 released。
 
@@ -95,10 +95,18 @@ py -3 .codex-workflow/bin/workflow_check.py gate <record>
 
 py -3 .codex-workflow/bin/workflow_lane.py claim <task> --base main [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py adopt <task> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py resume-remote <record> --owner-id <assigned-uuid> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-claim <record> [--lease-seconds <seconds>] [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-heartbeat <record> [--lease-seconds <seconds>] [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-takeover <record> --owner-id <new-uuid> --approved-by <person> --approval-ref <evidence> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-handoff <record> --owner-id <current-uuid> --to-owner-id <new-uuid> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py remote-release <record> [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py list --all --json
 py -3 .codex-workflow/bin/workflow_lane.py heartbeat --lane <lane-id>
 py -3 .codex-workflow/bin/workflow_lane.py queue <lane-id> [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py refresh-base <lane-id> --base main [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py recover <lane-id> --takeover [--apply]
+py -3 .codex-workflow/bin/workflow_lane.py rebuild [--apply]
 py -3 .codex-workflow/bin/workflow_lane.py release <lane-id> [--apply]
 
 py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --evidence-json <file> --delivery-commit HEAD [--apply]
@@ -121,7 +129,7 @@ py -3 .codex-workflow/bin/workflow_state.py reconcile <record> --target-ref <ref
 python -B verify_package.py
 ```
 
-回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、真实双 linked worktree 隔离、lane-local Stop、local bootstrap 两阶段 closeout，以及 bare remote 双 clone 原子竞争/heartbeat/atomic 不支持 fail-closed。
+回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、真实双 linked worktree 隔离、lane-local Stop、两条 local lane 的排队/串行 closeout/rebase 后重新验证、local bootstrap 两阶段 closeout、remote_preassigned 的双 clone PR/closeout 恢复，以及 bare remote 原子竞争/heartbeat/atomic 不支持 fail-closed。
 
 ## Codex 发现入口依据
 
@@ -129,4 +137,3 @@ python -B verify_package.py
 - [项目 Hooks](https://learn.chatgpt.com/docs/hooks#where-codex-looks-for-hooks)
 - [项目 Custom Agents](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents)
 - [Git worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)
-

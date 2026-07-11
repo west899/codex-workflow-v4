@@ -58,6 +58,9 @@ REQUIRED = {
     "tests/test_workflow_check.py",
     "tests/test_workflow_state.py",
     "tests/test_workflow_lane.py",
+    "tests/test_parallel_closeout.py",
+    "tests/test_fault_recovery.py",
+    "tests/test_remote_claim_recovery.py",
     "tests/test_stop_hook.py",
     "tests/test_end_to_end.py",
 }
@@ -160,4 +163,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

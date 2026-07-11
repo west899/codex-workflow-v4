@@ -16,6 +16,26 @@
     "resource_refs": {"type": "array", "items": {"type": "string"}},
     "heartbeat_at": {"type": "string", "minLength": 1},
     "expires_at": {"type": "string", "minLength": 1},
-    "state": {"enum": ["active", "handoff", "stale", "released"]}
+    "state": {"enum": ["active", "handoff", "stale", "released"]},
+    "transfer": {
+      "type": "object",
+      "required": ["kind", "from_owner_id", "to_owner_id", "transferred_at", "task_record_generation"],
+      "properties": {
+        "kind": {"enum": ["handoff", "stale_takeover"]},
+        "from_owner_id": {"type": "string", "minLength": 1},
+        "to_owner_id": {"type": "string", "minLength": 1},
+        "transferred_at": {"type": "string", "minLength": 1},
+        "task_record_generation": {"type": "integer", "minimum": 1},
+        "approval": {
+          "type": "object",
+          "required": ["approved_by", "approval_ref", "approved_at"],
+          "properties": {
+            "approved_by": {"type": "string", "minLength": 1},
+            "approval_ref": {"type": "string", "minLength": 1},
+            "approved_at": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
   }
 }

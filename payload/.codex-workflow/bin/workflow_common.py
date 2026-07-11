@@ -6,6 +6,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 import unicodedata
@@ -24,6 +25,13 @@ HEX_OID = re.compile(r"^[0-9a-f]{40,64}$")
 
 class WorkflowDataError(ValueError):
     """Tracked workflow data is missing, inconsistent, or unsafe."""
+
+
+def fault_injection(name: str) -> None:
+    """Abort a workflow write boundary when an isolated regression test requests it."""
+
+    if os.environ.get("CODEX_WORKFLOW_TEST_FAIL_AT") == name:
+        raise OSError(f"Injected workflow failure at {name}.")
 
 
 def utc_now() -> str:

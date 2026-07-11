@@ -53,7 +53,10 @@ task record 只通过 `workflow_state.py`/`workflow_lane.py` 的受限子命令�
 5. Developer/Reviewer/gate 必须绑定同一 `delivery_commit + delivery_hash + snapshot_id`。
 6. lane A 的 Stop Hook 只检查 A；Coordinator worktree不冒充任何 lane gate。
 7. heartbeat 只能在 token/generation 匹配时直接更新 runtime；stale 不等于可静默接管。
-8. closeout confirm 前不得释放 task/resource claim；release 默认不删除 branch/worktree。
+8. local_worktree lane 在 closeout 前必须有匹配的 queue token；入队会比较 sealed snapshot 的实际 changed paths，冲突路径或跨平台等价路径拒绝后入队者；只有队首可进入 local closeout，confirm 会删除匹配 queue token 及 task/resource claim。
+9. main 前进后，未集成 lane 先由人 rebase 并保持干净，再用 `workflow_lane.py refresh-base <lane-id> --base main --apply` 更新 base；该操作清空旧 snapshot、Review、approval 和 integration 证据，随后重新验证。
+10. `remote_claimed` heartbeat 只接受未过期的 active lease；stale takeover 必须有批准证据，并在同一次 atomic CAS 内更新 task ref、claim/resource refs、assignment 和 owner generation；handoff 使用同一事务，失败者冻结且保留本地提交。
+11. release 默认不删除 branch/worktree。
 
 本地多线必须显式把 `layout.json` 的 `parallel.mode` 设置为 `local_worktree`，并通过安装/手工 lock probe。默认 single 仍可使用相同 record/gate，但不提供并行隔离。
 
@@ -63,7 +66,7 @@ task record 只通过 `workflow_state.py`/`workflow_lane.py` 的受限子命令�
 Requirements approved
 → Backlog durable ready
 → Coordinator 建立并授权 task record
-→ claim/adopt 独立 lane
+→ claim/adopt/resume-remote 独立 lane
 → Developer 实现并形成干净 delivery commit
 → record-developer（同一 snapshot）
 → 独立 Reviewer → record-review
@@ -91,9 +94,8 @@ Requirements approved
 
 以下任一项存在，不得声称 verified/done/released：验收无证据、Reviewer 未绑定快照、P0/P1 未清、P2 未接受、Requirements 基线漂移、错误 worktree/branch、delivery 工作树不干净、集成结果不在目标 ref、closeout fingerprint 不匹配、CI 未成功或 claim token 不一致。
 
-故障时保留 branch/worktree 和未提交内容。main 前进、rebase、冲突解决或集成修复改变内容时，旧 snapshot 失效，任务回到 Developer，重新测试、Review 和 gate。任何清理都在可恢复证据建立之后执行。
+故障时保留 branch/worktree 和未提交内容。main 前进、rebase、冲突解决或集成修复改变内容时，旧 snapshot 失效，任务回到 Developer，重新测试、Review 和 gate。local lane 的 rebase 由人完成，随后执行 `refresh-base` 清理旧 queue 和状态证据。queue 或 `refresh-base` 已写 task record、但 runtime 写入中断时，执行 `rebuild --apply` 后人工检查，再执行 `recover <lane-id> --takeover --apply`；closeout 已在目标 ref 中且 confirm 释放中断时，执行 `reconcile <record> --target-ref <ref> --apply`。任何清理都在可恢复证据建立之后执行。
 
 ## 9. 流程改进
 
 每个非简单任务关闭前完成复盘。Developer/Reviewer 只提出候选；Coordinator 归类为 task-only、AGENTS、Skill、脚本/Hook/CI 或 DECISIONS。永久治理变化必须由用户批准，并作为可审查变更验证；AI 不得批准自己的提案。
-
