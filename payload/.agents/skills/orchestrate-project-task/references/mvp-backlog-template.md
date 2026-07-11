@@ -1,48 +1,40 @@
 # MVP Backlog
 
-> 状态：draft | approved | in-progress | release-ready | released
-> MVP 版本：<version>
-> 更新：<ISO date>
-> 目标范围来源：`PROJECT.md`
+<!-- CODEX_REQUIREMENTS_BASELINE_START -->
+{
+  "workflow_schema_version": 3,
+  "requirements_gate_mode": "required",
+  "brief_id": "REQ-001",
+  "revision": 1,
+  "approval_fingerprint": "<64-hex approved fingerprint>",
+  "target_release": "MVP-1",
+  "status": "draft"
+}
+<!-- CODEX_REQUIREMENTS_BASELINE_END -->
 
-## 发布目标
+> 只有 `requirements-gate` 通过、PROJECT 与本区块逐项一致后，才能批准 ready 项。
 
-用一句话描述这一版交付给哪类用户、解决什么问题。这里只引用已由人类负责人确认的项目事实。
+## 发布目标与发布门
 
-## 发布门
-
-- [ ] 所有 Must 项均完成并有任务记录。
-- [ ] 跨功能核心流程通过集成或端到端验证。
-- [ ] 适用的安全、隐私、权限、兼容、滥用和运行风险有证据；不适用项已注明。
-- [ ] 部署、监控、备份、恢复和回滚已验证。
-- [ ] 人类负责人批准发布。
+- 目标用户和可观察结果：<引用 approved REQ IDs>
+- [ ] 所有 Must 项均有 integrated closeout 证据并为 durable done。
+- [ ] 核心流程及适用的安全、隐私、权限、兼容、运营、恢复和回滚有证据。
+- [ ] 人类负责人批准发布；done 不自动等于 released。
 
 ## 任务拆分
 
-按可独立验收的纵向用户结果拆分，而不是按前端、后端、数据库等技术层横向拆分。
+按可独立验收的纵向结果拆分。领取不修改 durable `ready`；claim + record 合成 effective active/verified。
 
-| ID | 优先级 | 可观察交付结果 | 依赖 | 验收来源 | 风险 | 状态 | 任务记录 | 集成证据 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MVP-001 | Must | <用户能完成什么> | 无 | `PROJECT.md` / AC ID | <风险或无> | ready | - | - |
+| ID | 优先级 | 可观察交付结果 | 依赖 | 验收来源 | 风险 | 状态 | 阻塞类型 | 任务记录 | Lane/资源 | 集成证据 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MVP-001 | Must | <用户能完成什么> | 无 | REQ-F-001 / REQ-S-001 | <风险或无> | ready | none | `.codex-workflow/state/runs/MVP-001.json` | <claim 后由 list 合成> | - |
 
-允许状态：`draft | blocked | ready | active | verified | done | removed`。`verified` 表示本地 gate 已通过；只有合并进入主分支后才能标记 `done`。
+允许 durable 状态：`draft | blocked | ready | done | removed`。阻塞类型：`dependencies | manual:<reason-id> | none`。
 
-## 工程与发布任务
+## 规则
 
-只记录支持目标版本发布但不直接产生交付能力的工作，例如测试基础、CI、部署或分发、监控、备份和回滚。
+1. 多个无依赖、资源不冲突的 ready 项可进入独立 lane；目标分支、Backlog、PLAN 和治理仍由唯一 Integrator/Coordinator 串行写。
+2. completed/gate pass 只形成 verified；closeout commit 被 target ref 包含并 confirm 后才写 done。
+3. 只有 dependencies 阻塞且全部依赖存在、无环、done 才能在 closeout 中自动解锁；其他阻塞人工处理。
+4. 输出 next-ready 候选但不自动领取。
 
-| ID | 优先级 | 可验证结果 | 依赖 | 风险 | 状态 | 任务记录 | 集成证据 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| OPS-001 | Must | <可观察的工程结果> | 无 | <风险或无> | ready | - | - |
-
-## 排序规则
-
-1. 优先验证最大交付风险和最短核心循环。
-2. 先完成可端到端运行的薄切片，再扩展能力。
-3. 当前控制面同时只支持一个 `active` 项；并行任务需要未来先扩展 `.agent/active-task` 和冲突隔离机制。
-4. 第 4 步只能领取 `ready` 项；例外任务必须记录为 incident、maintenance 或 user_directive，并说明优先原因。
-5. 第 10 步通过 gate 后标记 `verified`；第 11 步通过 PR/CI 合并后记录集成证据并标记 `done`，再选择下一项。
-
-## 变更记录
-
-只记录 Backlog 范围、顺序或依赖的实质变化；目标范围变化同步回 `PROJECT.md`，重要原因写入 `DECISIONS.md`。

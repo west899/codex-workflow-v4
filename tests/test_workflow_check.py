@@ -1,114 +1,146 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from support import basic_record, create_baseline, install_project, run, write_task
+from support import (
+    approved_requirements,
+    basic_v3_record,
+    commit_all,
+    create_baseline,
+    install_project,
+    record_relative,
+    requirements_fingerprint,
+    run,
+    workflow_command,
+    write_record,
+)
 
 
 class WorkflowCheckTests(unittest.TestCase):
-    def install(self, temporary: str) -> Path:
-        target = Path(temporary) / "project"
-        result = install_project(target)
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.target = Path(self.temporary.name) / "project"
+        installed = install_project(self.target)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.baseline = create_baseline(self.target)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_manual_resolves_same_root_from_business_subdirectory(self) -> None:
+        subdirectory = self.target / "src" / "nested folder" / "中文"
+        subdirectory.mkdir(parents=True)
+        result = run(workflow_command(self.target, "workflow_check.py", "manual"), cwd=subdirectory)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return target
 
-    def check(self, target: Path, *arguments: str):
-        return run(
-            ["python3", "scripts/workflow_check.py", *arguments],
-            cwd=target,
+    def test_requirements_gate_accepts_normalized_crlf_and_rejects_stale_fingerprint(self) -> None:
+        brief, fingerprint = approved_requirements(self.target)
+        crlf = brief.read_text(encoding="utf-8").replace("\n", "\r\n")
+        brief.write_bytes(crlf.encode("utf-8"))
+        passed = run(
+            workflow_command(self.target, "workflow_check.py", "requirements-gate", record_relative(brief, self.target)),
+            cwd=self.target,
         )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertIn(fingerprint, run(
+            workflow_command(self.target, "workflow_check.py", "requirements-snapshot", record_relative(brief, self.target)),
+            cwd=self.target,
+        ).stdout)
 
-    def test_unknown_mode_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            result = self.check(target, "gtea")
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("unknown mode", result.stderr)
+        text = brief.read_text(encoding="utf-8")
+        text = text.replace("The task completes", "The corrected task completes")
+        brief.write_text(text, encoding="utf-8")
+        stale = run(
+            workflow_command(self.target, "workflow_check.py", "requirements-gate", record_relative(brief, self.target)),
+            cwd=self.target,
+        )
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("fingerprint is stale", stale.stderr)
 
-    def test_secret_scan_respects_gitignore_but_scans_tracked_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            env_file = target / ".env"
-            env_file.write_text("OPENAI_API_KEY=sk-proj-AAAAAAAAAAAAAAAAAAAAAAAA\n")
-
-            ignored = self.check(target, "manual")
-            self.assertEqual(ignored.returncode, 0, ignored.stderr)
-
-            staged = run(["git", "add", "-f", ".env"], cwd=target)
-            self.assertEqual(staged.returncode, 0, staged.stderr)
-            tracked = self.check(target, "manual")
-            self.assertEqual(tracked.returncode, 1)
-            self.assertIn("Possible OpenAI API key in .env", tracked.stderr)
-
-    def test_malformed_task_record_fails_without_traceback(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            base = create_baseline(target)
-            record = basic_record(base)
-            record["acceptance"] = [None]
-            task = write_task(target, record)
-
-            result = self.check(target, "preflight", str(task.relative_to(target)))
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("acceptance[0] must be an object", result.stderr)
-            self.assertNotIn("Traceback", result.stderr)
-
-    def test_empty_source_and_invalid_hooks_fail_without_traceback(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            base = create_baseline(target)
-            record = basic_record(base)
-            record["source"] = {}
-            task = write_task(target, record)
-            (target / ".codex" / "hooks.json").write_text('{"hooks": []}\n')
-
-            result = self.check(target, "preflight", str(task.relative_to(target)))
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("source.type", result.stderr)
-            self.assertIn("hooks must be an object", result.stderr)
-            self.assertNotIn("Traceback", result.stderr)
-
-    def test_backlog_uses_status_column_and_custom_skill_is_non_blocking(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            base = create_baseline(target)
-            backlog = target / "docs" / "MVP_BACKLOG.md"
-            backlog.write_text(
-                "# MVP Backlog\n\n"
-                "> 状态：approved\n\n"
-                "| ID | 优先级 | 可观察交付结果 | 依赖 | 验收来源 | 风险 | 状态 | 任务记录 | 集成证据 |\n"
-                "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-                "| MVP-001 | Must | selected | 无 | AC-001 | 无 | active | - | - |\n"
-                "| MVP-002 | Must | active | 无 | AC-002 | 无 | ready | - | - |\n"
-            )
-            custom_skill = target / ".agents" / "skills" / "custom-skill"
-            custom_skill.mkdir(parents=True)
-            (custom_skill / "SKILL.md").write_text(
-                "---\nname: custom-skill\ndescription: short\n---\n\nCustom instructions.\n"
-            )
-
-            record = basic_record(base)
-            record["source"] = {
-                "type": "mvp_backlog",
-                "reference": "MVP-001",
-                "priority_reason": "First ready item",
+    def test_mvp_preflight_binds_project_backlog_and_brief_baseline(self) -> None:
+        brief, fingerprint = approved_requirements(self.target)
+        baseline = {"brief_id": "REQ-001", "revision": 1, "approval_fingerprint": fingerprint}
+        record = basic_v3_record(
+            self.baseline,
+            source_type="mvp_backlog",
+            requirements_baseline=baseline,
+        )
+        record["lane"].update(
+            {
+                "lane_id": "lane-MVP-001-test",
+                "mode": "single",
+                "branch": "main",
+                "base_ref": "main",
+                "base_commit": self.baseline,
+                "claim_id": "00000000-0000-4000-8000-000000000001",
+                "owner_generation": 1,
+                "assignment": {
+                    "assigned_owner_id": "00000000-0000-4000-8000-000000000002",
+                    "assignment_generation": 1,
+                    "assigned_at": "2026-07-11T00:00:00Z",
+                    "assigned_by": "test",
+                },
             }
-            task = write_task(target, record)
-            result = self.check(target, "preflight", str(task.relative_to(target)))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("WARN", result.stderr)
+        )
+        record_path = write_record(self.target, record)
+        passed = run(
+            workflow_command(self.target, "workflow_check.py", "preflight", record_relative(record_path, self.target)),
+            cwd=self.target,
+        )
+        self.assertEqual(passed.returncode, 0, passed.stderr)
 
-    def test_start_writes_heartbeat(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            target = self.install(temporary)
-            result = self.check(target, "start")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(
-                (target / ".codex-log" / "last-session-check.json").is_file()
-            )
+        record["source"]["requirements_baseline"]["revision"] = 2
+        write_record(self.target, record)
+        failed = run(
+            workflow_command(self.target, "workflow_check.py", "preflight", record_relative(record_path, self.target)),
+            cwd=self.target,
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("revision is stale", failed.stderr)
+
+    def test_preflight_rejects_wrong_branch_and_dependency_cycle(self) -> None:
+        record = basic_v3_record(self.baseline)
+        record["lane"].update(
+            {
+                "lane_id": "lane-wrong",
+                "mode": "single",
+                "branch": "codex/task/other",
+                "base_ref": "main",
+                "base_commit": self.baseline,
+                "claim_id": "00000000-0000-4000-8000-000000000001",
+                "owner_generation": 1,
+                "assignment": {
+                    "assigned_owner_id": "00000000-0000-4000-8000-000000000002",
+                    "assignment_generation": 1,
+                    "assigned_at": "2026-07-11T00:00:00Z",
+                    "assigned_by": "test",
+                },
+            }
+        )
+        record_path = write_record(self.target, record)
+        wrong = run(
+            workflow_command(self.target, "workflow_check.py", "preflight", record_relative(record_path, self.target)),
+            cwd=self.target,
+        )
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("does not match lane branch", wrong.stderr)
+
+        backlog = self.target / ".codex-workflow/state/MVP_BACKLOG.md"
+        text = backlog.read_text(encoding="utf-8")
+        text = text.replace(
+            "| MVP-001 | Must | <用户能完成什么> | 无 | REQ-F-001 / REQ-S-001 | <风险或无> | draft | none | - | - | - |",
+            "| MVP-001 | Must | First | OPS-001 | AC-1 | none | blocked | dependencies | - | - | - |\n"
+            "| OPS-001 | Must | Second | MVP-001 | AC-2 | none | blocked | dependencies | - | - | - |",
+        )
+        backlog.write_text(text, encoding="utf-8")
+        cycle = run(workflow_command(self.target, "workflow_check.py", "manual"), cwd=self.target)
+        self.assertNotEqual(cycle.returncode, 0)
+        self.assertIn("dependency cycle", cycle.stderr)
 
 
 if __name__ == "__main__":
     unittest.main()
+

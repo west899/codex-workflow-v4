@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-workflow/lane-v1.schema.json",
+  "title": "Codex Workflow V3 lane identity",
+  "type": "object",
+  "required": [
+    "lane_id",
+    "mode",
+    "branch",
+    "base_ref",
+    "base_commit",
+    "claim_id",
+    "owner_generation",
+    "assignment",
+    "allowed_paths",
+    "resource_keys",
+    "dependency_snapshot"
+  ],
+  "properties": {
+    "lane_id": {"type": ["string", "null"]},
+    "mode": {"enum": ["single", "local_worktree", "remote_preassigned", "remote_claimed"]},
+    "branch": {"type": ["string", "null"]},
+    "base_ref": {"type": ["string", "null"]},
+    "base_commit": {"type": ["string", "null"]},
+    "claim_id": {"type": ["string", "null"]},
+    "owner_generation": {"type": "integer", "minimum": 0},
+    "assignment": {
+      "type": ["object", "null"],
+      "required": ["assigned_owner_id", "assignment_generation", "assigned_at", "assigned_by"],
+      "properties": {
+        "assigned_owner_id": {"type": "string", "minLength": 1},
+        "assignment_generation": {"type": "integer", "minimum": 1},
+        "assigned_at": {"type": "string", "minLength": 1},
+        "assigned_by": {"type": "string", "minLength": 1}
+      }
+    },
+    "allowed_paths": {"type": "array", "items": {"type": "string"}},
+    "resource_keys": {"type": "array", "items": {"type": "string"}},
+    "dependency_snapshot": {
+      "type": "object",
+      "required": ["backlog_commit", "dependencies"],
+      "properties": {
+        "backlog_commit": {"type": ["string", "null"]},
+        "dependencies": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

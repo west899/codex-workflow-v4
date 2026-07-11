@@ -1,84 +1,55 @@
-# ExecPlan Template
+# ExecPlan: <task title>
 
-Use this template for large, ambiguous, cross-domain, or high-risk work. Save active plans under `.agent/plans/<date>-<slug>.md`.
+> Task: `<task-id>`｜Lane: `<lane-id>`｜Branch: `<branch>`｜Snapshot: pending
 
-An ExecPlan must be self-contained enough that a fresh agent can resume from the repository and this file alone. Keep it current during implementation.
+Use for migrations, auth/privacy/permissions, public compatibility, destructive or cross-domain changes, and work whose safe recovery is not obvious. Save under `.codex-workflow/state/plans/<date>-<slug>.md`.
 
-## Required Sections
+## Goal and observable acceptance
 
-```md
-# <Action-oriented task title>
+- User-visible result:
+- Requirements / acceptance IDs:
+- Explicit non-goals:
+- Allowed paths and resource keys:
 
-Status: proposed | approved | in-progress | blocked | completed
-Owner: developer
-Updated: <ISO date/time>
-Approved by: <human or coordinator>
-Approved at: <ISO date/time>
-Approval source: <user message, decision ID, or task-record authorization>
+## Ground truth
 
-## Purpose and Observable Outcome
+- Exact base commit:
+- Relevant entry points, data/control flow and tests:
+- Confirmed facts:
+- Assumptions and how to verify them:
+- Unrelated work to preserve:
 
-Explain what the user can do after this change and how to observe it.
+## Risks and authorization
 
-## Confirmed Inputs
+| Risk | Failure/impact | Prevention | Recovery | Required human approval |
+| --- | --- | --- | --- | --- |
 
-List requirement or decision IDs and relevant repository facts. Label assumptions explicitly.
+## Ordered milestones
 
-## Scope and Non-Goals
+Each milestone must leave a runnable or recoverable state and name its observable proof.
 
-State what changes and what intentionally does not.
+1. <milestone, files, behavior, proof>
+2. <milestone, files, behavior, proof>
 
-## Context and Code Map
+## Verification
 
-Name relevant files, entry points, data flow, tests, and non-obvious terms.
+- Focused tests:
+- Broader regression checks:
+- Lint/type/build/package:
+- Real user/API flow:
+- Security/secret/risk checks:
+- Final clean delivery commit:
+- `workflow_check.py snapshot <record>`:
+- Developer evidence JSON:
+- Independent Reviewer focus:
 
-## Plan of Work
+## Failure and recovery
 
-Describe ordered milestones. Each milestone must leave a working, independently verifiable result.
+- Safe retry boundary:
+- Partial-write handling:
+- Migration rollback/compatibility:
+- Rescue branch/patch strategy:
+- Conditions that invalidate the snapshot:
 
-## Progress
+Do not prescribe automatic push, PR, merge, force, worktree/branch deletion, release or deployment. Any scope/resource expansion returns to Coordinator before editing.
 
-- [ ] <timestamp> Step; expected evidence; actual result; current blocker/next action
-
-## Validation and Acceptance
-
-For every acceptance criterion, record:
-
-| Criterion | Command or flow | Expected | Actual | Status | Evidence |
-| --- | --- | --- | --- | --- | --- |
-| AC-001 | ... | ... | ... | pending | ... |
-
-Include `python3 scripts/workflow_check.py start`, `snapshot <task-record>`, and final `gate <task-record>` as workflow evidence.
-
-## Risks, Recovery, and Rollback
-
-Cover partial failure, retries, migrations, compatibility, backups, and safe reversal where relevant.
-
-## Surprises and Discoveries
-
-Record unexpected behavior with concise evidence.
-
-## Decision Log
-
-- Decision:
-  Rationale:
-  Date/author:
-
-## Outcomes and Retrospective
-
-Compare delivered behavior with the original purpose. Record gaps and follow-up work.
-```
-
-The Developer may create and update a proposed plan, but must not change `proposed` to `approved` without an external approval source.
-
-## Quality Test
-
-Reject the plan if it:
-
-- relies on chat history or undefined context;
-- lists edits without user-visible purpose;
-- lacks exact verification and expected results;
-- hides assumptions;
-- omits recovery for risky steps;
-- cannot be resumed after the original agent disappears.
-- lacks an approval source or actual verification results.

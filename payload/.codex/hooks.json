@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/workflow_check.py\" start",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; py -3 (Join-Path $root 'scripts/workflow_check.py') start\"",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex-workflow/bin/workflow_check.py\" start",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; py -3 (Join-Path $root '.codex-workflow/bin/workflow_check.py') start\"",
             "timeout": 30,
             "statusMessage": "Checking project workflow"
           }
@@ -19,8 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/codex_stop_hook.py\"",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; py -3 (Join-Path $root 'scripts/codex_stop_hook.py')\"",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex-workflow/bin/codex_stop_hook.py\"",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; py -3 (Join-Path $root '.codex-workflow/bin/codex_stop_hook.py')\"",
             "timeout": 30,
             "statusMessage": "Checking completion evidence"
           }
