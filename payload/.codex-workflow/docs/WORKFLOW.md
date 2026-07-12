@@ -11,12 +11,13 @@ V3 把工作流主体从项目根集中到 `.codex-workflow/`，补齐需求校�
 3. 从 Requirements Brief 模板创建 `governance/requirements/<brief-id>.md`。
 4. 让 AI 复述“已确认 / 假设 / 未确认”，请用户纠偏，补齐正常、边界/失败和非目标场景。
 5. 运行 `requirements-snapshot`，让用户批准精确 brief/revision/release/fingerprint；把批准信息写回 Brief。
-6. 运行 `requirements-gate`，再把同一基线写入 PROJECT 与 Backlog。
+6. 运行 `requirements-gate`，再把同一基线写入 PROJECT 与 Backlog；随后运行 `sync-status --apply` 生成第一份状态快照。
 7. 将 Backlog 从 draft 审批为 ready 项；任务才可进入实现。
 
 ```text
 py -3 .codex-workflow/bin/workflow_check.py requirements-snapshot .codex-workflow/governance/requirements/REQ-001.md
 py -3 .codex-workflow/bin/workflow_check.py requirements-gate .codex-workflow/governance/requirements/REQ-001.md
+py -3 .codex-workflow/bin/workflow_state.py sync-status --apply
 ```
 
 ## 3. 建立 task contract
@@ -32,6 +33,26 @@ py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs
 四份随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` 在所有 V3 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
 
 校验器仅支持这四份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
+
+### 3.2 已批准 Requirements 的变更
+
+不要直接改 PROJECT/Backlog 的 baseline。已批准 Brief 改 revision/fingerprint，或用新 Brief 替代旧 Brief 时，`manual`、`status` 和 Backlog task 的 preflight 会停止。先生成影响报告：
+
+```text
+py -3 .codex-workflow/bin/workflow_check.py requirements-impact .codex-workflow/governance/requirements/REQ-001.md --json
+py -3 .codex-workflow/bin/workflow_state.py apply-requirements-impact .codex-workflow/governance/requirements/REQ-001.md --expected-fingerprint <approved-sha256>
+py -3 .codex-workflow/bin/workflow_state.py apply-requirements-impact .codex-workflow/governance/requirements/REQ-001.md --expected-fingerprint <approved-sha256> --apply
+```
+
+报告从 Git 历史中读取上一份 approved Brief，按稳定 `REQ-*` ID 比较，并读取本机 live lane 的 task record。它会把未开始且受影响或未映射的 Backlog 项置为 `blocked`，把已完成项标为 `preserve_history`，并把活动 task 标为 `human_decision_required`。`--apply` 同时更新 PROJECT/Backlog baseline、写入 `state/requirements-impacts/` 报告并刷新 `STATUS.md`；这些受管文件应一起提交。它绝不自动让活动 lane 继续。
+
+若人类确认某个活动 task 的既有合同仍适用，先把该 lane rebase 到含影响报告的基线；需要 base refresh 时按第 9 节执行 `refresh-base`。然后由人类提供绑定报告 ID 的决定 JSON（`analysis_id`、`decision: continue`、`approved_by`、`approved_at`、`source`、`rationale`），再执行：
+
+```text
+py -3 .codex-workflow/bin/workflow_state.py resolve-requirements-impact <record> --analysis-id <report-sha256> --decision-json decision.json --apply
+```
+
+该命令把 task 绑定到新 baseline，保存人类决定，并清空旧 Developer/Review/acceptance/approval/integration 证据；Developer、Reviewer 和 gate 必须重新完成。若决定停止或重写 task，不执行此命令，保持 blocked 并按 lane 恢复/abandon 流程处理。
 
 ## 4. 单线与本地多线
 
@@ -209,6 +230,15 @@ py -3 .codex-workflow/bin/workflow_lane.py remote-release <record> --expected-cl
 命令会交叉检查远端 advertised target 与本地 remote-tracking ref、目标 ref 中的 integrated task record、Backlog 和 closeout fingerprint，再以 `push --atomic` 和每个 ref 的 expected OID 一次删除 task claim 与全部 resource claims。缺少 token、claim 在 dry-run 后被 heartbeat/handoff 推进、任一 resource ref 漂移或 target 未含 closeout时均零删除失败。成功后保留 task branch，移除匹配的本地 pointer，并在 git-common-dir audit 中记录 target/OID/refs；另一 clone 执行 fetch --prune 后应看不到 claim/resource refs。
 
 ## 10. 状态报告语言
+
+`state/STATUS.md` 是受管状态的生成快照，不是新的真相来源。它汇总当前 Requirements baseline/contract、Backlog durable counts、task records（包含 live local lane）和已应用的影响报告。single/Coordinator 的 state mutation、closeout 与 Requirements impact apply 会自动刷新；隔离 lane 不写该共享文件，避免把状态快照带入 delivery/rebase 冲突。外部 Git 操作、lane mutation、手动治理编辑或恢复后要从 Coordinator/integration worktree 检查并按需重建：
+
+```text
+py -3 .codex-workflow/bin/workflow_check.py status
+py -3 .codex-workflow/bin/workflow_state.py sync-status --apply
+```
+
+`status` 对快照 fingerprint、当前 Brief 漂移和无效 approved contract 都 fail closed。`sync-status --apply` 在 task lane 中拒绝执行；不要手改 `STATUS.md` 伪造状态。
 
 - `in_progress`：正在当前 lane 实现。
 - `verified`：本地 sealed snapshot 已通过 Developer/Reviewer/gate，尚未集成。

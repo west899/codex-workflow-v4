@@ -16,6 +16,7 @@ from workflow_common import (
     backlog_rows,
     canonical_delivery,
     closeout_state_fingerprint,
+    current_requirements_baseline,
     current_branch,
     git,
     is_ancestor,
@@ -24,10 +25,12 @@ from workflow_common import (
     local_bootstrap_policy_gate,
     read_embedded_json,
     read_requirements_brief,
+    requirements_impact,
     rev_parse,
     snapshot_id,
     status_paths,
     utc_now,
+    workflow_status_is_current,
 )
 from workflow_lock import lock_probe
 from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json
@@ -76,8 +79,8 @@ def parser() -> argparse.ArgumentParser:
         "mode",
         choices=(
             "start", "manual", "stop", "preflight", "snapshot", "gate",
-            "requirements-snapshot", "requirements-gate", "integration-preflight",
-            "closeout-gate",
+            "requirements-snapshot", "requirements-gate", "requirements-impact",
+            "status", "integration-preflight", "closeout-gate",
         ),
     )
     result.add_argument("target", nargs="?")
@@ -263,7 +266,7 @@ def requirements_gate(paths: WorkflowPaths, path: Path, checks: Checks) -> Any:
 
 
 def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
-    for key in ("protocol", "project_rules", "project", "plan", "decisions", "backlog", "workflow_doc"):
+    for key in ("protocol", "project_rules", "project", "plan", "decisions", "backlog", "status", "workflow_doc"):
         target = paths.tracked(key)
         if not target.is_file():
             checks.error(f"Missing required workflow file: {paths.relative(target)}")
@@ -332,22 +335,20 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
 
 
 def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
-    values: list[tuple[str, dict[str, Any]]] = []
-    for key in ("project", "backlog"):
-        path = paths.tracked(key)
-        if not path.is_file():
-            continue
-        try:
-            values.append((key, read_embedded_json(path.read_text(encoding="utf-8"), BASELINE_MARKER)))
-        except WorkflowDataError as exc:
-            checks.error(f"{key}: {exc}")
-    if len(values) != 2:
+    try:
+        baseline, current, brief_path = current_requirements_baseline(paths)
+        if current is not None and baseline != current:
+            assert brief_path is not None
+            checks.error(
+                "Configured Requirements Brief differs from the PROJECT/Backlog baseline; "
+                "run requirements-impact for "
+                + paths.relative(brief_path)
+                + " and apply its reviewed result before continuing."
+            )
+        return baseline
+    except WorkflowDataError as exc:
+        checks.error(str(exc))
         return None
-    project_value, backlog_value = values[0][1], values[1][1]
-    fields = ("brief_id", "revision", "approval_fingerprint")
-    if any(project_value.get(field) != backlog_value.get(field) for field in fields):
-        checks.error("PROJECT and Backlog requirements baselines do not match.")
-    return backlog_value
 
 
 def _validate_record_basics(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, final: bool) -> None:
@@ -653,13 +654,14 @@ def main() -> None:
         except OSError as exc:
             checks.warn(f"Unable to write SessionStart heartbeat: {exc}")
     elif mode == "manual":
+        _baseline(paths, checks)
         if paths.layout.get("parallel", {}).get("mode") == "local_worktree":
             try:
                 paths.ensure_runtime()
                 lock_probe(paths.shared_runtime / "locks" / "advisory-probe.lock")
             except Exception as exc:
                 checks.error(str(exc))
-    elif mode in {"requirements-snapshot", "requirements-gate"}:
+    elif mode in {"requirements-snapshot", "requirements-gate", "requirements-impact"}:
         if not args.target:
             checks.error(f"{mode} requires a requirements brief path.")
         else:
@@ -683,8 +685,30 @@ def main() -> None:
                 }
                 if mode == "requirements-gate":
                     requirements_gate(paths, candidate, checks)
+                elif mode == "requirements-impact":
+                    requirements_gate(paths, candidate, checks)
+                    if not checks.errors:
+                        payload = requirements_impact(paths, candidate)
             except (OSError, WorkflowDataError, WorkflowPathError) as exc:
                 checks.error(str(exc))
+    elif mode == "status":
+        try:
+            snapshot, current = workflow_status_is_current(paths)
+            payload = {**snapshot, "status_document_current": current}
+            if not current:
+                checks.error("Workflow status document is stale; run workflow_state.py sync-status --apply.")
+            contract = snapshot.get("requirements_contract")
+            if isinstance(contract, dict) and contract.get("status") == "drift":
+                checks.error(
+                    "Requirements Brief differs from the managed baseline; run requirements-impact and apply its reviewed result."
+                )
+            elif isinstance(contract, dict) and contract.get("status") == "invalid":
+                checks.error(
+                    "Current Requirements Brief is not a valid approved contract: "
+                    + str(contract.get("reason") or "unknown error")
+                )
+        except (OSError, WorkflowDataError, WorkflowPathError) as exc:
+            checks.error(str(exc))
     elif mode in {"preflight", "snapshot", "gate", "integration-preflight", "closeout-gate"}:
         if not args.target:
             checks.error(f"{mode} requires a task-record path.")
@@ -729,6 +753,11 @@ def main() -> None:
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         elif mode == "requirements-snapshot":
             print(f"REQUIREMENTS_SHA256={payload['fingerprint']}")
+        elif mode == "requirements-impact":
+            print(f"REQUIREMENTS_IMPACT_ID={payload['analysis_id']}")
+            print(f"REQUIREMENTS_IMPACT_STATUS={payload['status']}")
+        elif mode == "status":
+            print(f"STATUS_SHA256={payload['status_fingerprint']}")
         elif "snapshot_id" in payload:
             print(f"DELIVERY_SHA256={payload['delivery_hash']}")
             print(f"PATCH_SHA256={payload['patch_hash']}")

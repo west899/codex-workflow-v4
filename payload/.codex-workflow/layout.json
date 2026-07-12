@@ -13,6 +13,8 @@
     "decisions": ".codex-workflow/governance/DECISIONS.md",
     "requirements": ".codex-workflow/governance/requirements",
     "backlog": ".codex-workflow/state/MVP_BACKLOG.md",
+    "status": ".codex-workflow/state/STATUS.md",
+    "requirements_impacts": ".codex-workflow/state/requirements-impacts",
     "runs": ".codex-workflow/state/runs",
     "plans": ".codex-workflow/state/plans",
     "workflow_doc": ".codex-workflow/docs/WORKFLOW.md",
@@ -45,6 +47,8 @@
   "delivery_exclusions": [
     ".codex-workflow/governance/PLAN.md",
     ".codex-workflow/state/MVP_BACKLOG.md",
+    ".codex-workflow/state/STATUS.md",
+    ".codex-workflow/state/requirements-impacts/**",
     ".codex-workflow/state/runs/**",
     ".codex-workflow/state/plans/**"
   ]

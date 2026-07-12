@@ -10,7 +10,7 @@ Own scope, state and integration; do not impersonate Developer or Reviewer.
 ## 1. Establish ground truth
 
 1. Read root AGENTS and every file it points to, then the active Requirements Brief, Backlog, relevant task records, code, tests and Git state.
-2. Run `py -3 .codex-workflow/bin/workflow_check.py start` and `manual`.
+2. Run `py -3 .codex-workflow/bin/workflow_check.py start`, `manual`, and `status`.
 3. Preserve unrelated changes. If the current directory has a lane pointer, resume that exact lane; do not silently claim another task.
 4. Before the first implementation, require a human-approved Git baseline. Never infer project facts from the template.
 
@@ -27,6 +27,12 @@ For target-release work, create a Requirements Brief from [requirements-brief-te
 7. Write the approval and run `requirements-gate`; copy the same baseline into PROJECT and Backlog.
 
 Do not select a technical stack or start Developer during calibration. Incident, maintenance and explicit direct tasks may use a narrower task contract, but still need scope, non-goals, acceptance, risk and authorization.
+
+### Approved Requirements changed
+
+When an approved Brief changes revision/fingerprint or is replaced by a new Brief, do not hand-edit PROJECT/Backlog baseline or task JSON. Run `requirements-impact <revised-brief> --json`, review the stable-ID diff and every action, then dry-run and apply `apply-requirements-impact` with the exact approved fingerprint. This writes the report, updates both baselines, blocks unstarted affected/unmapped Backlog items, preserves done history, and refreshes STATUS.
+
+An active task in the report is stopped, not implicitly approved to continue. After the Coordinator commits the impact files and the lane is manually rebased (use `refresh-base` when its base changed), obtain a human JSON decision bound to the report `analysis_id` with `decision: continue`, approver/time/source and a rationale that the task contract remains valid. Only then run `resolve-requirements-impact <record> --analysis-id <id> --decision-json <file> --apply`. It binds the new baseline and invalidates all old delivery/review/acceptance/approval/integration evidence, so delegate the full Developer → Reviewer → gate chain again. For stop or rewrite, leave the task blocked and follow lane recovery/abandon rather than resolve.
 
 ## 3. Create and authorize one task contract
 
@@ -107,4 +113,4 @@ For `remote_claimed`, fetch the latest remote target after closeout confirmation
 
 ## 9. Report exact distinctions
 
-Report behavior, exact tests, review, integration/remote evidence, recovery state, process proposals and remaining risk. Distinguish verified vs local done vs remote-synced vs released. Never present a cooperative lock, Hook, local JSON or Agent identity as a security trust root.
+Report behavior, exact tests, review, integration/remote evidence, recovery state, process proposals and remaining risk. Distinguish verified vs local done vs remote-synced vs released. Also report `workflow_check.py status` separately: a generated STATUS snapshot is current only when its fingerprint and current Requirements contract both match. Never present a cooperative lock, Hook, local JSON or Agent identity as a security trust root.

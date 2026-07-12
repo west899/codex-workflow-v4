@@ -15,12 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from workflow_paths import WorkflowPathError, WorkflowPaths, normalize_repo_path
+from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_text, normalize_repo_path
 
 
 REQUIREMENTS_START = "<!-- CODEX_REQUIREMENTS_JSON_START -->"
 REQUIREMENTS_END = "<!-- CODEX_REQUIREMENTS_JSON_END -->"
+REQUIREMENTS_BASELINE_MARKER = "CODEX_REQUIREMENTS_BASELINE"
+STATUS_MARKER = "CODEX_WORKFLOW_STATUS_JSON"
 HEX_OID = re.compile(r"^[0-9a-f]{40,64}$")
+REQUIREMENT_ID = re.compile(r"\bREQ-[A-Za-z0-9._-]+\b")
 
 
 class WorkflowDataError(ValueError):
@@ -501,12 +504,12 @@ class RequirementsBrief:
     fingerprint: str
 
 
-def read_requirements_brief(
+def parse_requirements_brief(
+    source: str,
     path: Path,
     *,
     schema_path: Path | None = None,
 ) -> RequirementsBrief:
-    source = path.read_text(encoding="utf-8-sig")
     if source.count(REQUIREMENTS_START) != 1 or source.count(REQUIREMENTS_END) != 1:
         raise WorkflowDataError("Requirements brief must contain one JSON marker pair.")
     before, rest = source.split(REQUIREMENTS_START, 1)
@@ -531,6 +534,18 @@ def read_requirements_brief(
         + normalize_markdown(markdown).encode("utf-8")
     ).hexdigest()
     return RequirementsBrief(path, metadata, normalize_markdown(markdown), digest)
+
+
+def read_requirements_brief(
+    path: Path,
+    *,
+    schema_path: Path | None = None,
+) -> RequirementsBrief:
+    return parse_requirements_brief(
+        path.read_text(encoding="utf-8-sig"),
+        path,
+        schema_path=schema_path,
+    )
 
 
 def git(paths: WorkflowPaths, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -701,9 +716,11 @@ def is_mutable_control_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
-    return normalized == ".codex-workflow/governance/PLAN.md" or normalized == ".codex-workflow/state/MVP_BACKLOG.md" or normalized.startswith(
-        ".codex-workflow/state/runs/"
-    ) or normalized.startswith(".codex-workflow/state/plans/")
+    return normalized == ".codex-workflow/governance/PLAN.md" or normalized == ".codex-workflow/state/MVP_BACKLOG.md" or normalized == ".codex-workflow/state/STATUS.md" or normalized.startswith(
+        ".codex-workflow/state/requirements-impacts/"
+    ) or normalized.startswith(".codex-workflow/state/runs/") or normalized.startswith(
+        ".codex-workflow/state/plans/"
+    )
 
 
 def read_embedded_json(text: str, marker_name: str) -> dict[str, Any]:
@@ -719,6 +736,408 @@ def read_embedded_json(text: str, marker_name: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise WorkflowDataError(f"{marker_name} JSON must be an object.")
     return payload
+
+
+def replace_embedded_json(text: str, marker_name: str, payload: dict[str, Any]) -> str:
+    """Replace one managed JSON marker block without touching surrounding prose."""
+
+    start = f"<!-- {marker_name}_START -->"
+    end = f"<!-- {marker_name}_END -->"
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise WorkflowDataError(f"Expected one {marker_name} marker pair.")
+    before, rest = text.split(start, 1)
+    _, after = rest.split(end, 1)
+    return (
+        before
+        + start
+        + "\n"
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n"
+        + end
+        + after
+    )
+
+
+def _baseline_fields(payload: dict[str, Any], *, label: str) -> dict[str, Any]:
+    fields = {key: payload.get(key) for key in ("brief_id", "revision", "approval_fingerprint")}
+    if all(value is None for value in fields.values()):
+        return fields
+    if (
+        not isinstance(fields["brief_id"], str)
+        or not fields["brief_id"].strip()
+        or not isinstance(fields["revision"], int)
+        or isinstance(fields["revision"], bool)
+        or fields["revision"] < 1
+        or not isinstance(fields["approval_fingerprint"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", fields["approval_fingerprint"])
+    ):
+        raise WorkflowDataError(f"{label} requirements baseline is incomplete or invalid.")
+    return fields
+
+
+def requirements_baseline(paths: WorkflowPaths) -> dict[str, Any]:
+    values: list[tuple[str, dict[str, Any]]] = []
+    for key in ("project", "backlog"):
+        path = paths.tracked(key)
+        try:
+            payload = read_embedded_json(
+                path.read_text(encoding="utf-8"),
+                REQUIREMENTS_BASELINE_MARKER,
+            )
+        except OSError as exc:
+            raise WorkflowDataError(f"Unable to read {key} requirements baseline: {exc}") from exc
+        values.append((key, _baseline_fields(payload, label=key)))
+    project, backlog = values[0][1], values[1][1]
+    if project != backlog:
+        raise WorkflowDataError("PROJECT and Backlog requirements baselines do not match.")
+    return dict(backlog)
+
+
+def current_requirements_baseline(
+    paths: WorkflowPaths,
+) -> tuple[dict[str, Any], dict[str, Any] | None, Path | None]:
+    """Return the managed baseline and the currently approved Brief baseline.
+
+    A populated PROJECT/Backlog baseline names exactly one live Brief.  Keeping
+    this comparison here lets every caller fail closed before it performs work
+    against a silently edited or superseded Requirements contract.
+    """
+
+    baseline = requirements_baseline(paths)
+    if all(value is None for value in baseline.values()):
+        return baseline, None, None
+    brief_id = baseline.get("brief_id")
+    if not isinstance(brief_id, str) or not brief_id:
+        raise WorkflowDataError("Configured Requirements baseline has no Brief ID.")
+    brief_path = paths.tracked("requirements") / f"{brief_id}.md"
+    if not brief_path.is_file():
+        raise WorkflowDataError(
+            "Configured Requirements Brief is missing: " + paths.relative(brief_path)
+        )
+    brief = read_requirements_brief(
+        brief_path,
+        schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+    )
+    return baseline, requirements_baseline_from_brief(brief), brief_path
+
+
+def requirements_baseline_from_brief(brief: RequirementsBrief) -> dict[str, Any]:
+    metadata = brief.metadata
+    approval = metadata.get("approval")
+    if metadata.get("status") != "approved" or not isinstance(approval, dict):
+        raise WorkflowDataError("Requirements impact requires an approved Requirements Brief.")
+    baseline = _baseline_fields(
+        {
+            "brief_id": metadata.get("brief_id"),
+            "revision": metadata.get("revision"),
+            "approval_fingerprint": approval.get("approved_fingerprint"),
+        },
+        label="Requirements Brief",
+    )
+    if baseline["approval_fingerprint"] != brief.fingerprint:
+        raise WorkflowDataError("Requirements impact requires a current approval fingerprint.")
+    return baseline
+
+
+def _historical_requirements_brief(
+    paths: WorkflowPaths,
+    current_path: Path,
+    baseline: dict[str, Any],
+) -> RequirementsBrief | None:
+    previous_brief_id = baseline.get("brief_id")
+    if not isinstance(previous_brief_id, str) or not previous_brief_id:
+        return None
+    schema_path = paths.tracked("schemas") / "requirements-v1.schema.json"
+    historical_path = paths.tracked("requirements") / f"{previous_brief_id}.md"
+    candidates = [current_path]
+    if historical_path.resolve() != current_path.resolve():
+        candidates.append(historical_path)
+    for candidate_path in candidates:
+        relative = paths.relative(candidate_path)
+        history = git(paths, "log", "--format=%H", "--all", "--", relative, check=False)
+        if history.returncode != 0:
+            raise WorkflowDataError((history.stderr or history.stdout).strip())
+        for commit in (line.strip() for line in history.stdout.splitlines()):
+            if not HEX_OID.fullmatch(commit):
+                continue
+            source = git(paths, "show", f"{commit}:{relative}", check=False)
+            if source.returncode != 0:
+                continue
+            try:
+                candidate = parse_requirements_brief(
+                    source.stdout,
+                    candidate_path,
+                    schema_path=schema_path,
+                )
+                candidate_baseline = requirements_baseline_from_brief(candidate)
+            except WorkflowDataError:
+                continue
+            if candidate_baseline == baseline:
+                return candidate
+    return None
+
+
+def _requirements_entities(brief: RequirementsBrief) -> dict[str, dict[str, Any]]:
+    requirements = brief.metadata.get("requirements")
+    if not isinstance(requirements, dict):
+        raise WorkflowDataError("Requirements impact requires a requirements object.")
+    entities: dict[str, dict[str, Any]] = {
+        "$scope": {"group": "scope", "value": requirements.get("scope")},
+        "$constraints": {"group": "constraints", "value": requirements.get("constraints")},
+    }
+    for group in (
+        "users",
+        "outcomes",
+        "flows",
+        "capabilities",
+        "scenarios",
+        "non_goals",
+        "open_questions",
+    ):
+        values = requirements.get(group)
+        if not isinstance(values, list):
+            raise WorkflowDataError(f"Requirements impact requires requirements.{group} to be an array.")
+        for item in values:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
+                raise WorkflowDataError(f"Requirements impact requires stable IDs in requirements.{group}.")
+            item_id = item["id"].strip()
+            if item_id in entities:
+                raise WorkflowDataError(f"Requirements impact found duplicate stable ID: {item_id}.")
+            entities[item_id] = {"group": group, "value": item}
+    return entities
+
+
+def _requirements_changes(previous: RequirementsBrief, current: RequirementsBrief) -> list[dict[str, str]]:
+    before = _requirements_entities(previous)
+    after = _requirements_entities(current)
+    changes: list[dict[str, str]] = []
+    for item_id in sorted(set(before) | set(after)):
+        old = before.get(item_id)
+        new = after.get(item_id)
+        if old is None:
+            changes.append({"id": item_id, "kind": "added", "group": str(new["group"])})
+        elif new is None:
+            changes.append({"id": item_id, "kind": "removed", "group": str(old["group"])})
+        elif canonical_json_bytes(old["value"]) != canonical_json_bytes(new["value"]):
+            changes.append({"id": item_id, "kind": "modified", "group": str(new["group"])})
+    if previous.markdown != current.markdown:
+        changes.append({"id": "$markdown", "kind": "modified", "group": "markdown"})
+    for key in ("brief_id", "target_release"):
+        if previous.metadata.get(key) != current.metadata.get(key):
+            changes.append({"id": f"${key}", "kind": "modified", "group": "metadata"})
+    if not changes and previous.metadata.get("revision") != current.metadata.get("revision"):
+        changes.append({"id": "$revision", "kind": "modified", "group": "metadata"})
+    return sorted(changes, key=lambda item: (item["id"], item["kind"], item["group"]))
+
+
+def _impact_records(paths: WorkflowPaths, brief_id: str) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+
+    def add_record(
+        record: dict[str, Any],
+        record_path: str,
+        *,
+        runtime_lane_id: str | None = None,
+    ) -> None:
+        if not isinstance(record, dict) or not isinstance(record.get("task_id"), str):
+            raise WorkflowDataError(f"Requirements impact found invalid task record: {record_path}")
+        source = record.get("source")
+        baseline = source.get("requirements_baseline") if isinstance(source, dict) else None
+        if not (
+            isinstance(source, dict)
+            and source.get("type") == "mvp_backlog"
+            and isinstance(baseline, dict)
+            and baseline.get("brief_id") == brief_id
+        ):
+            return
+        entry = {"path": record_path, "record": record}
+        if runtime_lane_id is not None:
+            entry["runtime_lane_id"] = runtime_lane_id
+        existing = records.get(record["task_id"])
+        if existing is not None and runtime_lane_id is None:
+            return
+        if existing is not None and runtime_lane_id is not None:
+            # The lane worktree holds the live record; the coordinator branch
+            # may still contain its pre-claim copy.
+            records[record["task_id"]] = entry
+            return
+        records[record["task_id"]] = entry
+
+    runs = paths.tracked("runs")
+    if runs.exists():
+        for path in sorted(runs.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDataError(f"Requirements impact refuses unreadable task record {path.name}: {exc}") from exc
+            add_record(record, paths.relative(path))
+
+    registry_root = paths.shared_runtime / "registry" / "lanes"
+    if not registry_root.exists():
+        return records
+    for registry_path in sorted(registry_root.glob("*.json")):
+        try:
+            lane = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise WorkflowDataError(f"Requirements impact refuses unreadable lane registry {registry_path.name}: {exc}") from exc
+        if not isinstance(lane, dict):
+            raise WorkflowDataError(f"Requirements impact found invalid lane registry: {registry_path.name}")
+        task_id = lane.get("task_id")
+        lane_id = lane.get("lane_id")
+        worktree_value = lane.get("worktree")
+        record_value = lane.get("record")
+        if not all(isinstance(value, str) and value for value in (task_id, lane_id, worktree_value, record_value)):
+            raise WorkflowDataError(f"Requirements impact lane registry is incomplete: {registry_path.name}")
+        worktree = Path(worktree_value)
+        if not worktree.is_dir():
+            raise WorkflowDataError(
+                "Requirements impact cannot inspect live lane worktree for "
+                f"{task_id}; rebuild or recover its registry before changing requirements."
+            )
+        try:
+            lane_paths = WorkflowPaths.discover(worktree)
+            _, record = load_record(lane_paths, record_value)
+        except (WorkflowDataError, WorkflowPathError, OSError) as exc:
+            raise WorkflowDataError(
+                f"Requirements impact cannot inspect live lane {lane_id}: {exc}"
+            ) from exc
+        if record.get("task_id") != task_id:
+            raise WorkflowDataError(f"Requirements impact lane {lane_id} task ID does not match its record.")
+        add_record(record, record_value.replace("\\", "/"), runtime_lane_id=lane_id)
+    return records
+
+
+def _record_is_active(record: dict[str, Any]) -> bool:
+    verification = record.get("verification") if isinstance(record.get("verification"), dict) else {}
+    integration = record.get("integration") if isinstance(record.get("integration"), dict) else {}
+    return (
+        record.get("status") in {"in_progress", "completed"}
+        or verification.get("status") == "passed"
+        or integration.get("status") in {"pending", "queued", "merged_pending_closeout", "integrated"}
+    )
+
+
+def requirements_impact(paths: WorkflowPaths, brief_path: Path) -> dict[str, Any]:
+    """Derive a conservative, stable-ID impact report for an approved brief revision."""
+
+    current = read_requirements_brief(
+        brief_path,
+        schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+    )
+    current_baseline = requirements_baseline_from_brief(current)
+    previous_baseline = requirements_baseline(paths)
+    common = {
+        "schema_version": 1,
+        "previous_baseline": previous_baseline,
+        "current_baseline": current_baseline,
+        "brief": paths.relative(brief_path),
+    }
+    if all(value is None for value in previous_baseline.values()):
+        return {
+            **common,
+            "status": "initial_baseline",
+            "reason": "PROJECT and Backlog do not yet hold an approved baseline.",
+            "changes": [],
+            "backlog_tasks": [],
+            "active_tasks": [],
+            "blocked_task_ids": [],
+            "analysis_id": sha256_json({**common, "status": "initial_baseline"}),
+            "analyzed_at": utc_now(),
+        }
+    if previous_baseline == current_baseline:
+        return {
+            **common,
+            "status": "no_change",
+            "changes": [],
+            "backlog_tasks": [],
+            "active_tasks": [],
+            "blocked_task_ids": [],
+            "analysis_id": sha256_json({**common, "status": "no_change"}),
+            "analyzed_at": utc_now(),
+        }
+    previous = _historical_requirements_brief(paths, brief_path, previous_baseline)
+    if previous is None:
+        return {
+            **common,
+            "status": "blocked",
+            "reason": "The prior approved Requirements Brief is unavailable in Git history; no impact can be safely inferred.",
+            "changes": [],
+            "backlog_tasks": [],
+            "active_tasks": [],
+            "blocked_task_ids": [],
+            "analysis_id": sha256_json({**common, "status": "blocked"}),
+            "analyzed_at": utc_now(),
+        }
+
+    changes = _requirements_changes(previous, current)
+    changed_ids = {item["id"] for item in changes}
+    global_change_ids = {"$scope", "$constraints", "$markdown", "$brief_id", "$target_release"}
+    global_change = bool(changed_ids & global_change_ids) or changed_ids == {"$revision"}
+    records = _impact_records(paths, str(previous_baseline["brief_id"]))
+    backlog_text = paths.tracked("backlog").read_text(encoding="utf-8")
+    backlog_tasks: list[dict[str, Any]] = []
+    active_tasks: list[dict[str, Any]] = []
+    blocked_task_ids: list[str] = []
+    for row in backlog_rows(backlog_text):
+        task_id = row["id"]
+        references = sorted(set(REQUIREMENT_ID.findall(" ".join(row["cells"][2:5]))))
+        matches = sorted(set(references) & {item for item in changed_ids if not item.startswith("$")})
+        impacted = global_change or bool(matches) or not references
+        reason = "global_change" if global_change else "changed_requirement_ids" if matches else "unmapped_requirements" if not references else "unchanged"
+        record_entry = records.get(task_id)
+        active = record_entry is not None and _record_is_active(record_entry["record"])
+        if row["status"] == "done":
+            action = "preserve_history"
+        elif active and impacted:
+            action = "human_decision_required"
+        elif impacted:
+            action = "block"
+            blocked_task_ids.append(task_id)
+        else:
+            action = "retain"
+        entry = {
+            "task_id": task_id,
+            "durable_status": row["status"],
+            "references": references,
+            "matched_requirement_ids": matches,
+            "impact_reason": reason,
+            "action": action,
+        }
+        if record_entry is not None:
+            entry["record"] = record_entry["path"]
+            if isinstance(record_entry.get("runtime_lane_id"), str):
+                entry["runtime_lane_id"] = record_entry["runtime_lane_id"]
+        backlog_tasks.append(entry)
+        if action == "human_decision_required":
+            active_tasks.append(entry)
+    for task_id, record_entry in sorted(records.items()):
+        if any(item["task_id"] == task_id for item in backlog_tasks):
+            continue
+        if _record_is_active(record_entry["record"]):
+            entry = {
+                "task_id": task_id,
+                "record": record_entry["path"],
+                "references": [],
+                "matched_requirement_ids": [],
+                "impact_reason": "missing_backlog_row",
+                "action": "human_decision_required",
+            }
+            if isinstance(record_entry.get("runtime_lane_id"), str):
+                entry["runtime_lane_id"] = record_entry["runtime_lane_id"]
+            active_tasks.append(entry)
+    identity = {
+        **common,
+        "status": "ready",
+        "changes": changes,
+        "backlog_tasks": backlog_tasks,
+        "active_tasks": active_tasks,
+        "blocked_task_ids": sorted(blocked_task_ids),
+    }
+    return {
+        **identity,
+        "analysis_id": sha256_json(identity),
+        "analyzed_at": utc_now(),
+    }
 
 
 def snapshot_id(record: dict[str, Any], delivery_hash: str) -> str:
@@ -903,6 +1322,35 @@ def update_backlog_status(text: str, task_id: str, status: str, *, integration: 
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def block_backlog_for_requirements(
+    text: str,
+    task_ids: Iterable[str],
+    analysis_id: str,
+) -> str:
+    requested = set(task_ids)
+    if not requested:
+        return normalize_markdown(text)
+    if not re.fullmatch(r"[0-9a-f]{64}", analysis_id):
+        raise WorkflowDataError("Requirements impact analysis ID is invalid.")
+    rows = {row["id"]: row for row in backlog_rows(text)}
+    missing = sorted(requested - set(rows))
+    if missing:
+        raise WorkflowDataError("Requirements impact references missing Backlog task(s): " + ", ".join(missing))
+    lines = text.splitlines()
+    marker = f"manual:requirements-impact-{analysis_id[:12]}"
+    for task_id in sorted(requested):
+        row = rows[task_id]
+        if row["status"] == "done":
+            continue
+        cells = row["cells"]
+        cells[6] = "blocked"
+        cells[7] = marker
+        if len(cells) >= 11:
+            cells[10] = f"requirements-impact:{analysis_id}"
+        lines[row["line"]] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def unlock_ready_dependencies(text: str) -> tuple[str, list[str]]:
     rows = backlog_rows(text)
     by_id = {row["id"]: row for row in rows}
@@ -942,3 +1390,189 @@ def closeout_state_fingerprint(record: dict[str, Any], backlog_text: str) -> str
         "backlog": normalize_markdown(backlog_text),
     }
     return sha256_json(state)
+
+
+def requirements_impact_path(paths: WorkflowPaths, brief_id: str, revision: int) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", brief_id) or not isinstance(revision, int) or revision < 1:
+        raise WorkflowDataError("Requirements impact report identity is invalid.")
+    return paths.tracked("requirements_impacts") / f"{brief_id}-r{revision}.json"
+
+
+def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
+    baseline = requirements_baseline(paths)
+    if all(value is None for value in baseline.values()):
+        requirements_contract: dict[str, Any] = {
+            "status": "not_configured",
+            "managed_baseline": baseline,
+            "observed_baseline": None,
+        }
+    else:
+        try:
+            managed, observed, brief_path = current_requirements_baseline(paths)
+            requirements_contract = {
+                "status": "current" if observed == managed else "drift",
+                "managed_baseline": managed,
+                "observed_baseline": observed,
+                "brief": paths.relative(brief_path) if brief_path is not None else None,
+            }
+        except WorkflowDataError as exc:
+            requirements_contract = {
+                "status": "invalid",
+                "managed_baseline": baseline,
+                "observed_baseline": None,
+                "reason": str(exc),
+            }
+    backlog_text = paths.tracked("backlog").read_text(encoding="utf-8")
+    counts = {status: 0 for status in ("draft", "blocked", "ready", "done", "removed")}
+    for row in backlog_rows(backlog_text):
+        if row["status"] in counts:
+            counts[row["status"]] += 1
+    records_by_task: dict[str, dict[str, Any]] = {}
+
+    def add_status_record(
+        record: dict[str, Any],
+        record_path: str,
+        *,
+        runtime_lane_id: str | None = None,
+    ) -> None:
+        if not isinstance(record, dict) or not isinstance(record.get("task_id"), str):
+            raise WorkflowDataError(f"Unable to build status from invalid task record: {record_path}")
+        verification = record.get("verification") if isinstance(record.get("verification"), dict) else {}
+        integration = record.get("integration") if isinstance(record.get("integration"), dict) else {}
+        impact = record.get("requirements_impact") if isinstance(record.get("requirements_impact"), dict) else None
+        entry = {
+            "task_id": record["task_id"],
+            "record": record_path,
+            "status": record.get("status"),
+            "phase": record.get("phase"),
+            "verification": verification.get("status"),
+            "integration": integration.get("status"),
+            "requirements_impact": impact.get("decision") if impact else None,
+        }
+        if runtime_lane_id is not None:
+            entry["runtime_lane_id"] = runtime_lane_id
+        # A registered lane is the live copy of its task record; the current
+        # coordinator branch can legitimately hold its pre-claim version.
+        if runtime_lane_id is not None or record["task_id"] not in records_by_task:
+            records_by_task[record["task_id"]] = entry
+
+    runs = paths.tracked("runs")
+    if runs.exists():
+        for path in sorted(runs.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDataError(f"Unable to build status from task record {path.name}: {exc}") from exc
+            add_status_record(record, paths.relative(path))
+
+    registry_root = paths.shared_runtime / "registry" / "lanes"
+    if registry_root.exists():
+        for registry_path in sorted(registry_root.glob("*.json")):
+            try:
+                lane = json.loads(registry_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDataError(f"Unable to build status from lane registry {registry_path.name}: {exc}") from exc
+            if not isinstance(lane, dict):
+                raise WorkflowDataError(f"Invalid lane registry for status: {registry_path.name}")
+            task_id = lane.get("task_id")
+            lane_id = lane.get("lane_id")
+            worktree_value = lane.get("worktree")
+            record_value = lane.get("record")
+            if not all(isinstance(value, str) and value for value in (task_id, lane_id, worktree_value, record_value)):
+                raise WorkflowDataError(f"Lane registry is incomplete for status: {registry_path.name}")
+            worktree = Path(worktree_value)
+            if not worktree.is_dir():
+                raise WorkflowDataError(
+                    f"Status cannot inspect registered lane {lane_id}; rebuild or recover its registry first."
+                )
+            try:
+                lane_paths = WorkflowPaths.discover(worktree)
+                _, record = load_record(lane_paths, record_value)
+            except (WorkflowDataError, WorkflowPathError, OSError) as exc:
+                raise WorkflowDataError(f"Status cannot inspect registered lane {lane_id}: {exc}") from exc
+            if record.get("task_id") != task_id:
+                raise WorkflowDataError(f"Lane {lane_id} task ID does not match its task record.")
+            add_status_record(record, record_value.replace("\\", "/"), runtime_lane_id=lane_id)
+    records = [records_by_task[task_id] for task_id in sorted(records_by_task)]
+    impacts: list[dict[str, Any]] = []
+    impact_root = paths.tracked("requirements_impacts")
+    if impact_root.exists():
+        for path in sorted(impact_root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise WorkflowDataError(f"Unable to build status from impact report {path.name}: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise WorkflowDataError(f"Requirements impact report must be an object: {path.name}")
+            impacts.append(
+                {
+                    "analysis_id": payload.get("analysis_id"),
+                    "brief_id": (payload.get("current_baseline") or {}).get("brief_id"),
+                    "revision": (payload.get("current_baseline") or {}).get("revision"),
+                    "status": payload.get("status"),
+                    "blocked_task_ids": payload.get("blocked_task_ids", []),
+                    "active_task_ids": [item.get("task_id") for item in payload.get("active_tasks", []) if isinstance(item, dict)],
+                }
+            )
+    state = {
+        "schema_version": 1,
+        "requirements_baseline": baseline,
+        "requirements_contract": requirements_contract,
+        "backlog_counts": counts,
+        "task_records": records,
+        "requirements_impacts": impacts,
+    }
+    return {
+        **state,
+        "status_fingerprint": sha256_json(state),
+        "generated_at": utc_now(),
+    }
+
+
+def render_workflow_status(snapshot: dict[str, Any]) -> str:
+    baseline = snapshot["requirements_baseline"]
+    contract = snapshot["requirements_contract"]
+    counts = snapshot["backlog_counts"]
+    impacts = snapshot["requirements_impacts"]
+    lines = [
+        "# Workflow 状态快照",
+        "",
+        "> 此文件由工作流脚本生成；机器可读状态以 JSON 区块为准，不手工编辑。",
+        "",
+        f"> 更新时间：{snapshot['generated_at']}｜状态指纹：`{snapshot['status_fingerprint']}`",
+        "",
+        "## 当前摘要",
+        "",
+        f"- Requirements：`{baseline.get('brief_id')}` revision `{baseline.get('revision')}`。",
+        f"- Requirements contract：{contract.get('status')}。",
+        "- Backlog：" + "，".join(f"{key}={counts[key]}" for key in ("draft", "blocked", "ready", "done", "removed")) + "。",
+        f"- Task records：{len(snapshot['task_records'])}；Requirements impact reports：{len(impacts)}。",
+        "",
+        f"<!-- {STATUS_MARKER}_START -->",
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2),
+        f"<!-- {STATUS_MARKER}_END -->",
+        "",
+        "## 使用规则",
+        "",
+        "- 所有 task、Backlog 与 Requirements 的真实状态来自受管状态文件；本快照只汇总它们。",
+        "- Requirements impact 报告出现 active task 时，必须先取得人类决定，再继续该 lane。",
+        "- 如果外部 Git 操作或人工编辑改变了受管状态，运行 `workflow_state.py sync-status --apply` 重新生成。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def sync_workflow_status(paths: WorkflowPaths) -> dict[str, Any]:
+    snapshot = workflow_status_snapshot(paths)
+    atomic_write_text(paths.tracked("status"), render_workflow_status(snapshot))
+    return snapshot
+
+
+def workflow_status_is_current(paths: WorkflowPaths) -> tuple[dict[str, Any], bool]:
+    snapshot = workflow_status_snapshot(paths)
+    status_path = paths.tracked("status")
+    try:
+        stored = read_embedded_json(status_path.read_text(encoding="utf-8"), STATUS_MARKER)
+    except (OSError, WorkflowDataError):
+        return snapshot, False
+    return snapshot, stored.get("status_fingerprint") == snapshot["status_fingerprint"]

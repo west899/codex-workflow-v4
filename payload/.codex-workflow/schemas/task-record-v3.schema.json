@@ -51,6 +51,19 @@
         }
       }
     },
+    "requirements_impact": {
+      "type": ["object", "null"],
+      "required": ["analysis_id", "decision", "approved_by", "approved_at", "source", "rationale", "recorded_at"],
+      "properties": {
+        "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "decision": {"const": "continue"},
+        "approved_by": {"type": "string", "minLength": 1},
+        "approved_at": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    },
     "request": {"type": "string", "minLength": 1},
     "scope": {
       "type": "object",

@@ -524,7 +524,10 @@ def _assign_record(paths: WorkflowPaths, record_relative: str, payload: dict[str
         record["status"] = "in_progress"
         record["phase"] = "developer"
 
-    mutate_record(paths, record_relative, None, True, mutation)
+    # The lane pointer is created only after this mutation.  Suppress the
+    # shared STATUS write here so an isolated branch never carries a status
+    # snapshot that would conflict with coordinator closeout on rebase.
+    mutate_record(paths, record_relative, None, True, mutation, sync_status=False)
 
 
 def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:

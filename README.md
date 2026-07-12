@@ -58,6 +58,8 @@ AGENTS.md                              # 薄发现入口，marker 合并
   protocol/AGENTS.md                   # package 通用协议
   governance/                          # project 事实、计划、决策、Requirements
   state/MVP_BACKLOG.md                 # durable 状态
+  state/STATUS.md                      # 由脚本生成的当前状态快照
+  state/requirements-impacts/          # 已应用的 Requirements 变更影响报告
   state/runs/                          # task record v3
   state/plans/                         # large/high-risk ExecPlan
   schemas/                             # task/requirements/lane/remote claim
@@ -78,7 +80,7 @@ linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git
 
 1. 目标发现：只写有用户来源的 PROJECT 事实。
 2. 第 2A 步：创建 Requirements Brief，复述、纠偏、场景/反例、关闭 blocking questions，批准 exact fingerprint。
-3. Requirements gate 通过后批准 Backlog，并建立一个授权 task record。
+3. Requirements gate 通过后批准 Backlog，生成状态快照，并建立一个授权 task record。
 4. single 或 `workflow_lane.py claim` 创建独立 lane；Developer 只写 allowed paths。
 5. Developer 形成干净 delivery commit，用 `record-developer` 提交 snapshot-bound 证据。
 6. 独立 Reviewer 只读同一 snapshot；Coordinator 用 `record-review` 原样入库。
@@ -95,6 +97,8 @@ linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git
 py -3 .codex-workflow/bin/workflow_check.py manual
 py -3 .codex-workflow/bin/workflow_check.py requirements-snapshot <brief>
 py -3 .codex-workflow/bin/workflow_check.py requirements-gate <brief>
+py -3 .codex-workflow/bin/workflow_check.py requirements-impact <revised-brief> --json
+py -3 .codex-workflow/bin/workflow_check.py status [--json]
 py -3 .codex-workflow/bin/workflow_check.py preflight <record>
 py -3 .codex-workflow/bin/workflow_check.py snapshot <record>
 py -3 .codex-workflow/bin/workflow_check.py gate <record>
@@ -131,9 +135,12 @@ py -3 .codex-workflow/bin/workflow_state.py prepare-local-closeout <record> --ta
 py -3 .codex-workflow/bin/workflow_state.py prepare-remote-closeout <record> --evidence-json <file> [--apply]
 py -3 .codex-workflow/bin/workflow_state.py confirm-closeout <record> --target-ref <ref> --closeout-commit <sha> [--apply]
 py -3 .codex-workflow/bin/workflow_state.py reconcile <record> --target-ref <ref> [--apply]
+py -3 .codex-workflow/bin/workflow_state.py apply-requirements-impact <revised-brief> --expected-fingerprint <sha256> [--apply]
+py -3 .codex-workflow/bin/workflow_state.py resolve-requirements-impact <record> --analysis-id <sha256> --decision-json <file> [--apply]
+py -3 .codex-workflow/bin/workflow_state.py sync-status [--apply]
 ```
 
-除了 token/generation 匹配的 runtime heartbeat，状态修改默认 dry-run。Stop Hook 只检查当前 lane 并给出下一条命令，不执行集成。
+除了 token/generation 匹配的 runtime heartbeat，状态修改默认 dry-run。`STATUS.md` 汇总受管任务、Backlog、Requirements 和影响报告；single/Coordinator state mutation、closeout 与已应用的 Requirements 变更会自动刷新它。隔离 lane 不写该共享文件，以免 rebase 冲突；Coordinator 运行 `workflow_check.py status` 读取 live lane，若提示过期再从 Coordinator/integration worktree 执行 `sync-status --apply`。Stop Hook 只检查当前 lane并给出下一条命令，不执行集成。
 
 ## 包验证
 
@@ -141,7 +148,7 @@ py -3 .codex-workflow/bin/workflow_state.py reconcile <record> --target-ref <ref
 python -B verify_package.py
 ```
 
-回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、Coordinator/Integrator 持久租约的 stale 零写入与 CAS takeover、canonical delivery 的文本/二进制/mode/Git-index symlink/rename-as-delete+add/merge conflict fixture、真实双 linked worktree 隔离、lane-local Stop、两条 local lane 的排队/串行 closeout/rebase 后重新验证、local bootstrap 两阶段 closeout及到期零写入、remote_preassigned 的双 clone PR/closeout 恢复，以及 bare remote 原子竞争/heartbeat/atomic 不支持 fail-closed。
+回归测试包含 Windows-safe `sys.executable`、新装/幂等/ownership 冲突、V2 active 零写入、迁移/失败回滚、Requirements 跨换行 fingerprint、revision/替代 Brief 的历史影响分析、活动本地 lane 的人类继续决定和状态快照过期检测、错误 branch/lane、两进程 generation CAS、崩溃后 OS lock 释放、Coordinator/Integrator 持久租约的 stale 零写入与 CAS takeover、canonical delivery 的文本/二进制/mode/Git-index symlink/rename-as-delete+add/merge conflict fixture、真实双 linked worktree 隔离、lane-local Stop、两条 local lane 的排队/串行 closeout/rebase 后重新验证、local bootstrap 两阶段 closeout及到期零写入、remote_preassigned 的双 clone PR/closeout 恢复，以及 bare remote 原子竞争/heartbeat/atomic 不支持 fail-closed。
 
 ## Codex 发现入口依据
 

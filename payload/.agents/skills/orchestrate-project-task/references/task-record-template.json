@@ -10,6 +10,7 @@
     "priority_reason": "Next approved ready item",
     "requirements_baseline": {"brief_id": "REQ-001", "revision": 1, "approval_fingerprint": null}
   },
+  "requirements_impact": null,
   "request": "<raw user-visible task>",
   "scope": {
     "in": ["<observable behavior>"],
@@ -44,4 +45,3 @@
   "rule_proposals": [],
   "remaining_risks": []
 }
-

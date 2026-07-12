@@ -19,6 +19,8 @@ py -3 .codex-workflow/bin/workflow_check.py manual
 - AI 的建议、示例和推断必须标为假设，不能写成用户已确认需求。
 - 目标版本进入 Backlog 前必须完成第 2A 步需求反馈校准：复述、纠偏、正常/边界/失败/非目标样例、阻断问题关闭，以及精确 fingerprint 批准。
 - Requirements 的 `brief_id + revision + target_release + fingerprint` 必须与 PROJECT、Backlog 和任务来源一致；实质修改后旧批准自动失效。
+- 已批准 Brief revision/fingerprint 变化或被新 Brief 替代时，先运行 `requirements-impact` 并审查 Git 历史差异、Backlog 动作和 live local lane；再由 Coordinator 用精确 fingerprint 执行 `apply-requirements-impact`。未开始受影响项保持 blocked，已完成项保留历史，活动 task 一律停止在 `human_decision_required`，不得自动续跑。
+- 只有人类对具体 `analysis_id` 写出 `decision: continue`、批准来源和理由后，活动 lane 才能在新基线 rebase 后用 `resolve-requirements-impact` 更新合同；该操作会清空旧证据，必须重新 Developer/Review/gate。停止或重写 task 不执行 resolve，按恢复/abandon 流程处理。
 - incident、maintenance 和明确 user directive 可以不建立完整版本 Brief，但仍必须有当前任务的范围、非目标、验收、风险和实现授权。
 - `requirements-v1`、`task-record-v3`（含 `lane-v1` 引用）和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/claim 的读取、V3 状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
 
@@ -32,6 +34,8 @@ py -3 .codex-workflow/bin/workflow_check.py manual
 | integration | `not_ready → pending → queued → merged_pending_closeout → integrated`，或 `invalidated` |
 
 `completed/verified` 只说明同一 sealed snapshot 通过本地证据和 gate；`done` 必须有目标分支中的 closeout 状态；`released` 仍由独立发布门判断。本地 done 不等于远端已同步。
+
+`state/STATUS.md` 只汇总上述受管真相，不可手改。single/Coordinator state mutation、closeout 和 Requirements impact apply 自动刷新；隔离 lane 不写共享快照，Coordinator 的 `status` 会读取 live lane。外部 Git/治理修改或 lane mutation 后必须从 Coordinator/integration worktree 运行 `workflow_check.py status`，过期时执行 `workflow_state.py sync-status --apply`。status 同时检查生成 fingerprint 和当前 Brief 是否漂移。
 
 ## 4. 角色与写入边界
 

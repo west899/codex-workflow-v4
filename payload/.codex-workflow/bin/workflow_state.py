@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import uuid
@@ -17,6 +18,7 @@ from typing import Any, Callable
 from workflow_common import (
     WorkflowDataError,
     canonical_delivery,
+    block_backlog_for_requirements,
     closeout_state_fingerprint,
     fault_injection,
     git,
@@ -24,12 +26,19 @@ from workflow_common import (
     load_record,
     local_bootstrap_policy_gate,
     read_embedded_json,
+    read_requirements_brief,
+    requirements_baseline,
     rev_parse,
+    requirements_impact,
+    requirements_impact_path,
+    replace_embedded_json,
     snapshot_id,
+    sync_workflow_status,
     unlock_ready_dependencies,
     update_backlog_status,
     utc_now,
     validate_workflow_schema,
+    workflow_status_snapshot,
 )
 from workflow_lock import (
     AdvisoryLock,
@@ -49,6 +58,19 @@ Mutation = Callable[[dict[str, Any]], None]
 
 class StateError(ValueError):
     pass
+
+
+def _is_lane_worktree(paths: WorkflowPaths) -> bool:
+    """A lane branch must not rewrite shared generated status during delivery."""
+
+    return (paths.lane_runtime / "lane.json").is_file()
+
+
+def _require_coordinator_worktree(paths: WorkflowPaths, action: str) -> None:
+    if _is_lane_worktree(paths):
+        raise StateError(
+            f"{action} must run from the coordinator/integration worktree, not a task lane."
+        )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -104,6 +126,18 @@ def parser() -> argparse.ArgumentParser:
 
     invalidate = record_command("invalidate-integration")
     invalidate.add_argument("--reason", required=True)
+
+    impact = sub.add_parser("apply-requirements-impact")
+    impact.add_argument("brief")
+    impact.add_argument("--expected-fingerprint", required=True)
+    impact.add_argument("--apply", action="store_true")
+
+    impact_decision = record_command("resolve-requirements-impact")
+    impact_decision.add_argument("--analysis-id", required=True)
+    impact_decision.add_argument("--decision-json", required=True)
+
+    status = sub.add_parser("sync-status")
+    status.add_argument("--apply", action="store_true")
     return result
 
 
@@ -147,6 +181,8 @@ def mutate_record(
     expected_generation: int | None,
     apply: bool,
     mutation: Mutation,
+    *,
+    sync_status: bool = True,
 ) -> tuple[Path, dict[str, Any]]:
     paths.ensure_runtime()
     path, initial = load_record(paths, relative)
@@ -178,6 +214,8 @@ def mutate_record(
             reread = json.loads(path.read_text(encoding="utf-8"))
             if reread != updated:
                 raise StateError("Task record reread did not match the requested mutation.")
+            if sync_status and not _is_lane_worktree(paths):
+                sync_workflow_status(paths)
             print(f"STATE_APPLIED generation={updated['generation']}")
         else:
             _print_projection(path, current, updated)
@@ -554,7 +592,15 @@ def _prepare_closeout_commit(
                 return
             atomic_write_json(record_path, updated)
             atomic_write_text(backlog_path, backlog)
-            git(paths, "add", "--", paths.relative(record_path), paths.relative(backlog_path))
+            sync_workflow_status(paths)
+            git(
+                paths,
+                "add",
+                "--",
+                paths.relative(record_path),
+                paths.relative(backlog_path),
+                paths.relative(paths.tracked("status")),
+            )
             result = git(paths, "commit", "-m", f"workflow: close {updated.get('task_id')}", check=False)
             if result.returncode != 0:
                 raise StateError(
@@ -690,6 +736,278 @@ def _show_json_at(paths: WorkflowPaths, reference: str, relative: str) -> dict[s
         label="Target task record",
     )
     return payload
+
+
+def _requirements_brief_path(paths: WorkflowPaths, value: str) -> Path:
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = paths.root / candidate
+    candidate = candidate.resolve()
+    requirements_root = paths.tracked("requirements").resolve()
+    if requirements_root not in candidate.parents or not candidate.is_file():
+        raise StateError("Requirements Brief must be an existing file under the configured requirements directory.")
+    return candidate
+
+
+def _require_requirements_gate(paths: WorkflowPaths, brief: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(paths.tracked("bin") / "workflow_check.py"),
+            "requirements-gate",
+            paths.relative(brief),
+        ],
+        cwd=paths.root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise StateError((result.stderr or result.stdout).strip())
+
+
+def sync_status(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    paths.ensure_runtime()
+    if not args.apply:
+        snapshot = workflow_status_snapshot(paths)
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "status": paths.relative(paths.tracked("status")),
+                    "status_fingerprint": snapshot["status_fingerprint"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    _require_coordinator_worktree(paths, "sync-status")
+    with _role_lock_context(paths, "coordinator", "sync-status", apply=True):
+        snapshot = sync_workflow_status(paths)
+    print(f"STATUS_SYNCED fingerprint={snapshot['status_fingerprint']}")
+
+
+def apply_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    brief_path = _requirements_brief_path(paths, args.brief)
+    if not re.fullmatch(r"[0-9a-f]{64}", args.expected_fingerprint):
+        raise StateError("--expected-fingerprint must be a full SHA-256 hex digest.")
+    _require_requirements_gate(paths, brief_path)
+
+    def prepare() -> tuple[dict[str, Any], dict[str, Any], str, str, str, Path]:
+        analysis = requirements_impact(paths, brief_path)
+        baseline = analysis.get("current_baseline")
+        if not isinstance(baseline, dict) or baseline.get("approval_fingerprint") != args.expected_fingerprint:
+            raise StateError("Requirements Brief changed after the supplied expected fingerprint.")
+        if analysis.get("status") != "ready":
+            reason = analysis.get("reason") or analysis.get("status")
+            raise StateError(f"Requirements impact cannot be applied: {reason}")
+        brief = read_requirements_brief(
+            brief_path,
+            schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+        )
+        project_path = paths.tracked("project")
+        backlog_path = paths.tracked("backlog")
+        project_text = project_path.read_text(encoding="utf-8")
+        backlog_text = backlog_path.read_text(encoding="utf-8")
+        project_baseline = {
+            key: baseline[key]
+            for key in ("brief_id", "revision", "approval_fingerprint")
+        }
+        backlog_baseline = read_embedded_json(backlog_text, BASELINE_MARKER)
+        backlog_baseline.update(project_baseline)
+        backlog_baseline["target_release"] = brief.metadata.get("target_release")
+        backlog_baseline["status"] = "approved"
+        next_project = replace_embedded_json(project_text, BASELINE_MARKER, project_baseline)
+        next_backlog = replace_embedded_json(backlog_text, BASELINE_MARKER, backlog_baseline)
+        next_backlog = block_backlog_for_requirements(
+            next_backlog,
+            analysis.get("blocked_task_ids", []),
+            str(analysis["analysis_id"]),
+        )
+        report = {**analysis, "status": "applied", "applied_at": utc_now()}
+        report_path = requirements_impact_path(
+            paths,
+            str(project_baseline["brief_id"]),
+            int(project_baseline["revision"]),
+        )
+        return analysis, report, next_project, next_backlog, str(report_path), report_path
+
+    paths.ensure_runtime()
+    if not args.apply:
+        analysis, _, _, _, report_relative, _ = prepare()
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "analysis_id": analysis["analysis_id"],
+                    "report": report_relative,
+                    "would_block": analysis["blocked_task_ids"],
+                    "active_tasks_requiring_human_decision": [
+                        item["task_id"] for item in analysis["active_tasks"]
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    _require_coordinator_worktree(paths, "apply-requirements-impact")
+    with _role_lock_context(paths, "coordinator", "apply-requirements-impact", apply=True):
+        analysis, report, next_project, next_backlog, _, report_path = prepare()
+        atomic_write_text(paths.tracked("project"), next_project)
+        atomic_write_text(paths.tracked("backlog"), next_backlog)
+        atomic_write_json(report_path, report)
+        snapshot = sync_workflow_status(paths)
+    print(
+        f"REQUIREMENTS_IMPACT_APPLIED id={analysis['analysis_id']} "
+        f"blocked={len(analysis['blocked_task_ids'])} "
+        f"active={len(analysis['active_tasks'])} "
+        f"status={snapshot['status_fingerprint']}"
+    )
+
+
+def _reset_after_requirements_continuation(record: dict[str, Any]) -> None:
+    """Invalidate evidence whose acceptance contract changed under it."""
+
+    acceptance = record.get("acceptance")
+    if not isinstance(acceptance, list) or any(not isinstance(item, dict) for item in acceptance):
+        raise StateError("Task record acceptance is invalid.")
+    for item in acceptance:
+        item["status"] = "pending"
+        item["evidence"] = []
+    record["status"] = "in_progress"
+    record["phase"] = "developer"
+    record["verification"] = {
+        "status": "pending",
+        "delivery_commit": None,
+        "delivery_hash": None,
+        "patch_hash": None,
+        "snapshot_id": None,
+        "changed_paths": [],
+    }
+    record["developer"] = {
+        "agent_id": None,
+        "snapshot_id": None,
+        "commands": [],
+        "handoff": None,
+    }
+    record["review"] = {
+        "agent_id": None,
+        "snapshot_id": None,
+        "status": "pending",
+        "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+        "requirement_checklist": [],
+        "accepted_findings": [],
+        "summary": None,
+    }
+    record["human_approvals"] = []
+    record["integration"] = {
+        "status": "not_ready",
+        "mode": None,
+        "policy_id": None,
+        "source_ref": None,
+        "target_ref": None,
+        "target_parent": None,
+        "pr_head_commit": None,
+        "result_commit": None,
+        "merge_strategy": None,
+        "queue_id": None,
+        "queued_at": None,
+        "queue_priority": None,
+        "closeout_commit": None,
+        "closeout_state_fingerprint": None,
+        "pr_url": None,
+        "ci_checks": [],
+        "evidence": [],
+    }
+    record["process_retrospective"] = {
+        "completed": False,
+        "completed_by": None,
+        "completed_at": None,
+        "questions": {
+            "repeated_problem_found": False,
+            "guidance_gap_found": False,
+            "deterministic_check_candidate_found": False,
+        },
+        "summary": None,
+    }
+    record["rule_proposals"] = []
+    record["remaining_risks"] = []
+
+
+def _requirements_impact_report(paths: WorkflowPaths, analysis_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{64}", analysis_id):
+        raise StateError("--analysis-id must be a full SHA-256 hex digest.")
+    root = paths.tracked("requirements_impacts")
+    matches: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StateError(f"Unable to read Requirements impact report {path.name}: {exc}") from exc
+        if isinstance(report, dict) and report.get("analysis_id") == analysis_id:
+            matches.append(report)
+    if len(matches) != 1:
+        raise StateError("Requirements impact report is missing or ambiguous for --analysis-id.")
+    report = matches[0]
+    if report.get("status") != "applied":
+        raise StateError("Requirements impact report has not been applied.")
+    return report
+
+
+def resolve_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    decision = read_json(args.decision_json, name="Requirements impact decision")
+    required = {"analysis_id", "decision", "approved_by", "approved_at", "source", "rationale"}
+    missing = sorted(required - set(decision))
+    if missing:
+        raise StateError("Requirements impact decision is missing: " + ", ".join(missing))
+    if decision.get("analysis_id") != args.analysis_id:
+        raise StateError("Requirements impact decision is not bound to --analysis-id.")
+    if decision.get("decision") != "continue":
+        raise StateError("Only a human decision=continue can resume an impacted task; stop/replace remains blocked.")
+    for field in ("approved_by", "approved_at", "source", "rationale"):
+        if not isinstance(decision.get(field), str) or not decision[field].strip():
+            raise StateError(f"Requirements impact decision {field} must be non-empty text.")
+    report = _requirements_impact_report(paths, args.analysis_id)
+    baseline = requirements_baseline(paths)
+    if report.get("current_baseline") != baseline:
+        raise StateError("Requirements impact report does not match the current PROJECT/Backlog baseline.")
+
+    def mutation(record: dict[str, Any]) -> None:
+        source = record.get("source")
+        if not isinstance(source, dict) or source.get("type") != "mvp_backlog":
+            raise StateError("Requirements impact continuation only supports mvp_backlog tasks.")
+        task_id = record.get("task_id")
+        active = report.get("active_tasks")
+        if not isinstance(task_id, str) or not isinstance(active, list) or not any(
+            isinstance(item, dict) and item.get("task_id") == task_id
+            for item in active
+        ):
+            raise StateError("Task is not listed as an active task in this Requirements impact report.")
+        if source.get("requirements_baseline") != report.get("previous_baseline"):
+            raise StateError("Task no longer has the Requirements baseline covered by this impact report.")
+        integration = record.get("integration")
+        if not isinstance(integration, dict) or integration.get("status") not in {"not_ready", "invalidated"}:
+            raise StateError(
+                "Impacted queued or integrating task must first be stopped/rebased with lane recovery; "
+                "it cannot resume in place."
+            )
+        source["requirements_baseline"] = dict(baseline)
+        record["source"] = source
+        record["requirements_impact"] = {
+            "analysis_id": args.analysis_id,
+            "decision": "continue",
+            "approved_by": decision["approved_by"],
+            "approved_at": decision["approved_at"],
+            "source": decision["source"],
+            "rationale": decision["rationale"],
+            "recorded_at": utc_now(),
+        }
+        _reset_after_requirements_continuation(record)
+
+    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
 
 
 def _show_text_at(paths: WorkflowPaths, reference: str, relative: str) -> str:
@@ -943,6 +1261,12 @@ def main() -> None:
             reconcile(paths, args)
         elif command == "invalidate-integration":
             invalidate(paths, args)
+        elif command == "apply-requirements-impact":
+            apply_requirements_impact(paths, args)
+        elif command == "resolve-requirements-impact":
+            resolve_requirements_impact(paths, args)
+        elif command == "sync-status":
+            sync_status(paths, args)
     except (
         StateError, PersistentRoleLockError, WorkflowDataError, WorkflowPathError,
         LockUnavailable, OSError, subprocess.CalledProcessError,
