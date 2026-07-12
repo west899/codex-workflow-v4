@@ -1,83 +1,47 @@
 {
-  "version": 2,
-  "task_id": "YYYYMMDD-short-slug",
+  "version": 3,
+  "generation": 0,
+  "phase": "coordinator",
+  "task_id": "MVP-001",
   "status": "planned",
   "source": {
-    "type": "mvp_backlog|incident|maintenance|user_directive",
-    "reference": "MVP-001 or source identifier",
-    "priority_reason": "Why this is the next authorized task"
+    "type": "mvp_backlog",
+    "reference": "MVP-001",
+    "priority_reason": "Next approved ready item",
+    "requirements_baseline": {"brief_id": "REQ-001", "revision": 1, "approval_fingerprint": null}
   },
-  "request": "Raw user-visible task",
+  "requirements_impact": null,
+  "request": "<raw user-visible task>",
   "scope": {
-    "in": [],
-    "out": []
+    "in": ["<observable behavior>"],
+    "out": ["<explicit non-goal>"],
+    "allowed_paths": ["src/**", "tests/**"],
+    "resource_keys": ["path:src", "path:tests"]
   },
-  "planning": {
-    "level": "small|medium|large",
-    "exec_plan": null,
-    "steps": []
-  },
-  "implementation_authorization": {
-    "authorized": false,
-    "authorized_by": null,
-    "authorized_at": null,
-    "source": null
-  },
-  "risk": {
-    "product_scope": false,
-    "sensitive_data": false,
-    "destructive_change": false,
-    "irreversible_architecture": false,
-    "production_release": false
-  },
+  "planning": {"level": "small", "exec_plan": null, "steps": ["<verifiable step>"]},
+  "implementation_authorization": {"authorized": false, "authorized_by": null, "authorized_at": null, "source": null},
+  "risk": {"product_scope": false, "sensitive_data": false, "destructive_change": false, "irreversible_architecture": false, "production_release": false},
   "base_commit": null,
-  "acceptance": [
-    {
-      "id": "AC-001",
-      "criterion": "Observable behavior",
-      "status": "pending",
-      "evidence": []
-    }
-  ],
-  "developer": {
-    "agent_id": null,
-    "worktree_hash": null,
-    "commands": [
-      {
-        "command": "example command",
-        "exit_code": null,
-        "expected_failure": false,
-        "result": null
-      }
-    ],
-    "handoff": null
+  "acceptance": [{"id": "AC-001", "criterion": "<observable criterion>", "status": "pending", "evidence": []}],
+  "lane": {
+    "lane_id": null,
+    "mode": "single",
+    "branch": null,
+    "base_ref": null,
+    "base_commit": null,
+    "claim_id": null,
+    "owner_generation": 0,
+    "assignment": null,
+    "allowed_paths": ["src/**", "tests/**"],
+    "resource_keys": ["path:src", "path:tests"],
+    "dependency_snapshot": {"backlog_commit": null, "dependencies": []}
   },
-  "review": {
-    "agent_id": null,
-    "reviewed_worktree_hash": null,
-    "status": "pending",
-    "findings": {
-      "p0": 0,
-      "p1": 0,
-      "p2": 0,
-      "p3": 0
-    },
-    "requirement_checklist": [],
-    "accepted_findings": [],
-    "summary": null
-  },
+  "verification": {"status": "pending", "delivery_commit": null, "delivery_hash": null, "patch_hash": null, "snapshot_id": null, "changed_paths": []},
+  "developer": {"agent_id": null, "snapshot_id": null, "commands": [], "handoff": null},
+  "review": {"agent_id": null, "snapshot_id": null, "status": "pending", "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0}, "requirement_checklist": [], "accepted_findings": [], "summary": null},
   "human_approvals": [],
-  "process_retrospective": {
-    "completed": false,
-    "completed_by": null,
-    "completed_at": null,
-    "questions": {
-      "repeated_problem_found": false,
-      "guidance_gap_found": false,
-      "deterministic_check_candidate_found": false
-    },
-    "summary": null
-  },
+  "integration": {"status": "not_ready", "mode": null, "policy_id": null, "source_ref": null, "target_ref": null, "target_parent": null, "pr_head_commit": null, "result_commit": null, "merge_strategy": null, "queue_id": null, "queued_at": null, "queue_priority": null, "closeout_commit": null, "closeout_state_fingerprint": null, "pr_url": null, "ci_checks": [], "evidence": []},
+  "process_retrospective": {"completed": false, "completed_by": null, "completed_at": null, "questions": {"repeated_problem_found": false, "guidance_gap_found": false, "deterministic_check_candidate_found": false}, "summary": null},
   "rule_proposals": [],
   "remaining_risks": []
 }

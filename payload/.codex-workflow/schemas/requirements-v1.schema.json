@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-workflow/requirements-v1.schema.json",
+  "title": "Codex Workflow V3 requirements brief metadata",
+  "type": "object",
+  "required": ["schema_version", "brief_id", "revision", "target_release", "status", "requirements", "approval"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "brief_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "target_release": {"type": "string", "minLength": 1},
+    "status": {"enum": ["draft", "calibrating", "awaiting_approval", "approved", "superseded"]},
+    "requirements": {
+      "type": "object",
+      "required": ["scope", "users", "outcomes", "flows", "capabilities", "scenarios", "non_goals", "constraints", "open_questions", "calibration_rounds"],
+      "properties": {
+        "scope": {
+          "type": "object",
+          "required": ["in", "out"],
+          "properties": {
+            "in": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "out": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+          }
+        },
+        "users": {"type": "array", "minItems": 1},
+        "outcomes": {"type": "array", "minItems": 1},
+        "flows": {"type": "array", "minItems": 1},
+        "capabilities": {"type": "array", "minItems": 1},
+        "scenarios": {"type": "array", "minItems": 1},
+        "non_goals": {"type": "array", "minItems": 1},
+        "constraints": {"type": "array"},
+        "open_questions": {"type": "array"},
+        "calibration_rounds": {"type": "array", "minItems": 1}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "required": ["approved_by", "approved_at", "source", "approved_fingerprint"],
+      "properties": {
+        "approved_by": {"type": ["string", "null"]},
+        "approved_at": {"type": ["string", "null"]},
+        "source": {"type": ["string", "null"]},
+        "approved_fingerprint": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

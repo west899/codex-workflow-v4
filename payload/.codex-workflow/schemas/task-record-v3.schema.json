@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-workflow/task-record-v3.schema.json",
+  "title": "Codex Workflow V3 task record",
+  "type": "object",
+  "required": [
+    "version",
+    "generation",
+    "phase",
+    "task_id",
+    "status",
+    "source",
+    "request",
+    "scope",
+    "planning",
+    "implementation_authorization",
+    "risk",
+    "base_commit",
+    "acceptance",
+    "lane",
+    "verification",
+    "developer",
+    "review",
+    "human_approvals",
+    "integration",
+    "process_retrospective",
+    "rule_proposals",
+    "remaining_risks"
+  ],
+  "properties": {
+    "version": {"const": 3},
+    "generation": {"type": "integer", "minimum": 0},
+    "phase": {"enum": ["coordinator", "developer", "review", "integration"]},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["planned", "authorized", "in_progress", "completed"]},
+    "source": {
+      "type": "object",
+      "required": ["type", "reference", "priority_reason"],
+      "properties": {
+        "type": {"enum": ["mvp_backlog", "incident", "maintenance", "user_directive"]},
+        "reference": {"type": "string", "minLength": 1},
+        "priority_reason": {"type": "string", "minLength": 1},
+        "requirements_baseline": {
+          "type": ["object", "null"],
+          "properties": {
+            "brief_id": {"type": "string"},
+            "revision": {"type": "integer", "minimum": 1},
+            "approval_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          },
+          "required": ["brief_id", "revision", "approval_fingerprint"]
+        }
+      }
+    },
+    "requirements_impact": {
+      "type": ["object", "null"],
+      "required": ["analysis_id", "decision", "approved_by", "approved_at", "source", "rationale", "recorded_at"],
+      "properties": {
+        "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "decision": {"const": "continue"},
+        "approved_by": {"type": "string", "minLength": 1},
+        "approved_at": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "request": {"type": "string", "minLength": 1},
+    "scope": {
+      "type": "object",
+      "required": ["in", "out", "allowed_paths", "resource_keys"],
+      "properties": {
+        "in": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "out": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "allowed_paths": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "resource_keys": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "lane": {"$ref": "lane-v1.schema.json"},
+    "verification": {
+      "type": "object",
+      "required": ["status", "delivery_commit", "delivery_hash", "patch_hash", "snapshot_id", "changed_paths"],
+      "properties": {
+        "status": {"enum": ["pending", "passed", "invalidated"]},
+        "delivery_commit": {"type": ["string", "null"]},
+        "delivery_hash": {"type": ["string", "null"]},
+        "patch_hash": {"type": ["string", "null"]},
+        "snapshot_id": {"type": ["string", "null"]},
+        "changed_paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "integration": {
+      "type": "object",
+      "required": ["status", "mode", "policy_id", "source_ref", "target_ref", "target_parent", "pr_head_commit", "result_commit", "merge_strategy", "queue_id", "queued_at", "queue_priority", "closeout_commit", "closeout_state_fingerprint", "pr_url", "ci_checks", "evidence"],
+      "properties": {
+        "status": {"enum": ["not_ready", "pending", "queued", "merged_pending_closeout", "integrated", "invalidated"]},
+        "mode": {"enum": [null, "local_bootstrap", "remote_pr_ci"]},
+        "policy_id": {"type": ["string", "null"]},
+        "source_ref": {"type": ["string", "null"]},
+        "target_ref": {"type": ["string", "null"]},
+        "target_parent": {"type": ["string", "null"]},
+        "pr_head_commit": {"type": ["string", "null"]},
+        "result_commit": {"type": ["string", "null"]},
+        "merge_strategy": {"type": ["string", "null"]},
+        "queue_id": {"type": ["string", "null"]},
+        "queued_at": {"type": ["string", "null"]},
+        "queue_priority": {"type": ["integer", "null"]},
+        "closeout_commit": {"type": ["string", "null"]},
+        "closeout_state_fingerprint": {"type": ["string", "null"]},
+        "pr_url": {"type": ["string", "null"]},
+        "ci_checks": {"type": "array"},
+        "evidence": {"type": "array"}
+      }
+    }
+  }
+}

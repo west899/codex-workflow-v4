@@ -1,0 +1,55 @@
+{
+  "schema_version": 3,
+  "layout_version": 3,
+  "protocol_version": 3,
+  "workflow_schema_version": 3,
+  "requirements_gate_mode": "required",
+  "paths": {
+    "workflow_root": ".codex-workflow",
+    "protocol": ".codex-workflow/protocol/AGENTS.md",
+    "project_rules": ".codex-workflow/governance/AGENTS.md",
+    "project": ".codex-workflow/governance/PROJECT.md",
+    "plan": ".codex-workflow/governance/PLAN.md",
+    "decisions": ".codex-workflow/governance/DECISIONS.md",
+    "requirements": ".codex-workflow/governance/requirements",
+    "backlog": ".codex-workflow/state/MVP_BACKLOG.md",
+    "status": ".codex-workflow/state/STATUS.md",
+    "requirements_impacts": ".codex-workflow/state/requirements-impacts",
+    "runs": ".codex-workflow/state/runs",
+    "plans": ".codex-workflow/state/plans",
+    "workflow_doc": ".codex-workflow/docs/WORKFLOW.md",
+    "bin": ".codex-workflow/bin",
+    "schemas": ".codex-workflow/schemas",
+    "manifest": ".codex-workflow/install/manifest.json"
+  },
+  "parallel": {
+    "mode": "single",
+    "max_local_lanes": 2,
+    "worktree_root": null
+  },
+  "integration_policy": {
+    "policy_id": "IP-001",
+    "default_mode": "remote_pr_ci",
+    "local_target_ref": "refs/heads/main",
+    "remote_target_ref": "refs/remotes/origin/main",
+    "local_bootstrap": {
+      "enabled": false,
+      "allowed_task_ids": [],
+      "expires_after_task": null,
+      "require_ff_only": true
+    }
+  },
+  "remote": {
+    "mode": "disabled",
+    "remote_name": "origin",
+    "atomic_claims": false
+  },
+  "delivery_exclusions": [
+    ".codex-workflow/governance/PLAN.md",
+    ".codex-workflow/state/MVP_BACKLOG.md",
+    ".codex-workflow/state/STATUS.md",
+    ".codex-workflow/state/requirements-impacts/**",
+    ".codex-workflow/state/runs/**",
+    ".codex-workflow/state/plans/**"
+  ]
+}

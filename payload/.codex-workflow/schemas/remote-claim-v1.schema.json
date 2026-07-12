@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-workflow/remote-claim-v1.schema.json",
+  "title": "Codex Workflow V3 remote claim",
+  "type": "object",
+  "required": ["schema_version", "task_id", "claim_id", "owner_generation", "lease_revision", "owner_id", "task_ref", "resource_keys", "resource_refs", "heartbeat_at", "expires_at", "state"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "claim_id": {"type": "string", "minLength": 1},
+    "owner_generation": {"type": "integer", "minimum": 1},
+    "lease_revision": {"type": "integer", "minimum": 1},
+    "owner_id": {"type": "string", "minLength": 1},
+    "task_ref": {"type": "string", "pattern": "^refs/heads/codex/task/"},
+    "resource_keys": {"type": "array", "items": {"type": "string"}},
+    "resource_refs": {"type": "array", "items": {"type": "string"}},
+    "heartbeat_at": {"type": "string", "minLength": 1},
+    "expires_at": {"type": "string", "minLength": 1},
+    "state": {"enum": ["active", "handoff", "stale", "released"]},
+    "transfer": {
+      "type": "object",
+      "required": ["kind", "from_owner_id", "to_owner_id", "transferred_at", "task_record_generation"],
+      "properties": {
+        "kind": {"enum": ["handoff", "stale_takeover"]},
+        "from_owner_id": {"type": "string", "minLength": 1},
+        "to_owner_id": {"type": "string", "minLength": 1},
+        "transferred_at": {"type": "string", "minLength": 1},
+        "task_record_generation": {"type": "integer", "minimum": 1},
+        "approval": {
+          "type": "object",
+          "required": ["approved_by", "approval_ref", "approved_at"],
+          "properties": {
+            "approved_by": {"type": "string", "minLength": 1},
+            "approval_ref": {"type": "string", "minLength": 1},
+            "approved_at": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  }
+}

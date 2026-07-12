@@ -1,4 +1,4 @@
-# BEGIN CODEX WORKFLOW V2
+# BEGIN CODEX WORKFLOW V3
 .DS_Store
 *.swp
 *.swo
@@ -10,7 +10,4 @@ __pycache__/
 *.pem
 *.key
 *.log
-.codex-log/
-.agent/active-task
-.codex-workflow-backup/
-# END CODEX WORKFLOW V2
+# END CODEX WORKFLOW V3
