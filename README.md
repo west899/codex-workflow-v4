@@ -4,6 +4,8 @@ Codex Workflow V3 是一个安装到现有 Git 项目的协作控制面，重点
 
 V3 优先支持同机多线：每个 task 独占一个 claim、branch、Git linked worktree 和写入者；多个 Developer lane 可并行，目标分支、Backlog、PLAN 和永久治理始终由唯一 Coordinator/Integrator 串行写。跨机器先使用预分配，后续可选 Git atomic refs 自主抢占。
 
+当前已实现能力的完整清单见 [功能.md](功能.md)。
+
 ## 主要变化
 
 | V2 问题 | V3 行为 |

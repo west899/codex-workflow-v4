@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REQUIRED = {
     "README.md",
+    "功能.md",
     "problem.md",
     "改进建议.md",
     "install.py",
