@@ -1,10 +1,10 @@
 # V4 Phase 0 恢复重启计划
 
-> 状态：`revised_waiting_execution_authorization`
+> 状态：`r0_completed_waiting_requirements_and_r1_authorization`
 >
 > 本文件只是人类可读的执行计划和事件索引，不承担 task、Requirements、Review、gate、integration 或 closeout 的事实源职责。执行期的机器真相继续由 V3 task record、Requirements fingerprint、Git commit 和工作流门禁管理。
 >
-> 当前只完成计划修订。尚未创建恢复分支、新 Pilot、Requirements、task、lane，也尚未开始修复、Review、集成或推送。
+> R0 已完成并强制停止。已建立 recovery 分支、全新 Pilot、V3 安装基线、治理草案、Requirements snapshot 和可校验受控存储备份；尚未批准 Requirements，也未创建 task record、claim 或 lane。R1、Developer、人类观察、Review、集成和正式 `v4` 推进均未开始。
 
 ## 1. 当前结论
 
@@ -45,7 +45,7 @@
 
 ### 4.1 路径与 Git 拓扑
 
-- Pilot 路径：`/Users/codex-workflow-v4-pilot-recovery-30b15e2`。
+- Pilot 计划路径：`/Users/codex-workflow-v4-pilot-recovery-30b15e2`。当前 macOS 账号无权在 `/Users` 根目录创建该路径，R0 实际使用等价外部路径 `/Users/xy/codex-workflow-v4-pilot-recovery-30b15e2`。
 - 从正式远端精确 checkout `origin/v4@30b15e2`。
 - 从 `30b15e2` 创建无 upstream 的本地 `main`；不让本地 `main` 跟踪 `origin/main` 或 `origin/v4`。
 - 将正式远端改名为 `upstream`，为它设置无效 Push URL，并设置 `push.default=nothing`。
@@ -406,6 +406,80 @@ Phase 0 完成前，不实现 Phase A。Phase 0 通过后另行展示与批准�
 
 ## 13. 下一步授权句
 
-开始执行时建议使用以下精确指令：
+当前 R0 已完成。若人类审查后接受第 14 节的 Requirements snapshot 与 task contract，建议使用以下精确指令：
 
-> 只执行 R0：从 `origin/v4@30b15e2` 创建 `codex/v4-phase0-recovery`，建立全新外部 Pilot、V3 安装基线和 `REQ-V4-PILOT-002` / `MVP-DOC-002` 治理草案；不修改 doctor，不授权 Developer，不启动 Review。建立异机备份后汇报并停止。
+> 批准 `REQ-V4-PILOT-002` revision 1 / `V4-PHASE0-RECOVERY` / fingerprint `62083220825b7476060e83218459aad806349b480514364cf1799ad860a6d4a6`，并批准第 14.5 节的 `MVP-DOC-002` task contract 与 implementation authorization。只在完成 Requirements gate、授权基线、claim 和 R1 Developer 交付后汇报停止；不启动 R2 人类观察或 R3 Review。
+
+## 14. R0 执行结果
+
+### 14.1 正式基线与 recovery 分支
+
+- 2026-07-13 重新 Fetch 后，`origin/v4` 仍精确等于 `30b15e24ae5025345850ec8afd391ef62e55e4b5`。
+- 已从该提交创建无 upstream 的 `codex/v4-phase0-recovery`。
+- 恢复计划的首个独立文档提交为 `1b4fa337e3206db0da1ca16de24ec4e272f54bb5`。
+- 正式 `v4` 本地与远端指针未移动。
+
+### 14.2 Pilot 与 Push 边界
+
+- 实际 Pilot 路径为 `/Users/xy/codex-workflow-v4-pilot-recovery-30b15e2`。
+- Pilot 仅保留无 upstream 的本地 `main`，起点为 `30b15e2`。
+- 正式远程已改名为 `upstream`；Push URL 指向不存在的本地目标，`push.default=nothing`，repository-local pre-push Hook 固定拒绝。
+- Hook 直接执行和 `git push --dry-run upstream` 都以非零退出，未联系正式 Push 目标。
+
+### 14.3 V3 安装与治理提交
+
+- V3 安装源为正式 recovery 工作树 `1b4fa337e3206db0da1ca16de24ec4e272f54bb5`。
+- 安装基线提交为 `c51ac1f`；installer 前后两次 manual 均 PASS，安装后 manual/status 也 PASS。
+- layout 保持 `parallel.mode=local_worktree`、`local_target_ref=refs/heads/main`、`local_bootstrap.enabled=false`、空 allowlist 和 `remote.mode=disabled`。
+- 治理草案提交为 `98cced1`；R0 状态收口提交为 `9b5ec4c7d39da2e3df3396e7384f44b12b9eeab1`。
+- 当前 Pilot `main` 工作树干净。
+
+### 14.4 Requirements snapshot
+
+- Brief：`REQ-V4-PILOT-002`。
+- Revision：`1`。
+- Target release：`V4-PHASE0-RECOVERY`。
+- Fingerprint：`62083220825b7476060e83218459aad806349b480514364cf1799ad860a6d4a6`。
+- `requirements-snapshot` PASS，0 warnings。
+- Brief 保持 `awaiting_approval`，approval 四字段全为 `null`。
+- `requirements-gate` 预演仅报告 status、approval 三个文本字段与 approval fingerprint 共 5 项待批准错误；没有其他 Schema 或语义错误。
+- PROJECT 与 Backlog 基线保持全 `null`；Backlog 只有一个 `draft` 的 `MVP-DOC-002`。
+
+### 14.5 `MVP-DOC-002` 待批准 task contract
+
+- Focus：`DOC-002`。
+- Request：修复 doctor 的统一 JSON 资源边界、精确路径解析边界和异常传播语义，并完成双 Python 验证。
+- Allowed paths 精确为第 6.1 节五个候选路径；`tests/support.py` 只在双解释器支持确有需要时允许修改。
+- Resource keys 与五个 exact allowed paths 一对一绑定。
+- Planning level：medium；顺序为统一 JSON loader 与资源限制、精确 path helper、doctor 可达资源迁移、回归测试和双解释器验证。
+- Risk：`product_scope=true`；敏感数据、破坏性变更、不可逆架构和生产发布标记均为 false。
+- Acceptance 覆盖 640 位/128 层边界、异常分类、四域唯一 action、严格只读、双 Python 全量通过和非 doctor traceback。
+- 当前仅有 PLAN 中的待批准投影；没有权威 task record，`implementation_authorization=false`。
+
+### 14.6 测试基线
+
+- Python 3.9.6 精确解释器：`/Library/Developer/CommandLineTools/usr/bin/python3`，macOS arm64。
+- `PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B verify_package.py`：69 tests，62 PASS / 7 FAIL / 0 ERROR，exit 1。
+- 7 个失败集中于 JSON 大整数资源错误的域内误分类，以及非 doctor layout 资源异常被转换为普通工作流错误。
+- 测试后正式 recovery 工作树干净，没有 `__pycache__`、`.pyc` 或 `.pyo`。
+- 当前主机未找到 Python 3.12.13 可执行文件，因此没有将历史的 5 个失败冒充为新 R0 重放证据。进入 R1 前必须提供或经单独授权安装精确解释器并重放。
+
+### 14.7 R0 停止点备份
+
+- 最终 Pilot bundle：`v4-phase0-pilot-r0-9b5ec4c.bundle`。
+- Bundle SHA-256：`401df9ddd0e5770a47c80e6a39fa9585f0d1dffc4c3c69ae6deba83f4678cc7b`。
+- Bundle 含 `refs/heads/main` 和 `refs/archive/v4-phase0/r0-governance`，两者均指向 `9b5ec4c7d39da2e3df3396e7384f44b12b9eeab1`；完整历史、`git bundle verify` 和独立恢复 clone 均 PASS。
+- Task branch 数量为 0，与 R0 授权边界一致。
+- 加密 runtime 审计归档 SHA-256：`6837ebeb5e3a6aba1d4ab32a3d6641d875c9772c492b576bf11db1d6bace639b`；AES-256-CBC/PBKDF2 解密目录校验 PASS。
+- 本地备份路径：`/Users/xy/codex-workflow-v4-recovery-backups/R0-9b5ec4c`。
+- 受控存储路径：私人 iCloud Drive 中的 `Codex Workflow Backups/V4 Phase0 Recovery/R0-9b5ec4c`。
+- 本地和 iCloud 副本的 bundle、加密 runtime、manifest 和分开存储的 key SHA-256 逐项一致；`brctl status com~apple~CloudDocs` 在复制后报告 `caught-up` 且无未同步项。
+- 本次使用“已验证受控存储”模式，没有在第二台设备执行恢复演练。
+
+### 14.8 强制停止状态
+
+- R0 已按授权范围完成。
+- Requirements 仍待 exact fingerprint 批准，`requirements-gate` 未执行通过。
+- `MVP-DOC-002` 仍为 `draft`，local bootstrap 仍关闭。
+- 无 task record、implementation authorization、claim、lane、Developer、人类观察或 Reviewer。
+- 当前停止并等待新指令，不进入 R1。
