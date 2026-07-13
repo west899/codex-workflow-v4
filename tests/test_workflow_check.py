@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from support import (
     approved_requirements,
     basic_v3_record,
     commit_all,
     create_baseline,
+    git,
     install_project,
     record_relative,
     requirements_fingerprint,
@@ -29,6 +37,506 @@ class WorkflowCheckTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def doctor(self, *, env_extra: dict[str, str] | None = None):
+        return run(
+            workflow_command(self.target, "workflow_check.py", "doctor"),
+            cwd=self.target,
+            env_extra=env_extra,
+        )
+
+    def startup_observation_path(self) -> Path:
+        common = Path(git(self.target, "rev-parse", "--git-common-dir").stdout.strip())
+        if not common.is_absolute():
+            common = self.target / common
+        return common.resolve() / "codex-workflow-v3" / "audit" / "last-session-check.json"
+
+    def write_startup_observation(
+        self,
+        *,
+        checked_at: str = "2026-07-01T02:03:04+00:00",
+        worktree: Path | None = None,
+    ) -> None:
+        path = self.startup_observation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "checked_at": checked_at,
+                    "worktree": str((worktree or self.target).resolve()),
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def assert_doctor_shape(self, output: str) -> None:
+        lines = output.splitlines()
+        for label in (
+            "PACKAGE:",
+            "GOVERNANCE:",
+            "HOOK CONFIG:",
+            "STARTUP OBSERVATION:",
+        ):
+            self.assertEqual(sum(line.startswith(label + " ") for line in lines), 1, output)
+        self.assertEqual(lines.count("PRIMARY NEXT ACTION:"), 1, output)
+
+    def assert_doctor_decode_failure(self, result, domain: str) -> None:
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn(f"{domain}: INVALID", result.stdout)
+        self.assertIn("not valid UTF-8", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    @staticmethod
+    def tree_snapshot(root: Path) -> dict[str, bytes | None]:
+        if not root.exists():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): (path.read_bytes() if path.is_file() else None)
+            for path in root.rglob("*")
+        }
+
+    @staticmethod
+    def json_resource_limit_fixture(kind: str) -> bytes:
+        if kind == "huge_integer":
+            return b'{"value":' + (b"9" * 5000) + b"}"
+        if kind == "deep_nesting":
+            return (b"[" * 1500) + b"0" + (b"]" * 1500)
+        raise AssertionError(f"unknown JSON resource fixture: {kind}")
+
+    @staticmethod
+    def embedded_json_fixture(marker: str, payload: bytes) -> bytes:
+        return (
+            f"<!-- {marker}_START -->\n".encode("ascii")
+            + payload
+            + f"\n<!-- {marker}_END -->\n".encode("ascii")
+        )
+
+    @staticmethod
+    def load_payload_workflow_check():
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "payload"
+            / ".codex-workflow"
+            / "bin"
+            / "workflow_check.py"
+        )
+        module_name = f"workflow_check_doctor_test_{id(script)}"
+        spec = importlib.util.spec_from_file_location(module_name, script)
+        if spec is None or spec.loader is None:
+            raise AssertionError(f"cannot load {script}")
+        module = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(script.parent))
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        return module
+
+    @staticmethod
+    def restore_bytes(path: Path, original: bytes | None) -> None:
+        if original is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(original)
+
+    def test_doctor_missing_startup_observation_is_readable_warning_and_success(self) -> None:
+        self.assertFalse(self.startup_observation_path().exists())
+        result = self.doctor()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("PACKAGE: PASS", result.stdout)
+        self.assertIn("GOVERNANCE: PASS", result.stdout)
+        self.assertIn("HOOK CONFIG: PASS", result.stdout)
+        self.assertIn("STARTUP OBSERVATION: WARN", result.stdout)
+        self.assertIn("review and trust", result.stdout.lower())
+        self.assertIn("start or resume a new Codex session", result.stdout)
+        self.assertIn("run doctor again in that session", result.stdout)
+        self.assertNotIn("reinstall", result.stdout.lower())
+        self.assertNotIn("workflow_check.py start", result.stdout)
+
+    def test_doctor_reports_historical_observation_without_session_trust_claim(self) -> None:
+        self.write_startup_observation()
+        result = self.doctor()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("STARTUP OBSERVATION: PASS", result.stdout)
+        self.assertIn("2026-07-01T02:03:04+00:00", result.stdout)
+        self.assertIn(str(self.target.resolve()), result.stdout)
+        self.assertIn("does not prove a current or unique session identity", result.stdout)
+        self.assertNotIn("current session is trusted", result.stdout.lower())
+
+    def test_doctor_package_drift_fails_before_lower_priority_problems(self) -> None:
+        managed = self.target / ".codex-workflow/bin/workflow_state.py"
+        managed.write_text(managed.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
+        (self.target / ".codex-workflow/governance/PLAN.md").unlink()
+        hooks = self.target / ".codex/hooks.json"
+        hooks.write_text("{}\n", encoding="utf-8")
+        self.startup_observation_path().parent.mkdir(parents=True, exist_ok=True)
+        self.startup_observation_path().write_text("{", encoding="utf-8")
+
+        result = self.doctor()
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("PACKAGE: FAIL", result.stdout)
+        self.assertIn("GOVERNANCE: FAIL", result.stdout)
+        self.assertIn("HOOK CONFIG: FAIL", result.stdout)
+        self.assertIn("STARTUP OBSERVATION: INVALID", result.stdout)
+        primary = result.stdout.split("PRIMARY NEXT ACTION:", 1)[1]
+        self.assertIn("external package verifier", primary)
+        self.assertNotIn("restore the missing governance", primary)
+
+    def test_doctor_missing_package_owned_file_is_nonzero(self) -> None:
+        (self.target / ".codex-workflow/bin/workflow_state.py").unlink()
+        result = self.doctor()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PACKAGE: FAIL", result.stdout)
+        self.assertIn("package-owned file is missing", result.stdout)
+
+    def test_doctor_accepts_project_owned_governance_edit_as_not_package_drift(self) -> None:
+        project_rules = self.target / ".codex-workflow/governance/AGENTS.md"
+        project_rules.write_text(
+            project_rules.read_text(encoding="utf-8") + "\nProject-specific note.\n",
+            encoding="utf-8",
+        )
+        result = self.doctor()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PACKAGE: PASS", result.stdout)
+        self.assertNotIn("package-owned content drift", result.stdout)
+
+    def test_doctor_rejects_invalid_managed_hook_configuration(self) -> None:
+        hook_path = self.target / ".codex/hooks.json"
+        hooks = json.loads(hook_path.read_text(encoding="utf-8"))
+        hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"] = "python workflow_check.py manual"
+        hook_path.write_text(json.dumps(hooks, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        result = self.doctor()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PACKAGE: PASS", result.stdout)
+        self.assertIn("HOOK CONFIG: FAIL", result.stdout)
+        self.assertIn("configuration only; it does not prove that a Hook ran", result.stdout)
+
+    def test_doctor_invalid_or_mismatched_observation_is_nonzero(self) -> None:
+        cases = (
+            ("not-a-time", self.target, "invalid checked_at"),
+            ("2026-07-01T02:03:04", self.target, "timezone"),
+            ("2026-07-01T02:03:04+00:00", self.target.parent / "other", "different worktree"),
+        )
+        for checked_at, worktree, expected in cases:
+            with self.subTest(checked_at=checked_at, worktree=worktree):
+                self.write_startup_observation(checked_at=checked_at, worktree=worktree)
+                result = self.doctor()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("STARTUP OBSERVATION: INVALID", result.stdout)
+                self.assertIn(expected, result.stdout)
+
+    def test_doctor_invalid_utf8_manifest_remains_structured(self) -> None:
+        manifest = self.target / ".codex-workflow/install/manifest.json"
+        manifest.write_bytes(b"{\"package\": \"codex-workflow-v3\", \"bad\": \xff}")
+        self.assert_doctor_decode_failure(self.doctor(), "PACKAGE")
+
+    def test_doctor_invalid_utf8_governance_remains_structured(self) -> None:
+        (self.target / "AGENTS.md").write_bytes(b"workflow discovery \xff")
+        self.assert_doctor_decode_failure(self.doctor(), "GOVERNANCE")
+
+    def test_doctor_invalid_utf8_hooks_remains_structured(self) -> None:
+        (self.target / ".codex/hooks.json").write_bytes(b"{\"hooks\": \xff}")
+        self.assert_doctor_decode_failure(self.doctor(), "HOOK CONFIG")
+
+    def test_doctor_invalid_utf8_startup_observation_remains_structured(self) -> None:
+        observation = self.startup_observation_path()
+        observation.parent.mkdir(parents=True, exist_ok=True)
+        observation.write_bytes(b"{\"checked_at\": \xff}")
+        self.assert_doctor_decode_failure(self.doctor(), "STARTUP OBSERVATION")
+
+    def test_doctor_invalid_utf8_layout_uses_structured_discovery_boundary(self) -> None:
+        # Encoding matrix: discovery layout plus manifest, governance, Hooks and observation.
+        (self.target / ".codex-workflow/layout.json").write_bytes(b"{\"layout_version\": \xff}")
+        result = self.doctor()
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        for domain in ("PACKAGE", "GOVERNANCE", "HOOK CONFIG", "STARTUP OBSERVATION"):
+            self.assertIn(f"{domain}: UNKNOWN", result.stdout)
+        primary = result.stdout.split("PRIMARY NEXT ACTION:", 1)[1]
+        self.assertIn("external package verifier", primary)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_doctor_json_resource_limits_stay_inside_their_data_boundaries(self) -> None:
+        layout = self.target / ".codex-workflow/layout.json"
+        manifest = self.target / ".codex-workflow/install/manifest.json"
+        hooks = self.target / ".codex/hooks.json"
+        backlog = self.target / ".codex-workflow/state/MVP_BACKLOG.md"
+        observation = self.startup_observation_path()
+        paths = (layout, manifest, hooks, backlog, observation)
+        originals = {path: path.read_bytes() if path.exists() else None for path in paths}
+        sources = (
+            ("layout", layout, lambda payload: payload, None),
+            ("manifest", manifest, lambda payload: payload, "PACKAGE"),
+            ("Hooks", hooks, lambda payload: payload, "HOOK CONFIG"),
+            (
+                "Backlog",
+                backlog,
+                lambda payload: self.embedded_json_fixture(
+                    "CODEX_REQUIREMENTS_BASELINE", payload
+                ),
+                "GOVERNANCE",
+            ),
+            ("startup observation", observation, lambda payload: payload, "STARTUP OBSERVATION"),
+        )
+        try:
+            for name, path, prepare, domain in sources:
+                for kind in ("huge_integer", "deep_nesting"):
+                    with self.subTest(source=name, resource_error=kind):
+                        payload = prepare(self.json_resource_limit_fixture(kind))
+                        for candidate, original in originals.items():
+                            self.restore_bytes(candidate, original)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(payload)
+
+                        environment = (
+                            {"PYTHONINTMAXSTRDIGITS": "640"}
+                            if kind == "huge_integer" and hasattr(sys, "get_int_max_str_digits")
+                            else None
+                        )
+                        result = self.doctor(env_extra=environment)
+
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assert_doctor_shape(result.stdout)
+                        self.assertNotIn("Traceback", result.stderr)
+                        if domain is None:
+                            for label in (
+                                "PACKAGE",
+                                "GOVERNANCE",
+                                "HOOK CONFIG",
+                                "STARTUP OBSERVATION",
+                            ):
+                                self.assertIn(f"{label}: UNKNOWN", result.stdout)
+                        else:
+                            self.assertIn(f"{domain}: INVALID", result.stdout)
+        finally:
+            for path, original in originals.items():
+                self.restore_bytes(path, original)
+
+    def test_doctor_governance_internal_json_resource_limits_are_structured(self) -> None:
+        brief, _ = approved_requirements(self.target)
+        project = self.target / ".codex-workflow/governance/PROJECT.md"
+        backlog = self.target / ".codex-workflow/state/MVP_BACKLOG.md"
+        schema = self.target / ".codex-workflow/schemas/requirements-v1.schema.json"
+        paths = (project, backlog, brief, schema)
+        originals = {path: path.read_bytes() for path in paths}
+        sources = (
+            (
+                "PROJECT baseline",
+                project,
+                lambda payload: self.embedded_json_fixture(
+                    "CODEX_REQUIREMENTS_BASELINE", payload
+                ),
+            ),
+            (
+                "Requirements brief",
+                brief,
+                lambda payload: self.embedded_json_fixture("CODEX_REQUIREMENTS_JSON", payload),
+            ),
+            ("requirements schema", schema, lambda payload: payload),
+            (
+                "Backlog baseline",
+                backlog,
+                lambda payload: self.embedded_json_fixture(
+                    "CODEX_REQUIREMENTS_BASELINE", payload
+                ),
+            ),
+        )
+        try:
+            for name, path, prepare in sources:
+                for kind in ("huge_integer", "deep_nesting"):
+                    with self.subTest(source=name, resource_error=kind):
+                        for candidate, original in originals.items():
+                            self.restore_bytes(candidate, original)
+                        path.write_bytes(prepare(self.json_resource_limit_fixture(kind)))
+
+                        environment = (
+                            {"PYTHONINTMAXSTRDIGITS": "640"}
+                            if kind == "huge_integer" and hasattr(sys, "get_int_max_str_digits")
+                            else None
+                        )
+                        result = self.doctor(env_extra=environment)
+
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assert_doctor_shape(result.stdout)
+                        self.assertIn("GOVERNANCE: INVALID", result.stdout)
+                        self.assertNotIn("Traceback", result.stderr)
+        finally:
+            for path, original in originals.items():
+                self.restore_bytes(path, original)
+
+    def test_doctor_dynamic_diagnostics_are_rendered_as_safe_single_lines(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+        malicious = "before\r\nPRIMARY NEXT ACTION:\nPACKAGE: PASS\t\x00\x1f\x7f\x85\ud800after"
+        findings = [
+            (label, workflow_check.DoctorFinding("INVALID", f"{label} {malicious}"))
+            for label in ("PACKAGE", "GOVERNANCE", "HOOK CONFIG", "STARTUP OBSERVATION")
+        ]
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            workflow_check._print_doctor(findings, malicious)
+
+        rendered = output.getvalue()
+        self.assert_doctor_shape(rendered)
+        self.assertNotIn("\r", rendered)
+        self.assertNotIn("\x00", rendered)
+        self.assertNotIn("\x1f", rendered)
+        self.assertNotIn("\x7f", rendered)
+        self.assertNotIn("\x85", rendered)
+        self.assertNotIn("\ud800", rendered)
+        for escaped in (r"\r", r"\n", r"\t", r"\u0000", r"\u001f", r"\u007f", r"\u0085", r"\ud800"):
+            self.assertIn(escaped, rendered)
+
+    def test_doctor_manifest_diagnostic_cannot_forge_headings_or_emit_surrogates(self) -> None:
+        manifest_path = self.target / ".codex-workflow/install/manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        malicious_key = "bad\r\nPRIMARY NEXT ACTION:\nGOVERNANCE: PASS\x00\ud800"
+        manifest["files"][malicious_key] = {
+            "ownership": "unsupported",
+            "managed_sha256": "0" * 64,
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.doctor()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("PACKAGE: INVALID", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn(r"\r\n", result.stdout)
+        self.assertIn(r"\ud800", result.stdout)
+
+    def test_doctor_observation_path_failures_are_local_unknown_results(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        class SharedRuntimeFailure:
+            def __init__(self, failure: Exception) -> None:
+                self.failure = failure
+
+            @property
+            def shared_runtime(self):
+                raise self.failure
+
+        for failure in (
+            workflow_check.WorkflowPathError("runtime containment escape\nPRIMARY NEXT ACTION:"),
+            RuntimeError("runtime resolve loop\nSTARTUP OBSERVATION: PASS"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                finding = workflow_check._doctor_observation(SharedRuntimeFailure(failure))
+                self.assertEqual(finding.status, "UNKNOWN")
+
+        with self.assertRaises(RecursionError):
+            workflow_check._doctor_observation(
+                SharedRuntimeFailure(RecursionError("programming recursion is not path diagnosis"))
+            )
+
+        observation = self.startup_observation_path()
+        self.write_startup_observation()
+
+        class ObservationPaths:
+            shared_runtime = observation.parents[1]
+            root = self.target.resolve()
+
+        class ResolveFailure:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def expanduser(self):
+                return self
+
+            def resolve(self):
+                raise RuntimeError("recorded worktree resolve loop\nPACKAGE: PASS")
+
+        with mock.patch.object(workflow_check, "Path", ResolveFailure):
+            finding = workflow_check._doctor_observation(ObservationPaths())
+        self.assertEqual(finding.status, "UNKNOWN")
+
+    def test_non_doctor_layout_resource_error_is_not_swallowed(self) -> None:
+        layout = self.target / ".codex-workflow/layout.json"
+        layout.write_bytes(self.json_resource_limit_fixture("huge_integer"))
+
+        environment = (
+            {"PYTHONINTMAXSTRDIGITS": "640"}
+            if hasattr(sys, "get_int_max_str_digits")
+            else None
+        )
+        result = run(
+            workflow_command(self.target, "workflow_check.py", "manual"),
+            cwd=self.target,
+            env_extra=environment,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ValueError", result.stderr)
+        self.assertIn("Traceback", result.stderr)
+        self.assertNotIn("PRIMARY NEXT ACTION:", result.stdout)
+
+    def test_doctor_ordinary_python_is_strictly_read_only_and_creates_no_bytecode(self) -> None:
+        script = self.target / ".codex-workflow/bin/workflow_check.py"
+        bin_root = script.parent
+        self.assertFalse(list(bin_root.rglob("__pycache__")))
+        self.assertFalse(list(bin_root.rglob("*.pyc")))
+        runtime = self.startup_observation_path().parents[1]
+        tracked_before = git(self.target, "status", "--porcelain=v1").stdout
+        runtime_before = self.tree_snapshot(runtime)
+        env = os.environ.copy()
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+
+        result = subprocess.run(
+            [sys.executable, str(script), "doctor"],
+            cwd=self.target,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(git(self.target, "status", "--porcelain=v1").stdout, tracked_before)
+        self.assertEqual(self.tree_snapshot(runtime), runtime_before)
+        self.assertFalse(list(bin_root.rglob("__pycache__")))
+        self.assertFalse(list(bin_root.rglob("*.pyc")))
+
+    def test_doctor_bootstrap_failure_stays_outside_its_self_diagnosis_claim(self) -> None:
+        script = self.target / ".codex-workflow/bin/workflow_check.py"
+        script_bytes = script.read_bytes()
+        script.unlink()
+        result = run([sys.executable, str(script), "doctor"], cwd=self.target)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("PACKAGE: PASS", result.stdout)
+        self.assertNotIn("PRIMARY NEXT ACTION:", result.stdout)
+
+        script.write_bytes(script_bytes)
+        dependency = self.target / ".codex-workflow/bin/workflow_common.py"
+        dependency.unlink()
+        result = run([sys.executable, str(script), "doctor"], cwd=self.target)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ModuleNotFoundError", result.stderr)
+        self.assertNotIn("PACKAGE: PASS", result.stdout)
+        self.assertNotIn("PRIMARY NEXT ACTION:", result.stdout)
+
+    def test_doctor_loaded_but_worktree_discovery_unknown_is_structured_and_nonzero(self) -> None:
+        script = self.target / ".codex-workflow/bin/workflow_check.py"
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+        result = run([sys.executable, str(script), "doctor"], cwd=outside)
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("PACKAGE: UNKNOWN", result.stdout)
+        self.assertIn("GOVERNANCE: UNKNOWN", result.stdout)
+        self.assertIn("external bootstrap failure", result.stdout)
 
     def test_manual_resolves_same_root_from_business_subdirectory(self) -> None:
         subdirectory = self.target / "src" / "nested folder" / "中文"

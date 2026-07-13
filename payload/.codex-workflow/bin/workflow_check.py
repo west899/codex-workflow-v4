@@ -4,11 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+# ``doctor`` promises that an ordinary Python invocation will not create local
+# bytecode.  Set this before importing package-local modules; executing this
+# file as ``__main__`` does not cache the file itself.
+sys.dont_write_bytecode = True
 
 from workflow_common import (
     WorkflowDataError,
@@ -38,6 +45,17 @@ from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json
 
 PLACEHOLDER = re.compile(r"(?:<[^>]+>|\b(?:TBD|TODO|placeholder)\b|\.\.\.)", re.IGNORECASE)
 BASELINE_MARKER = "CODEX_REQUIREMENTS_BASELINE"
+SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+class DoctorFinding:
+    """One independently reported doctor domain."""
+
+    def __init__(self, status: str, *details: str) -> None:
+        if status not in {"PASS", "WARN", "FAIL", "INVALID", "UNKNOWN"}:
+            raise ValueError(f"Unsupported doctor status: {status}")
+        self.status = status
+        self.details = list(details)
 
 
 class Checks:
@@ -78,7 +96,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "mode",
         choices=(
-            "start", "manual", "stop", "preflight", "snapshot", "gate",
+            "start", "manual", "doctor", "stop", "preflight", "snapshot", "gate",
             "requirements-snapshot", "requirements-gate", "requirements-impact",
             "status", "integration-preflight", "closeout-gate",
         ),
@@ -632,13 +650,444 @@ def closeout_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) 
             checks.error(str(exc))
 
 
-def main() -> None:
-    args = parser().parse_args()
+def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
+    """Check installed package-owned bytes against the ownership manifest."""
+
+    boundary = (
+        "This check begins after Python loaded doctor; the manifest is consistency "
+        "evidence, not a signed supply-chain trust root."
+    )
+    manifest_path = paths.root / ".codex-workflow" / "install" / "manifest.json"
+    try:
+        raw = manifest_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return DoctorFinding("FAIL", "The V3 install manifest is missing.", boundary)
+    except UnicodeDecodeError as exc:
+        return DoctorFinding("INVALID", f"The V3 install manifest is not valid UTF-8: {exc}", boundary)
+    except OSError as exc:
+        return DoctorFinding("UNKNOWN", f"The V3 install manifest could not be read: {exc}", boundary)
+    try:
+        manifest = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return DoctorFinding("INVALID", f"The V3 install manifest is invalid JSON: {exc}", boundary)
+    if not isinstance(manifest, dict):
+        return DoctorFinding("INVALID", "The V3 install manifest root must be an object.", boundary)
+
+    invalid: list[str] = []
+    if manifest.get("package") != "codex-workflow-v3":
+        invalid.append("manifest package is not codex-workflow-v3")
+    if manifest.get("protocol_version") != 3:
+        invalid.append("manifest protocol_version is not 3")
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        invalid.append("manifest version is missing")
+    entries = manifest.get("files")
+    if not isinstance(entries, dict):
+        invalid.append("manifest files must be an object")
+        entries = {}
+
+    package_files = 0
+    drift: list[str] = []
+    unknown: list[str] = []
+    for relative, entry in entries.items():
+        if not isinstance(relative, str) or not isinstance(entry, dict):
+            invalid.append("manifest contains a malformed file entry")
+            continue
+        owner = entry.get("ownership")
+        if owner not in {"package", "project", "merge"}:
+            invalid.append(f"{relative}: unsupported ownership")
+            continue
+        hash_field = "seed_sha256" if owner == "project" else "managed_sha256"
+        expected = entry.get(hash_field)
+        if not isinstance(expected, str) or not SHA256.fullmatch(expected):
+            invalid.append(f"{relative}: invalid {hash_field}")
+            continue
+        if owner != "package":
+            continue
+        package_files += 1
+        try:
+            target = paths.tracked(relative, key=False)
+        except WorkflowPathError as exc:
+            invalid.append(f"{relative}: {exc}")
+            continue
+        if not target.is_file():
+            drift.append(f"{relative}: package-owned file is missing")
+            continue
+        try:
+            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError as exc:
+            unknown.append(f"{relative}: package-owned file could not be read: {exc}")
+            continue
+        if actual != expected:
+            drift.append(f"{relative}: package-owned content drift")
+
+    if package_files == 0:
+        invalid.append("manifest contains no package-owned files")
+    if invalid:
+        return DoctorFinding("INVALID", *invalid, boundary)
+    if unknown:
+        return DoctorFinding("UNKNOWN", *unknown, boundary)
+    if drift:
+        return DoctorFinding("FAIL", *drift, boundary)
+    return DoctorFinding(
+        "PASS",
+        f"{package_files} package-owned files match the V3 install manifest.",
+        boundary,
+    )
+
+
+def _doctor_governance(paths: WorkflowPaths) -> DoctorFinding:
     checks = Checks()
     try:
+        check_governance(paths, checks)
+        baseline = _baseline(paths, checks)
+        if baseline and isinstance(baseline.get("brief_id"), str):
+            requirements_gate(
+                paths,
+                paths.tracked("requirements") / f"{baseline['brief_id']}.md",
+                checks,
+            )
+    except UnicodeDecodeError as exc:
+        return DoctorFinding("INVALID", f"Project governance is not valid UTF-8: {exc}")
+    except (OSError, WorkflowDataError, WorkflowPathError) as exc:
+        return DoctorFinding("UNKNOWN", f"Project governance could not be read reliably: {exc}")
+    except (ValueError, RecursionError) as exc:
+        return DoctorFinding(
+            "INVALID",
+            f"Project governance contains JSON that could not be parsed safely: {exc}",
+        )
+    if checks.errors:
+        return DoctorFinding("FAIL", *checks.errors, *checks.warnings)
+    if checks.warnings:
+        return DoctorFinding("WARN", *checks.warnings)
+    return DoctorFinding(
+        "PASS",
+        "Required governance files, Backlog structure and Requirements baseline are valid.",
+    )
+
+
+def _managed_hook_records(hooks: Any) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[str]]:
+    records: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    invalid: list[str] = []
+    if not isinstance(hooks, dict):
+        return records, ["hooks must be an object"]
+    for event, groups in hooks.items():
+        if not isinstance(event, str) or not isinstance(groups, list):
+            invalid.append(f"Hook event {event!r} must contain an array")
+            continue
+        for group_index, group in enumerate(groups):
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                invalid.append(f"Hook event {event!r} group {group_index} is malformed")
+                continue
+            for handler_index, handler in enumerate(group["hooks"]):
+                if not isinstance(handler, dict):
+                    invalid.append(
+                        f"Hook event {event!r} handler {group_index}:{handler_index} is malformed"
+                    )
+                    continue
+                commands = (
+                    handler.get("command"),
+                    handler.get("commandWindows"),
+                    handler.get("command_windows"),
+                )
+                if any(
+                    isinstance(command, str)
+                    and ("workflow_check.py" in command or "codex_stop_hook.py" in command)
+                    for command in commands
+                ):
+                    records.append((event, group, handler))
+    return records, invalid
+
+
+def _doctor_hooks(paths: WorkflowPaths) -> DoctorFinding:
+    hook_path = paths.root / ".codex" / "hooks.json"
+    try:
+        raw = hook_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return DoctorFinding(
+            "FAIL",
+            "The project Hook configuration .codex/hooks.json is missing.",
+            "Hook configuration only; it does not prove that a Hook ran.",
+        )
+    except UnicodeDecodeError as exc:
+        return DoctorFinding(
+            "INVALID",
+            f"The project Hook configuration is not valid UTF-8: {exc}",
+            "Hook configuration only; it does not prove that a Hook ran.",
+        )
+    except OSError as exc:
+        return DoctorFinding(
+            "UNKNOWN",
+            f"The project Hook configuration could not be read: {exc}",
+            "Hook configuration only; it does not prove that a Hook ran.",
+        )
+    try:
+        payload = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return DoctorFinding(
+            "INVALID",
+            f"The project Hook configuration is invalid JSON: {exc}",
+            "Hook configuration only; it does not prove that a Hook ran.",
+        )
+    if not isinstance(payload, dict):
+        return DoctorFinding(
+            "INVALID",
+            "The project Hook configuration root must be an object.",
+            "Hook configuration only; it does not prove that a Hook ran.",
+        )
+
+    records, invalid = _managed_hook_records(payload.get("hooks"))
+    expected = {
+        "workflow_check.py": {
+            "event": "SessionStart",
+            "matcher": "startup|resume|clear|compact",
+            "command": (
+                'python3 "$(git rev-parse --show-toplevel)/.codex-workflow/bin/'
+                'workflow_check.py" start'
+            ),
+            "commandWindows": (
+                "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; "
+                "py -3 (Join-Path $root '.codex-workflow/bin/workflow_check.py') start\""
+            ),
+            "statusMessage": "Checking project workflow",
+        },
+        "codex_stop_hook.py": {
+            "event": "Stop",
+            "matcher": None,
+            "command": (
+                'python3 "$(git rev-parse --show-toplevel)/.codex-workflow/bin/'
+                'codex_stop_hook.py"'
+            ),
+            "commandWindows": (
+                "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; "
+                "py -3 (Join-Path $root '.codex-workflow/bin/codex_stop_hook.py')\""
+            ),
+            "statusMessage": "Checking completion evidence",
+        },
+    }
+    for script, contract in expected.items():
+        matches = [record for record in records if any(
+            isinstance(record[2].get(field), str) and script in record[2][field]
+            for field in ("command", "commandWindows", "command_windows")
+        )]
+        if len(matches) != 1:
+            invalid.append(f"managed {script} Hook must appear exactly once")
+            continue
+        event, group, handler = matches[0]
+        if event != contract["event"]:
+            invalid.append(f"managed {script} Hook is attached to the wrong event")
+        if group.get("matcher") != contract["matcher"]:
+            invalid.append(f"managed {script} Hook matcher is invalid")
+        for field in ("command", "commandWindows", "statusMessage"):
+            if handler.get(field) != contract[field]:
+                invalid.append(f"managed {script} Hook {field} is invalid")
+        if handler.get("type") != "command" or handler.get("timeout") != 30:
+            invalid.append(f"managed {script} Hook type or timeout is invalid")
+
+    boundary = "Hook configuration only; it does not prove that a Hook ran."
+    if invalid:
+        return DoctorFinding("FAIL", *invalid, boundary)
+    return DoctorFinding(
+        "PASS",
+        "The managed SessionStart and Stop Hooks are configured.",
+        boundary,
+    )
+
+
+def _parse_observation_time(value: Any) -> dt.datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("invalid checked_at: expected a non-empty ISO-8601 timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("invalid checked_at: expected an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("checked_at must include a timezone")
+    return parsed
+
+
+def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
+    try:
+        observation_path = paths.shared_runtime / "audit" / "last-session-check.json"
+    except RecursionError:
+        raise
+    except (WorkflowPathError, OSError, RuntimeError) as exc:
+        return DoctorFinding(
+            "UNKNOWN",
+            f"The startup observation location could not be resolved reliably: {exc}",
+        )
+    try:
+        raw = observation_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return DoctorFinding(
+            "WARN",
+            "No startup observation record exists for this worktree.",
+            "This does not mean the package is broken and does not prove current session identity.",
+        )
+    except UnicodeDecodeError as exc:
+        return DoctorFinding("INVALID", f"The startup observation is not valid UTF-8: {exc}")
+    except OSError as exc:
+        return DoctorFinding("UNKNOWN", f"The startup observation could not be read: {exc}")
+    try:
+        observation = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        return DoctorFinding("INVALID", f"The startup observation is invalid JSON: {exc}")
+    if not isinstance(observation, dict):
+        return DoctorFinding("INVALID", "The startup observation root must be an object.")
+    try:
+        _parse_observation_time(observation.get("checked_at"))
+    except ValueError as exc:
+        return DoctorFinding("INVALID", str(exc))
+    checked_at = observation["checked_at"]
+    recorded_worktree = observation.get("worktree")
+    if not isinstance(recorded_worktree, str) or not recorded_worktree.strip():
+        return DoctorFinding("INVALID", "The startup observation has an invalid worktree.")
+    try:
+        resolved_worktree = Path(recorded_worktree).expanduser().resolve()
+    except OSError as exc:
+        return DoctorFinding("INVALID", f"The startup observation worktree is invalid: {exc}")
+    except RecursionError:
+        raise
+    except RuntimeError as exc:
+        return DoctorFinding(
+            "UNKNOWN",
+            f"The startup observation worktree could not be resolved reliably: {exc}",
+        )
+    if resolved_worktree != paths.root:
+        return DoctorFinding(
+            "INVALID",
+            "The startup observation belongs to a different worktree.",
+        )
+    return DoctorFinding(
+        "PASS",
+        f"Recorded at {checked_at} for worktree {paths.root}.",
+        "This historical record does not prove a current or unique session identity.",
+    )
+
+
+def _doctor_safe_line(value: Any) -> str:
+    """Render untrusted diagnostic text without terminal line or encoding injection."""
+
+    rendered: list[str] = []
+    for character in str(value):
+        if character == "\r":
+            rendered.append(r"\r")
+        elif character == "\n":
+            rendered.append(r"\n")
+        elif character == "\t":
+            rendered.append(r"\t")
+        elif character.isprintable():
+            rendered.append(character)
+        else:
+            codepoint = ord(character)
+            escape = f"\\u{codepoint:04x}" if codepoint <= 0xFFFF else f"\\U{codepoint:08x}"
+            rendered.append(escape)
+    return "".join(rendered)
+
+
+def _print_doctor(findings: list[tuple[str, DoctorFinding]], action: str) -> None:
+    print("Codex Workflow doctor")
+    print()
+    for label, finding in findings:
+        print(f"{_doctor_safe_line(label)}: {_doctor_safe_line(finding.status)}")
+        for detail in finding.details:
+            print(f"  {_doctor_safe_line(detail)}")
+        print()
+    print("PRIMARY NEXT ACTION:")
+    print(f"  {_doctor_safe_line(action)}")
+
+
+def _doctor_action(
+    package: DoctorFinding,
+    governance: DoctorFinding,
+    hooks: DoctorFinding,
+    observation: DoctorFinding,
+) -> str:
+    if package.status != "PASS":
+        return (
+            "Run the external package verifier, then use the normal ownership-aware installer "
+            "if repair is needed; do not force-overwrite project governance."
+        )
+    if governance.status != "PASS":
+        return "Inspect and restore the missing or invalid project governance, then run doctor again."
+    if hooks.status != "PASS":
+        return "Review and correct the managed entries in .codex/hooks.json, then run doctor again."
+    if observation.status in {"FAIL", "INVALID", "UNKNOWN"}:
+        return (
+            "Review and trust the project Hooks, then start or resume a new Codex session to "
+            "replace the invalid observation and run doctor again in that session."
+        )
+    if observation.status == "WARN":
+        return (
+            "Review and trust the project Hooks, then start or resume a new Codex session and "
+            "run doctor again in that session."
+        )
+    return "No corrective action is required; continue with the existing V3 workflow."
+
+
+def doctor(paths: WorkflowPaths) -> int:
+    package = _doctor_package(paths)
+    governance = _doctor_governance(paths)
+    hooks = _doctor_hooks(paths)
+    observation = _doctor_observation(paths)
+    findings = [
+        ("PACKAGE", package),
+        ("GOVERNANCE", governance),
+        ("HOOK CONFIG", hooks),
+        ("STARTUP OBSERVATION", observation),
+    ]
+    _print_doctor(findings, _doctor_action(package, governance, hooks, observation))
+    reliable = (
+        package.status == "PASS"
+        and governance.status == "PASS"
+        and hooks.status == "PASS"
+        and observation.status in {"PASS", "WARN"}
+    )
+    return 0 if reliable else 1
+
+
+def _doctor_discovery_failure(exc: Exception) -> int:
+    package = DoctorFinding(
+        "UNKNOWN",
+        f"Python loaded doctor, but the Git worktree or V3 layout could not be discovered: {exc}",
+        "workflow_check.py or an import failure remains an external bootstrap failure.",
+    )
+    skipped = DoctorFinding("UNKNOWN", "Not checked because worktree discovery failed.")
+    findings = [
+        ("PACKAGE", package),
+        ("GOVERNANCE", skipped),
+        ("HOOK CONFIG", skipped),
+        ("STARTUP OBSERVATION", skipped),
+    ]
+    _print_doctor(
+        findings,
+        "Run the external package verifier and inspect the Git worktree/layout before retrying doctor.",
+    )
+    return 1
+
+
+def main() -> None:
+    args = parser().parse_args()
+    try:
         paths = WorkflowPaths.discover(Path.cwd())
+    except UnicodeDecodeError as exc:
+        if args.mode == "doctor":
+            raise SystemExit(_doctor_discovery_failure(exc)) from exc
+        raise
     except (WorkflowPathError, OSError) as exc:
+        if args.mode == "doctor":
+            raise SystemExit(_doctor_discovery_failure(exc)) from exc
         raise SystemExit(f"[workflow-check] ERROR: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
+        if args.mode == "doctor":
+            raise SystemExit(_doctor_discovery_failure(exc)) from exc
+        raise
+
+    if args.mode == "doctor":
+        raise SystemExit(doctor(paths))
+
+    checks = Checks()
 
     check_governance(paths, checks)
     mode = args.mode
