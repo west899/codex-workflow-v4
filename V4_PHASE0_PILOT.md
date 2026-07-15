@@ -1,0 +1,232 @@
+# Codex Workflow V4 阶段 0 试运行记录
+
+> 本文件是阶段 0 的人类可读工作记录，不是新的工作流真相源，不替代 V3 task record、Reviewer、gate、integration 或 closeout，也不证明已经具备 V4 的机械防绕过能力。
+
+## 1. 当前状态
+
+- 状态：`checkpointed_with_known_review_findings`
+- 当前阶段：第四轮独立 Reviewer 已完成并以 1 个 P1、1 个 P2 返回 `changes_requested`；用户决定不再修复，要求按当前状态提交检查点
+- 仍未开始：V4 Schema、V4 task record、decision 命令、强制 product checkpoint、强制 gate
+- 已确认：隔离 self-hosting pilot、`DOC-001 doctor`、会话未观察时采用 `0 + WARN`
+- 下一门禁：当前不运行 gate、integration 或 closeout；若以后恢复，必须先授权共享 JSON/path 边界的精确范围，形成新 snapshot，并重新完成人类观察和独立 Review
+
+已批准的精确 Requirements 基线：
+
+- Brief：`REQ-V4-PILOT-001`
+- Revision：`1`
+- Target release：`V4-PHASE0`
+- Fingerprint：`ae131690e43ea04013b63ab438b7cccf33e45d48550cfa694f4f091bf641f8a2`（已批准并通过 gate）
+
+## 2. V3 基线
+
+基线采集时间：2026-07-13 11:10:03 +08:00
+
+| 项目 | 基线事实 |
+| --- | --- |
+| 源仓库 | `E:\Github\codex-workflow-v2_-` |
+| 分支 | `v4`，跟踪 `origin/v4` |
+| 提交 | `671f8b4b87d29e39beea0ff089dcd93f9e4cd0ac` |
+| 本地/远端差异 | `0/0` |
+| 工作区 | 基线验证前干净 |
+| 完整验证命令 | `python -B verify_package.py` |
+| 完整验证结果 | `PACKAGE_OK (Ran 48 tests in 268.761s)` |
+
+这组结果只锁定 V3 包在试运行前的已有行为。它不是阶段 0 的真实产品证据，也不能替代后续的人类产品观察。
+
+## 3. 为什么不能直接在当前 checkout 完成阶段 0
+
+当前仓库根目录没有已安装工作流的 `.codex-workflow`，只有供安装器复制的 `payload/.codex-workflow`。安装器还明确拒绝把当前包安装到包目录自身。因此，当前 checkout 可以保存最终 V4 改动，却不能单独提供阶段 0 要求的 V3 Developer、Reviewer、gate、integration 和 closeout 外环。
+
+严格试运行需要以下二者之一：
+
+1. 一个已经安装 V3 的真实产品项目；或
+2. 当前包目录之外的 self-hosting pilot clone，在其中建立独立 V3 基线并试运行真实的工作流产品功能。
+
+合成 fixture 只能补测真实功能没有自然触发的决定阻断或架构越界，不能替代完整试运行。
+
+## 4. 推荐试点卡片
+
+### 4.1 唯一焦点结果
+
+候选 ID：`DOC-001`
+
+候选结果：用户执行一条只读 `doctor` 命令，即可分别看清：
+
+- 已安装的工作流包是否可用；
+- 项目治理文件是否有效；
+- Hook 是否已经正确配置；
+- 当前 worktree 是否存在有效的最近启动观察记录，并明确它不证明当前会话身份；
+- 此刻唯一建议的下一步是什么。
+
+用户不需要阅读 JSON、fingerprint、lane、lease 或安装 manifest。
+
+### 4.2 最小观察方式
+
+在确认后的 V3 pilot 项目中只运行一条命令：
+
+```text
+python .codex-workflow/bin/workflow_check.py doctor
+```
+
+最小观察路径：
+
+1. fresh install、尚无启动观察时运行命令；
+2. 确认包、治理、Hook 配置和启动观察记录被分开陈述；
+3. 若记录缺失，检查并信任项目 Hooks，启动或恢复新的 Codex 会话后在该会话重放；不得手工运行 `start` 伪造 Hook 执行证明；
+4. 验证状态变化只反映观察事实，没有写入 tracked 文件；
+5. 分别验证 package-owned 文件损坏和合法 project-owned 治理修改；
+6. 确认输出始终给出唯一、可执行的下一步。
+
+### 4.3 真实、临时与延后部分
+
+真实部分：
+
+- 对已安装 V3 包、治理、Hook 配置和启动观察进行只读诊断；
+- 人类可直接执行的命令和输出；
+- 真实安装项目中的观察结果。
+
+临时部分：
+
+- 阶段 0 的人工产品确认及证据记录；
+- 尚未由 V4 Schema 或 gate 强制的决定卡片；
+- 若真实功能未自然触发决定或越界，使用的受控 fixture。
+
+明确延后：
+
+- task-record-v4；
+- `delivery_contract` 和 `decision_log`；
+- `request-decision` / `record-decision`；
+- contract/observation fingerprint；
+- product checkpoint 强制门禁；
+- STATUS 和 Stop Hook 的完整 V4 产品摘要。
+
+## 5. 待人类确认的实质决定
+
+### D-001：试点环境和焦点功能
+
+影响：决定阶段 0 的证据是否真实、是否能复用完整 V3 外环，以及是否会触碰现有产品仓库。
+
+| 选项 | 说明 | 主要代价 |
+| --- | --- | --- |
+| A（推荐） | 在当前包目录外建立隔离的 self-hosting pilot clone，安装 V3，试运行 `DOC-001 doctor`，验证后再把确认过的改动带回 `v4` | 需要维护一个临时 pilot 环境，但不迁移现有产品仓库 |
+| B | 选择并迁移一个现有真实产品项目到 V3，再在该项目开发一个产品功能 | 真实性最高，但会扩大范围并引入迁移风险 |
+| C | 不做阶段 0，直接实现阶段 A | 与最新版改进建议冲突，不接受 |
+
+建议：选择 A。
+
+决定：用户于 2026-07-13 回复“确认 A/A”，选择 A。
+
+### D-002：启动观察记录缺失时的退出语义
+
+影响：同时影响人工理解和脚本调用；实现前必须决定。
+
+| 选项 | 行为 | 权衡 |
+| --- | --- | --- |
+| A（推荐） | 包、治理和 Hook 配置均有效、仅缺少启动观察记录时返回 `0 + WARN`，并给出检查/信任 Hooks、启动或恢复新会话后重放的下一步 | 不把观察记录缺失误报为包损坏；自动化需要读取分项状态 |
+| B | 启动观察记录缺失就返回非零 | 自动化更严格，但容易让用户误以为需要重装，混淆“可用”与“存在启动观察记录” |
+
+建议：选择 A；只有包、治理或 Hook 配置真正无效时返回非零。
+
+决定：用户于 2026-07-13 回复“确认 A/A”，选择 A。
+
+### D-003：第四轮 Review 后的处理方式
+
+影响：决定是否继续扩大修复范围，以及当前提交能否被误解为已经通过 Reviewer 或阶段 0。
+
+决定：用户于 2026-07-13 明确要求“不进行修复，对当前状态提交commit，然后提交到V4分支”。
+
+执行口径：
+
+1. 不继续修改 `doctor` 实现或测试来处理第四轮 Review 的 P1/P2。
+2. 在 pilot task record 中保留 `changes_requested`、generation 9 和精确 snapshot 绑定，不运行 gate、integration 或 closeout。
+3. 只把 delivery `431c2ca...` 的两个产品路径压成一个本地主仓库 `v4` 检查点提交；pilot 治理、lane 和 task record 不进入主仓库。
+4. 检查点不等于 Reviewer pass、`verified`、`done` 或 `phase0_passed`。
+
+## 6. 已知架构边界
+
+`DOC-001` 在阶段 0 中必须遵守：
+
+1. `doctor` 严格只读；命令前后 tracked 文件和 runtime 状态不得变化。
+2. 包完整性、治理有效性、Hook 配置和启动观察记录必须分别报告，不能折叠成单一“健康/不健康”；Hook configured 不等于 Hook 已执行。
+3. 缺少 heartbeat 不等于需要重装。
+4. 历史 heartbeat 不得表述成“当前会话已可信”。
+5. 不输出 token、lease 或其他运行时敏感数据。
+6. 不修改 V3 Schema、task record、STATUS、lane、remote claim、queue、integration 或 closeout。
+7. 不新增阶段 A 的 V4 字段和命令。
+8. package-owned 文件损坏必须失败；合法的 project-owned 治理修改不得被误报为 package drift。
+9. `workflow_check.py` 自身或启动必需模块无法加载属于 bootstrap failure；doctor 的 package 检查从命令成功启动后开始。
+10. 普通 Python 命令运行 doctor 也不得生成 `__pycache__`、pyc 或其他 runtime 写入。
+
+其中第 2、3、4 条将作为受控架构越界检查的目标，且必须在 Reviewer 或 integration 前发现。
+
+## 7. 阶段 0 证据日志
+
+以下表格只记录事件与人类可读结论；V3 的技术状态继续由现有真相源管理。
+
+| 序号 | 事件 | 证据 | 结论 |
+| --- | --- | --- | --- |
+| E-001 | 冻结试运行前 V3 包基线 | `python -B verify_package.py`；48 tests；268.761s；exit 0 | 通过，仅证明 V3 基线 |
+| E-002 | 确认当前包 checkout 不具备已安装 V3 外环 | 根目录无 `.codex-workflow`；安装器拒绝包内目标 | 必须使用外部 pilot |
+| E-003 | 人类确认试点、焦点与退出语义 | 用户回复“确认 A/A” | 已完成 |
+| E-003A | 建立外部 self-hosting pilot 与 V3 基线 | `E:\Github\codex-workflow-v4-pilot`；`c280393 chore: establish V3 pilot baseline` | 已完成 |
+| E-003B | 生成初版 Requirements snapshot | `REQ-V4-PILOT-001` revision 1；`414d8c99dce2a5d39ab7c17784ff417bb5f3c3d38a1f9f1ce1c4e209ad12a937` | 红队发现当前会话、自检 bootstrap 和阶段 0 验收过度承诺，已撤回 |
+| E-003C | 红队修正后生成精确 Requirements snapshot | `REQ-V4-PILOT-001` revision 1；`5fe10ba9d75f4a189be08a13df30ef9766e3f7a3490fa4bd9d144f07b8b45f2a` | snapshot PASS；语义检查只剩预期的 approval 错误；待人类精确批准 |
+| E-003D | 用户精确批准 `5fe10b...45f2a` 后首次写回 gate | 批准后修改了 Brief 中“尚未批准”的 Markdown，fingerprint 变为 `eb4a22...`；Backlog parser 也拒绝 `DOC-001` task ID | gate 正确失败；暴露批准文字自失效和 task ID 隐式约束 |
+| E-003E | 修正批准稳定性和 task ID 兼容 | 批准状态只写 JSON approval；稳定正文不再随批准变化；产品 focus 保持 `DOC-001`，V3 task 改为 `MVP-DOC-001` | 新 snapshot `ae131690e43ea04013b63ab438b7cccf33e45d48550cfa694f4f091bf641f8a2` PASS；manual PASS；待人类精确批准 |
+| E-003F | 用户精确批准稳定 fingerprint | 用户回复批准 `REQ-V4-PILOT-001` revision 1 / `V4-PHASE0` / `ae1316...f8a2`；approval-only 写回后 snapshot 保持一致 | requirements-gate、manual、status 全部 PASS；治理基线提交 `d8d721f` |
+| E-003G | 建立并 claim V3 task/lane | task `MVP-DOC-001`；产品 focus `DOC-001`；授权提交 `92cc95f`；lane `lane-MVP-DOC-001-6ee891d0`；branch `codex/task/MVP-DOC-001-6ee891d0` | preflight PASS；Developer 写入范围仅 workflow_check.py 与 test_workflow_check.py |
+| E-004 | 首次可观察结果 | delivery `781422d997e50a76459cf973ab7a422b56f6cb03`；snapshot `1f23a277c58737256f6af20e5caf984e174a9a3ce1fd04b6eff2d35f1b657bdc`；exact temp install 普通 Python 输出 `PACKAGE PASS / GOVERNANCE PASS / HOOK CONFIG PASS / STARTUP OBSERVATION WARN`、唯一 next action、exit 0、无 pycache/pyc | 已完成；核心命令可直接运行，58 tests 全量回归 PASS |
+| E-004A | P1 修复后的新可观察结果 | delivery `861e932570b6cfaf7d43af565ad5b2c1768a40a0`；delivery hash `ea6a29d48d56af63fbb4c65a2549b47127558b4d6a206398a18e95b614d0302e`；snapshot `46deff6f00788a9a65707e0bda5574c756f1a180c263bfe293bda217bf784e94`；四类非法 UTF-8 由 traceback 改为对应域 `INVALID`、四域输出和唯一 next action 保持；普通 Python 正常路径仍为四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；18 focused 与 62 full tests PASS，等待人类重新观察 |
+| E-004B | 第二个 P1 修复后的新可观察结果 | delivery `4510c1562797387bab422cca128bab20d5b7c25f`；delivery hash `1a2d43acddb0e8496730ff24ce24c697804fe4fdb71bc12f9debfe3cba3ecd36`；snapshot `52d94ee9f7a8c6c07de9e8fb9aa5ed3568711f72d08cb0b49ee7295b45065490`；非法 UTF-8 `layout.json` 只在 doctor discovery 边界转为四域 `UNKNOWN`、唯一 next action、非零且无 traceback，非 doctor 继续抛出；普通 Python正常路径仍为四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；19 focused 与 63 full tests PASS，等待人类重新观察 |
+| E-004C | 第三轮系统性 Review 后的统一边界结果 | delivery `431c2caebadb9740e3623b70ef21910d8461b4d4`；delivery hash `660758a8ce094aa0b943485f61887790bf7718d99aab9425d4077bc9fc4aeaa3`；snapshot `5c2880111694825811958e5a32fca1e07136fd7b3379981a633e9a626ae8d415`；局部 JSON ValueError/RecursionError 映射、中央动态文本单行转义、observation containment/resolve 异常隔离已统一实现；非 doctor 与编程/import failure 仍不被吞掉；普通 Python正常路径保持四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；25 focused 与 69 full tests PASS，等待人类重新观察 |
+| E-005 | 实质决定在固化前提出 | D-002 在实现前提出；用户选择仅缺启动观察记录时 `0 + WARN`；exact snapshot 真实行为为 WARN + exit 0 | 已完成并由真实行为验证 |
+| E-006 | 架构越界在 Reviewer/integration 前发现 | 受控 fixture 将历史观察错误描述成“当前会话可信”，对应护栏测试按预期 exit 1；同时测试严格禁止 runtime/pycache 写入 | 已完成，发生在独立 Reviewer 前 |
+| E-007 | 人类产品观察 | 用户于 2026-07-13 回复 `accepted`；接受对象为 delivery `781422d997e50a76459cf973ab7a422b56f6cb03` / snapshot `1f23a277c58737256f6af20e5caf984e174a9a3ce1fd04b6eff2d35f1b657bdc`；进入 Reviewer 前重新计算 snapshot 一致，exact install 重放仍为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；产品方向被接受，允许进入独立 Reviewer |
+| E-007A | P1 修复后的再次人类产品观察 | 用户再次回复 `accepted`；接受对象为 delivery `861e932570b6cfaf7d43af565ad5b2c1768a40a0` / snapshot `46deff6f00788a9a65707e0bda5574c756f1a180c263bfe293bda217bf784e94`；进入第二轮 Reviewer 前复算 snapshot/preflight PASS，exact install 重放仍为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；新产品方向被接受，允许第二轮独立 Reviewer |
+| E-007B | 第二个 P1 修复后的第三次人类产品观察 | 用户回复 `accepted；开始第三轮review`；接受对象为 delivery `4510c1562797387bab422cca128bab20d5b7c25f` / snapshot `52d94ee9f7a8c6c07de9e8fb9aa5ed3568711f72d08cb0b49ee7295b45065490`；进入第三轮 Reviewer 前复算 snapshot/preflight PASS，exact install 重放仍为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；第三个产品方向被接受，用户明确批准开始第三轮独立 Reviewer |
+| E-007C | 系统性边界修复后的第四次人类产品观察 | 用户回复 `accepted`；接受对象为 delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` / snapshot `5c2880111694825811958e5a32fca1e07136fd7b3379981a633e9a626ae8d415`；进入第四轮 Reviewer 前复算 snapshot/preflight PASS，统一边界矩阵 6/6 PASS，exact install 重放为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；第四个产品方向被接受，允许第四轮独立 Reviewer |
+| E-008 | V3 Reviewer 到 closeout | 首轮 Reviewer 对 snapshot `1f23...` 以 P1 指出四域内非法 UTF-8 traceback；第二轮 Reviewer 对 `46deff...` 以 P1 指出 discovery/layout 非法 UTF-8 traceback；第三轮 Reviewer 对 `52d94e...` 系统性发现 JSON resource 异常、控制字符 action 注入与 observation path 异常，以 2 P1 + 1 P2 / `changes_requested` 写入 generation 7；第四轮 Reviewer `codex-doc001-reviewer-r4-20260713` 对 snapshot `5c2880...d415` 重跑 25 focused 与 69 full tests，均通过，但仍发现 discovery/governance 过宽捕获编程型 `ValueError/RecursionError` 的 P1，以及 package/governance/discovery path `RuntimeError` 可能绕过结构化四域输出的 P2；结论以 `changes_requested` 写入 generation 9 | 用户决定不修复；Review 状态已提交为 pilot lane `7966785`，未运行 gate/integration/closeout |
+| E-009 | 负担与重复确认复盘 | 首次可观察结果前经历 pilot 安装、3 轮 Requirements fingerprint、2 次精确 fingerprint 人类批准、一次批准自失效、一次 task ID 兼容修正、task/lane 建立、focused + 多轮 full verification；四轮 Review 依次暴露 UTF-8 域边界、discovery/layout 边界、JSON/控制字符/observation path 矩阵，以及共享 JSON/path 边界中的异常归类问题，形成四轮 Developer/观察/Review 与四个被人类接受的 snapshot | 已记录；阶段 A 若恢复，必须把异常归类放到共享资源读取和路径解析的精确边界，避免按异常类别逐轮补丁与重复人类确认 |
+| E-010 | 当前产品状态提交到主 `v4` | pilot delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` 的最终产品树被压成主仓库提交 `5121cc2c0a7edd1850db820cbe9f7a539ad1116a`；范围精确为 `payload/.codex-workflow/bin/workflow_check.py` 与 `tests/test_workflow_check.py` | 本地 `v4` 产品检查点已完成；不包含 pilot 治理/control-plane 文件，也不改变 `changes_requested` 结论 |
+
+### 当前产品检查点（已知审查问题）
+
+直接执行：
+
+```powershell
+Set-Location C:\Users\31286\AppData\Local\Temp\codex-v4-doc001-exact-431c2ca-20260713a
+python .codex-workflow\bin\workflow_check.py doctor
+```
+
+真实工作：exact delivery 安装后的四域只读诊断、固定优先级唯一下一步、缺启动观察记录时 `0 + WARN`、普通 Python 不写 runtime/字节码缓存；中央渲染保证已覆盖的动态文本不能伪造域标题或第二个 action。25 个 focused tests 和 69 个完整包测试在第四轮 Review 中通过。
+
+临时部分：观察项目位于本机 Temp；尚无真实 SessionStart 记录；产品代码已经历四轮 Reviewer，但第四轮结论为 `changes_requested`，尚未 gate、integration 或 closeout。
+
+当前限制：manifest 只证明合作式安装记录一致性；Hook configured 不证明 Hook 已执行；历史启动记录不证明当前/唯一会话；doctor 自身或启动依赖无法加载属于外部 bootstrap failure。
+
+第四轮 Review 的未修复问题：discovery/governance 仍可能把编程型 `ValueError/RecursionError` 误归类为资源诊断；package/governance/discovery 的路径解析 `RuntimeError` 仍可能绕过四域结构化输出。Reviewer 判断，正确修复点更可能位于共享 `workflow_common.py` / `workflow_paths.py` 的精确 JSON/path 边界，超出原 task 的两个允许产品路径。
+
+历史决定：用户对旧 delivery `781422d...` / snapshot `1f23...` 回复过 `accepted`。首轮 Reviewer 随后提出非法 UTF-8 的 P1；旧决定保留为历史，没有自动沿用。
+
+历史决定：用户分别对 delivery `781422d...` / snapshot `1f23...` 和 delivery `861e932...` / snapshot `46deff...` 回复过 `accepted`；两次 Reviewer 随后各自发现 P1。这些决定作为产品方向历史保留，没有自动沿用。
+
+历史决定：用户对 delivery `4510c15...` / snapshot `52d94e...` 回复 `accepted；开始第三轮review`。第三轮 Reviewer 随后系统性发现 2 个 P1 和 1 个 P2；该决定作为产品方向历史保留，没有自动沿用。
+
+当前决定：用户先对 delivery `431c2ca...` / snapshot `5c2880...` 回复 `accepted`，随后在第四轮 Reviewer 返回 1 个 P1、1 个 P2 后明确要求不修复并按当前状态提交到本地 `v4`。因此当前只形成带已知问题的检查点，不替代 Reviewer pass、V3 gate、集成审批或 closeout。
+
+## 8. 进入阶段 A 的冻结条件
+
+以下各项全部有真实证据后，才允许冻结阶段 A 最小规格：
+
+- 人类确认唯一 focus core slice 和架构边界；
+- 一个真实功能完成授权、实现、直接观察、人类决定、Reviewer、integration 与 closeout；
+- 人类无需读取机器内部状态即可复现结果并说明真实、临时、限制和待决定事项；
+- 至少一次实质决定在相关实现固化前提出；
+- 至少一次已知架构越界在 Reviewer 或 integration 前被发现；
+- 核心结果先于非必要 supporting 工作；
+- 填写负担、理解成本和重复确认均被记录；
+- 阶段 A 的字段和门禁已经依据试运行结果删减，而不是照搬提案。
+
+当前至少“Reviewer pass、integration 与 closeout”三项未满足，且第四轮仍有未接受的 P1/P2，因此阶段 A 冻结条件尚未达成。
+
+只要上述任一条件未满足，本文件状态就不能改为 `phase0_passed`。
