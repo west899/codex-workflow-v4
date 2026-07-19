@@ -82,6 +82,435 @@ def sha256_json(payload: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
+EVIDENCE_SCOPE_KINDS = frozenset(
+    {
+        "canonical_delivery_paths",
+        "declared_path_call_graph",
+        "explicit_command_set",
+        "explicit_runtime_surfaces",
+        "explicit_test_set",
+        "repository_tree",
+    }
+)
+_AGGREGATE_SCOPE_TARGETS = frozenset(
+    {
+        "all",
+        "all_commands",
+        "all_dry_runs",
+        "all_paths",
+        "all_tests",
+        "entire_repository",
+        "everything",
+        "global",
+        "repo_wide",
+        "repository_wide",
+        "whole_repository",
+    }
+)
+_AGGREGATE_SCOPE_PREFIXES = (
+    "all_",
+    "entire_",
+    "every_",
+    "global_",
+    "repo_wide",
+    "repository_wide",
+    "whole_",
+)
+
+
+def _evidence_text(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowDataError(f"{label} must be non-empty text.")
+    return value.strip()
+
+
+def _evidence_text_set(value: Any, *, label: str, non_empty: bool = False) -> list[str]:
+    if not isinstance(value, list) or (non_empty and not value):
+        requirement = "a non-empty array" if non_empty else "an array"
+        raise WorkflowDataError(f"{label} must be {requirement} of text values.")
+    normalized = [_evidence_text(item, label=f"{label} item") for item in value]
+    if len(normalized) != len(set(normalized)):
+        raise WorkflowDataError(f"{label} must not contain duplicates.")
+    return sorted(normalized)
+
+
+def _scope_target_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9*]+", "_", value.casefold()).strip("_")
+
+
+def _normalize_evidence_scope(scope: Any) -> dict[str, Any]:
+    if not isinstance(scope, dict):
+        raise WorkflowDataError("Developer evidence scope must be an object.")
+    scope_id = _evidence_text(scope.get("id"), label="Developer evidence scope id")
+    kind = _evidence_text(scope.get("kind"), label=f"Developer evidence scope {scope_id} kind")
+    if kind not in EVIDENCE_SCOPE_KINDS:
+        raise WorkflowDataError(f"Developer evidence scope {scope_id} has unsupported kind {kind!r}.")
+    targets = _evidence_text_set(
+        scope.get("targets"),
+        label=f"Developer evidence scope {scope_id} targets",
+        non_empty=True,
+    )
+    for target in targets:
+        token = _scope_target_token(target)
+        if (
+            "*" in target
+            or token in _AGGREGATE_SCOPE_TARGETS
+            or token.startswith(_AGGREGATE_SCOPE_PREFIXES)
+        ):
+            raise WorkflowDataError(
+                f"Developer evidence scope {scope_id} target {target!r} is aggregate; enumerate exact targets."
+            )
+    if kind == "repository_tree":
+        if targets != ["."]:
+            raise WorkflowDataError("repository_tree evidence must use the exact target '.'.")
+    elif "." in targets:
+        raise WorkflowDataError("Only repository_tree evidence may use repository root target '.'.")
+    observed_surfaces = _evidence_text_set(
+        scope.get("observed_surfaces"),
+        label=f"Developer evidence scope {scope_id} observed_surfaces",
+    )
+    if kind == "explicit_runtime_surfaces" and not observed_surfaces:
+        raise WorkflowDataError(
+            f"Developer evidence scope {scope_id} must enumerate observed runtime surfaces."
+        )
+    excluded_targets = _evidence_text_set(
+        scope.get("excluded_targets"),
+        label=f"Developer evidence scope {scope_id} excluded_targets",
+    )
+    if kind == "repository_tree" and "mutable_workflow_control" not in excluded_targets:
+        raise WorkflowDataError(
+            "repository_tree evidence must explicitly exclude mutable_workflow_control."
+        )
+    return {
+        "id": scope_id,
+        "kind": kind,
+        "targets": targets,
+        "observed_surfaces": observed_surfaces,
+        "excluded_targets": excluded_targets,
+    }
+
+
+def _normalize_developer_evidence(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict):
+        raise WorkflowDataError("Developer evidence must be an object.")
+    scopes = [_normalize_evidence_scope(item) for item in evidence.get("scopes", [])]
+    scope_ids = [item["id"] for item in scopes]
+    if len(scope_ids) != len(set(scope_ids)):
+        raise WorkflowDataError("Developer evidence scope IDs must be unique.")
+    scope_by_id = {item["id"]: item for item in scopes}
+
+    commands: list[dict[str, Any]] = []
+    for raw in evidence.get("commands", []):
+        if not isinstance(raw, dict):
+            raise WorkflowDataError("Developer evidence command must be an object.")
+        command_id = _evidence_text(raw.get("id"), label="Developer evidence command id")
+        cwd = _evidence_text(raw.get("cwd"), label=f"Developer evidence command {command_id} cwd")
+        if cwd != ".":
+            try:
+                normalized_cwd = normalize_repo_path(cwd)
+            except WorkflowPathError as exc:
+                raise WorkflowDataError(
+                    f"Developer evidence command {command_id} cwd is unsafe: {exc}"
+                ) from exc
+            if normalized_cwd != cwd:
+                raise WorkflowDataError(
+                    f"Developer evidence command {command_id} cwd must be normalized repository-relative text."
+                )
+        command_scope_ids = _evidence_text_set(
+            raw.get("scope_ids"),
+            label=f"Developer evidence command {command_id} scope_ids",
+            non_empty=True,
+        )
+        missing_scopes = sorted(set(command_scope_ids) - set(scope_by_id))
+        if missing_scopes:
+            raise WorkflowDataError(
+                f"Developer evidence command {command_id} references unknown scopes: "
+                + ", ".join(missing_scopes)
+            )
+        if any(scope_by_id[item]["kind"] == "repository_tree" for item in command_scope_ids) and cwd != ".":
+            raise WorkflowDataError(
+                f"Developer evidence command {command_id} must run from cwd='.' for repository_tree scope."
+            )
+        exit_code = raw.get("exit_code")
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+            raise WorkflowDataError(f"Developer evidence command {command_id} exit_code must be an integer.")
+        expected_failure = raw.get("expected_failure")
+        if not isinstance(expected_failure, bool):
+            raise WorkflowDataError(
+                f"Developer evidence command {command_id} expected_failure must be boolean."
+            )
+        if exit_code != 0 and expected_failure is not True:
+            raise WorkflowDataError(
+                f"Developer evidence command {command_id} failed without expected_failure=true."
+            )
+        commands.append(
+            {
+                "id": command_id,
+                "command": _evidence_text(
+                    raw.get("command"), label=f"Developer evidence command {command_id} command"
+                ),
+                "cwd": cwd,
+                "exit_code": exit_code,
+                "expected_failure": expected_failure,
+                "result": _evidence_text(
+                    raw.get("result"), label=f"Developer evidence command {command_id} result"
+                ),
+                "scope_ids": command_scope_ids,
+            }
+        )
+    command_ids = [item["id"] for item in commands]
+    if len(command_ids) != len(set(command_ids)):
+        raise WorkflowDataError("Developer evidence command IDs must be unique.")
+    command_by_id = {item["id"]: item for item in commands}
+
+    claims: list[dict[str, Any]] = []
+    for raw in evidence.get("claims", []):
+        if not isinstance(raw, dict):
+            raise WorkflowDataError("Developer evidence claim must be an object.")
+        claim_id = _evidence_text(raw.get("id"), label="Developer evidence claim id")
+        scope_id = _evidence_text(
+            raw.get("scope_id"), label=f"Developer evidence claim {claim_id} scope_id"
+        )
+        if scope_id not in scope_by_id:
+            raise WorkflowDataError(
+                f"Developer evidence claim {claim_id} references unknown scope {scope_id!r}."
+            )
+        supporting_ids = _evidence_text_set(
+            raw.get("supporting_command_ids"),
+            label=f"Developer evidence claim {claim_id} supporting_command_ids",
+            non_empty=True,
+        )
+        missing_commands = sorted(set(supporting_ids) - set(command_by_id))
+        if missing_commands:
+            raise WorkflowDataError(
+                f"Developer evidence claim {claim_id} references unknown commands: "
+                + ", ".join(missing_commands)
+            )
+        outside_scope = [
+            command_id
+            for command_id in supporting_ids
+            if scope_id not in command_by_id[command_id]["scope_ids"]
+        ]
+        if outside_scope:
+            raise WorkflowDataError(
+                f"Developer evidence claim {claim_id} has commands outside scope {scope_id}: "
+                + ", ".join(outside_scope)
+            )
+        claims.append(
+            {
+                "id": claim_id,
+                "kind": _evidence_text(
+                    raw.get("kind"), label=f"Developer evidence claim {claim_id} kind"
+                ),
+                "predicate": _evidence_text(
+                    raw.get("predicate"), label=f"Developer evidence claim {claim_id} predicate"
+                ),
+                "scope_id": scope_id,
+                "supporting_command_ids": supporting_ids,
+            }
+        )
+    claim_ids = [item["id"] for item in claims]
+    if len(claim_ids) != len(set(claim_ids)):
+        raise WorkflowDataError("Developer evidence claim IDs must be unique.")
+
+    handoff = evidence.get("handoff")
+    if not isinstance(handoff, dict):
+        raise WorkflowDataError("Developer evidence handoff must be an object.")
+    handoff_claim_ids = _evidence_text_set(
+        handoff.get("claim_ids"), label="Developer evidence handoff claim_ids", non_empty=True
+    )
+    if handoff_claim_ids != sorted(claim_ids):
+        raise WorkflowDataError("Developer evidence handoff must reference every claim exactly once.")
+    used_scopes = {item["scope_id"] for item in claims}
+    if used_scopes != set(scope_ids):
+        raise WorkflowDataError("Every Developer evidence scope must support at least one claim.")
+    used_commands = {
+        command_id for item in claims for command_id in item["supporting_command_ids"]
+    }
+    if used_commands != set(command_ids):
+        raise WorkflowDataError("Every Developer evidence command must support at least one claim.")
+
+    return {
+        "evidence_contract_version": 1,
+        "agent_id": _evidence_text(evidence.get("agent_id"), label="Developer evidence agent_id"),
+        "scopes": sorted(scopes, key=lambda item: item["id"]),
+        "commands": sorted(commands, key=lambda item: item["id"]),
+        "claims": sorted(claims, key=lambda item: item["id"]),
+        "handoff": {
+            "claim_ids": handoff_claim_ids,
+            "remaining_risks": _evidence_text_set(
+                handoff.get("remaining_risks"), label="Developer evidence handoff remaining_risks"
+            ),
+            "review_focus": _evidence_text_set(
+                handoff.get("review_focus"), label="Developer evidence handoff review_focus"
+            ),
+        },
+    }
+
+
+def evidence_claim_fingerprint(
+    snapshot_id_value: str,
+    claim: dict[str, Any],
+    scope: dict[str, Any],
+    supporting_commands: list[dict[str, Any]],
+) -> str:
+    """Bind one claim to its sealed snapshot and complete evidence closure."""
+
+    return sha256_json(
+        {
+            "algorithm": "codex-evidence-claim-v1",
+            "snapshot_id": snapshot_id_value,
+            "claim": claim,
+            "scope": scope,
+            "supporting_commands": sorted(supporting_commands, key=lambda item: item["id"]),
+        }
+    )
+
+
+def prepare_developer_evidence(
+    paths: WorkflowPaths,
+    evidence: Any,
+    *,
+    snapshot_id_value: str,
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
+    validate_workflow_schema(
+        paths,
+        "developer-evidence-v1.schema.json",
+        evidence,
+        label="Developer evidence",
+    )
+    normalized = _normalize_developer_evidence(evidence)
+    for scope in normalized["scopes"]:
+        if scope["kind"] == "canonical_delivery_paths" and scope["targets"] != delivery["changed_paths"]:
+            raise WorkflowDataError(
+                "canonical_delivery_paths evidence must exactly match the canonical delivery changed_paths."
+            )
+    scope_by_id = {item["id"]: item for item in normalized["scopes"]}
+    command_by_id = {item["id"]: item for item in normalized["commands"]}
+    bound_claims: list[dict[str, Any]] = []
+    for claim in normalized["claims"]:
+        fingerprint = evidence_claim_fingerprint(
+            snapshot_id_value,
+            claim,
+            scope_by_id[claim["scope_id"]],
+            [command_by_id[item] for item in claim["supporting_command_ids"]],
+        )
+        bound_claims.append({**claim, "evidence_fingerprint": fingerprint})
+    return {**normalized, "snapshot_id": snapshot_id_value, "claims": bound_claims}
+
+
+def validate_developer_evidence(
+    paths: WorkflowPaths,
+    developer: Any,
+    *,
+    snapshot_id_value: str,
+    delivery: dict[str, Any],
+) -> dict[str, str]:
+    if not isinstance(developer, dict):
+        raise WorkflowDataError("Recorded Developer evidence must be an object.")
+    if developer.get("snapshot_id") != snapshot_id_value:
+        raise WorkflowDataError("Developer evidence is not bound to the sealed snapshot.")
+    raw_claims = developer.get("claims")
+    projected_claims: Any = raw_claims
+    if isinstance(raw_claims, list):
+        projected_claims = []
+        for item in raw_claims:
+            if isinstance(item, dict):
+                projected = dict(item)
+                projected.pop("evidence_fingerprint", None)
+                projected_claims.append(projected)
+            else:
+                projected_claims.append(item)
+    projected = {
+        key: developer.get(key)
+        for key in (
+            "evidence_contract_version",
+            "agent_id",
+            "scopes",
+            "commands",
+            "handoff",
+        )
+    }
+    projected["claims"] = projected_claims
+    rebound = prepare_developer_evidence(
+        paths,
+        projected,
+        snapshot_id_value=snapshot_id_value,
+        delivery=delivery,
+    )
+    recorded_by_id = {
+        item.get("id"): item
+        for item in raw_claims or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    fingerprints: dict[str, str] = {}
+    for claim in rebound["claims"]:
+        recorded = recorded_by_id.get(claim["id"])
+        if not isinstance(recorded, dict) or recorded.get("evidence_fingerprint") != claim["evidence_fingerprint"]:
+            raise WorkflowDataError(
+                f"Developer evidence claim {claim['id']} fingerprint does not match its evidence closure."
+            )
+        fingerprints[claim["id"]] = claim["evidence_fingerprint"]
+    return fingerprints
+
+
+def prepare_review_evidence(
+    paths: WorkflowPaths,
+    review: Any,
+    *,
+    claim_fingerprints: dict[str, str],
+) -> dict[str, Any]:
+    validate_workflow_schema(
+        paths,
+        "review-evidence-v1.schema.json",
+        review,
+        label="Review evidence",
+    )
+    assert isinstance(review, dict)
+    assessments: list[dict[str, Any]] = []
+    for raw in review["claim_assessments"]:
+        claim_id = _evidence_text(raw.get("claim_id"), label="Review claim assessment claim_id")
+        assessments.append(
+            {
+                "claim_id": claim_id,
+                "assessment": raw.get("assessment"),
+                "evidence_fingerprint": raw.get("evidence_fingerprint"),
+                "notes": _evidence_text(
+                    raw.get("notes"), label=f"Review claim assessment {claim_id} notes"
+                ),
+            }
+        )
+    assessment_ids = [item["claim_id"] for item in assessments]
+    if len(assessment_ids) != len(set(assessment_ids)):
+        raise WorkflowDataError("Review claim assessment IDs must be unique.")
+    if set(assessment_ids) != set(claim_fingerprints):
+        raise WorkflowDataError("Review must assess every Developer evidence claim exactly once.")
+    for assessment in assessments:
+        if assessment["evidence_fingerprint"] != claim_fingerprints[assessment["claim_id"]]:
+            raise WorkflowDataError(
+                f"Review claim {assessment['claim_id']} fingerprint does not match Developer evidence."
+            )
+    all_confirmed = all(item["assessment"] == "confirmed" for item in assessments)
+    if review.get("status") == "pass" and not all_confirmed:
+        raise WorkflowDataError("Review status pass requires every claim assessment to be confirmed.")
+    if not all_confirmed and review.get("status") != "changes_requested":
+        raise WorkflowDataError(
+            "A narrowed, rejected, or unverified claim requires review status changes_requested."
+        )
+    return {
+        "evidence_contract_version": 1,
+        "agent_id": review["agent_id"],
+        "snapshot_id": review["snapshot_id"],
+        "status": review["status"],
+        "findings": review["findings"],
+        "requirement_checklist": review["requirement_checklist"],
+        "accepted_findings": review["accepted_findings"],
+        "claim_assessments": sorted(assessments, key=lambda item: item["claim_id"]),
+        "summary": review["summary"],
+    }
+
+
 _SUPPORTED_SCHEMA_KEYS = frozenset(
     {
         "$schema",
@@ -99,6 +528,7 @@ _SUPPORTED_SCHEMA_KEYS = frozenset(
         "minItems",
         "items",
         "pattern",
+        "additionalProperties",
     }
 )
 _SUPPORTED_JSON_TYPES = frozenset({"null", "boolean", "object", "array", "number", "integer", "string"})
@@ -312,6 +742,20 @@ def _validate_json_schema_definition(
                 ref_chain=ref_chain,
                 location=_schema_path(location, key),
             )
+    if "additionalProperties" in schema:
+        additional = schema["additionalProperties"]
+        if not isinstance(additional, (dict, bool)):
+            raise WorkflowDataError(
+                f"Invalid JSON Schema {schema_path.name} at {location}: additionalProperties must be an object or boolean."
+            )
+        _validate_json_schema_definition(
+            additional,
+            schema_path=schema_path,
+            schema_root=schema_root,
+            cache=cache,
+            ref_chain=ref_chain,
+            location=f"{location}.additionalProperties",
+        )
     if "items" in schema:
         _validate_json_schema_definition(
             schema["items"],
@@ -471,6 +915,27 @@ def _validate_json_schema_node(
                         child_schema,
                         value[key],
                         path=_schema_path(path, key),
+                        schema_path=schema_path,
+                        schema_root=schema_root,
+                        cache=cache,
+                        ref_chain=ref_chain,
+                        errors=errors,
+                    )
+        if "additionalProperties" in schema:
+            properties = schema.get("properties", {})
+            if not isinstance(properties, dict):
+                errors.append(f"{path}: schema properties must be an object")
+                return
+            additional = schema["additionalProperties"]
+            for key in sorted(set(value) - set(properties)):
+                child_path = _schema_path(path, key)
+                if additional is False:
+                    errors.append(f"{child_path}: additional property is not allowed")
+                elif additional is not True:
+                    _validate_json_schema_node(
+                        additional,
+                        value[key],
+                        path=child_path,
                         schema_path=schema_path,
                         schema_root=schema_root,
                         cache=cache,
@@ -742,11 +1207,19 @@ def canonical_delivery(paths: WorkflowPaths, base: str, target: str) -> dict[str
     delivery_hash = sha256_json(
         {"algorithm": "codex-delta-v1", "base_commit": base_oid, "entries": entries}
     )
+    changed_paths = sorted({row["new_path"] for row in entries})
     return {
         "base_commit": base_oid,
         "target_commit": target_oid,
         "entries": entries,
-        "changed_paths": sorted({row["new_path"] for row in entries}),
+        "changed_paths": changed_paths,
+        "scope": {
+            "kind": "base_to_target_product_delta",
+            "base_commit": base_oid,
+            "target_commit": target_oid,
+            "included_paths": changed_paths,
+            "excluded_path_class": "mutable_workflow_control",
+        },
         "patch_hash": patch_hash,
         "delivery_hash": delivery_hash,
     }

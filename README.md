@@ -64,7 +64,7 @@ AGENTS.md                              # 薄发现入口，marker 合并
   state/requirements-impacts/          # 已应用的 Requirements 变更影响报告
   state/runs/                          # task record v3
   state/plans/                         # large/high-risk ExecPlan
-  schemas/                             # task/requirements/lane/remote claim
+  schemas/                             # task/requirements/lane/remote claim/developer-review evidence
   bin/                                 # paths/lock/check/state/lane/Stop Hook
   docs/WORKFLOW.md                     # 完整使用顺序
   install/manifest.json                # deterministic ownership manifest
@@ -74,9 +74,24 @@ linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git
 
 ## JSON Schema 结构门禁
 
-`task-record-v3`（含其 `lane-v1` 引用）、`requirements-v1` 和 `remote-claim-v1` 是强制结构门禁，不是只供阅读的示例。Requirements snapshot/gate 读取 Brief 时、所有 V3 task record 读取时、state/lane 写入更新前，以及远端 claim 的生成、提交、读取和远端 closeout 证明时都会 fail-closed 校验。字段缺失、类型/枚举/长度/模式不符或引用的 lane 无效时，命令不写 task record、queue、closeout 或远端 claim/ref。
+`task-record-v3`（含其 `lane-v1` 引用）、`requirements-v1`、`remote-claim-v1`、`developer-evidence-v1` 和 `review-evidence-v1` 是强制结构门禁，不是只供阅读的示例。Requirements snapshot/gate 读取 Brief 时、所有 V3 task record 读取时、state/lane 写入更新前、Developer/Review evidence 入库前，以及远端 claim 的生成、提交、读取和远端 closeout 证明时都会 fail-closed 校验。字段缺失、类型/枚举/长度/模式不符或引用的 lane 无效时，命令不写 task record、queue、closeout 或远端 claim/ref。
 
-校验器只实现包内四份 schema 使用的受限 JSON Schema 子集，随包以 Python 标准库运行；若后续 schema 引入未实现的关键字，也会停止而不是静默忽略。历史 V2 record 仅保留读取兼容，不能借此绕过 V3 写入门禁。
+校验器只实现包内六份 schema 使用的受限 JSON Schema 子集，随包以 Python 标准库运行；若后续 schema 引入未实现的关键字，也会停止而不是静默忽略。历史 V2 record 仅保留读取兼容，不能借此绕过 V3 写入门禁。
+
+## Evidence Contract v1
+
+Developer evidence 必须把命令、有限 scope 和 claim 分开记录。scope kind 只允许：
+
+- `canonical_delivery_paths`
+- `declared_path_call_graph`
+- `explicit_command_set`
+- `explicit_test_set`
+- `explicit_runtime_surfaces`
+- `repository_tree`
+
+每个 claim 都要引用一个 scope 和实际 supporting commands；`record-developer` 在 sealed snapshot 上生成 canonical `evidence_fingerprint`。scope target 禁止使用 `all`、`*`、`repository_wide` 或 `all_dry_runs`；完整 canonical product tree 范围只能使用 `repository_tree` target `.`，并显式排除 `mutable_workflow_control`，其精确产品 tree 身份由 snapshot 绑定。Developer `handoff` 只包含 `claim_ids`、`remaining_risks` 和 `review_focus`。
+
+Reviewer 必须对每个 `claim_id + evidence_fingerprint` 给出 `confirmed`、`narrowed`、`rejected` 或 `unverified`。只有全部 claim 都为 `confirmed` 时 Review 才能 `pass`；任何其他 assessment 都要求 `changes_requested`。已 integrated 的旧记录保持只读兼容，未完成任务的旧 evidence 必须重录 Contract v1 后才能继续 Review、gate 或 integration。完整字段、fingerprint 材料和 Developer/Review JSON 示例见安装后的 `.codex-workflow/docs/WORKFLOW.md`。
 
 ## 最短正确流程
 
@@ -84,8 +99,8 @@ linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git
 2. 第 2A 步：创建 Requirements Brief，复述、纠偏、场景/反例、关闭 blocking questions，批准 exact fingerprint。
 3. Requirements gate 通过后批准 Backlog，生成状态快照，并建立一个授权 task record。
 4. single 或 `workflow_lane.py claim` 创建独立 lane；Developer 只写 allowed paths。
-5. Developer 形成干净 delivery commit，用 `record-developer` 提交 snapshot-bound 证据。
-6. 独立 Reviewer 只读同一 snapshot；Coordinator 用 `record-review` 原样入库。
+5. Developer 形成干净 delivery commit，用 `record-developer` 提交有限 scope、command-bound claims 和 supporting commands；workflow 生成并持久化 Contract v1 fingerprint。
+6. 独立 Reviewer 只读同一 snapshot，逐 claim fingerprint 给出 assessment；Coordinator 用 `record-review` 原样入库。
 7. `complete-task → gate → mark-verified`；此时只能报告 verified。
 8. 选择并验证 `local_bootstrap` 或 `remote_pr_ci`，多个 verified lane 串行入队集成。
 9. prepare closeout 生成 done/集成证据/依赖解锁 commit；该 commit 进入 target ref 后 confirm/reconcile。

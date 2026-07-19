@@ -22,7 +22,7 @@ py -3 .codex-workflow/bin/workflow_check.py manual
 - 已批准 Brief revision/fingerprint 变化或被新 Brief 替代时，先运行 `requirements-impact` 并审查 Git 历史差异、Backlog 动作和 live local lane；再由 Coordinator 用精确 fingerprint 执行 `apply-requirements-impact`。未开始受影响项保持 blocked，已完成项保留历史，活动 task 一律停止在 `human_decision_required`，不得自动续跑。
 - 只有人类对具体 `analysis_id` 写出 `decision: continue`、批准来源和理由后，活动 lane 才能在新基线 rebase 后用 `resolve-requirements-impact` 更新合同；该操作会清空旧证据，必须重新 Developer/Review/gate。停止或重写 task 不执行 resolve，按恢复/abandon 流程处理。
 - incident、maintenance 和明确 user directive 可以不建立完整版本 Brief，但仍必须有当前任务的范围、非目标、验收、风险和实现授权。
-- `requirements-v1`、`task-record-v3`（含 `lane-v1` 引用）和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/claim 的读取、V3 状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
+- `requirements-v1`、`task-record-v3`（含 `lane-v1` 引用）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/evidence/claim 的对应读取或写入、V3 状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
 
 ## 3. 四类状态不能混称
 
@@ -64,6 +64,9 @@ task record 只通过 `workflow_state.py`/`workflow_lane.py` 的受限子命令�
 11. release 默认不删除 branch/worktree。
 12. Coordinator/Integrator 的本机持久租约必须以 token/generation、owner PID/session、heartbeat 和 TTL 记录；TTL 只标记 stale，不自动释放。接管必须用已知旧 token/generation、人工批准和 OS guard CAS；跨命令集成必须持有并传递同一 Integrator token。
 13. canonical delivery delta 必须按 POSIX 路径排序并编码状态、旧/新路径、blob OID、mode；symlink 还必须编码旧/新目标，rename 必须以 delete+add 表示。任何内容修复（包括 merge conflict resolution）都以最终 base-to-result tree 重新摘要并重新验证。
+14. Developer/Review evidence 必须使用 Evidence Contract v1。scope kind 只允许 `canonical_delivery_paths`、`declared_path_call_graph`、`explicit_command_set`、`explicit_test_set`、`explicit_runtime_surfaces` 和 `repository_tree`；target 禁止使用 `all`、`*`、`repository_wide` 或 `all_dry_runs` 聚合语义。`repository_tree` 只表示排除 `mutable_workflow_control` 后、由 sealed snapshot 绑定的 canonical product tree。
+15. 每个 Developer claim 必须绑定一个有限 scope 和实际 supporting commands；Developer 不提交 fingerprint，workflow 将完整规范化 claim、完整 scope、排序后的完整 supporting commands 与 sealed snapshot 绑定为 `evidence_fingerprint`。handoff 只列 `claim_ids`、`remaining_risks`、`review_focus`。Reviewer 对每个精确 fingerprint 只能给出 `confirmed/narrowed/rejected/unverified`；只有全部 `confirmed` 才能 `pass`，其余结论必须为 `changes_requested`。
+16. 已 integrated 的旧 evidence 只读保留；未完成任务的旧自由文本 evidence 不自动迁移，继续 Review、gate 或 integration 前必须重新记录 Contract v1 evidence。
 
 本地多线必须显式把 `layout.json` 的 `parallel.mode` 设置为 `local_worktree`，并通过安装/手工 lock probe。默认 single 仍可使用相同 record/gate，但不提供并行隔离。
 

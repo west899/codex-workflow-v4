@@ -25,6 +25,8 @@ from workflow_common import (
     is_ancestor,
     load_record,
     local_bootstrap_policy_gate,
+    prepare_developer_evidence,
+    prepare_review_evidence,
     read_embedded_json,
     read_requirements_brief,
     requirements_baseline,
@@ -37,6 +39,7 @@ from workflow_common import (
     unlock_ready_dependencies,
     update_backlog_status,
     utc_now,
+    validate_developer_evidence,
     validate_workflow_schema,
     workflow_status_snapshot,
 )
@@ -338,21 +341,37 @@ def _require_queue_head(paths: WorkflowPaths, record: dict[str, Any]) -> None:
 def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     evidence = read_json(args.evidence_json, name="developer evidence")
     _, current = load_record(paths, args.record)
+    expected_generation = (
+        current.get("generation")
+        if args.expected_generation is None
+        else args.expected_generation
+    )
     commit = rev_parse(paths, args.delivery_commit)
     delivery = canonical_delivery(paths, current.get("base_commit"), commit)
     snap = snapshot_id(current, delivery["delivery_hash"])
+    prepared = prepare_developer_evidence(
+        paths,
+        evidence,
+        snapshot_id_value=snap,
+        delivery=delivery,
+    )
 
     def mutation(record: dict[str, Any]) -> None:
-        if record.get("phase") not in {"developer", "coordinator"}:
-            raise StateError("Developer evidence can only be recorded from developer/coordinator phase.")
-        for field in ("agent_id", "commands", "handoff"):
-            if field not in evidence:
-                raise StateError(f"Developer evidence is missing {field}.")
-        record["developer"] = {
-            "agent_id": evidence["agent_id"],
-            "snapshot_id": snap,
-            "commands": evidence["commands"],
-            "handoff": evidence["handoff"],
+        if record.get("phase") not in {"developer", "coordinator", "review"}:
+            raise StateError(
+                "Developer evidence can only be recorded from developer/coordinator/review phase."
+            )
+        record["developer"] = prepared
+        record["review"] = {
+            "evidence_contract_version": None,
+            "agent_id": None,
+            "snapshot_id": None,
+            "status": "pending",
+            "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+            "requirement_checklist": [],
+            "accepted_findings": [],
+            "claim_assessments": [],
+            "summary": None,
         }
         record["verification"] = {
             "status": "pending",
@@ -365,7 +384,7 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         record["status"] = "in_progress"
         record["phase"] = "review"
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(paths, args.record, expected_generation, args.apply, mutation)
 
 
 def record_review(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -377,11 +396,25 @@ def record_review(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         expected = (record.get("verification") or {}).get("snapshot_id")
         if review.get("snapshot_id") != expected:
             raise StateError("Review evidence snapshot does not match the sealed delivery.")
-        required = {"agent_id", "snapshot_id", "status", "findings", "requirement_checklist", "accepted_findings", "summary"}
-        missing = sorted(required - set(review))
-        if missing:
-            raise StateError("Review evidence is missing: " + ", ".join(missing))
-        record["review"] = {key: review[key] for key in sorted(required)}
+        verification = record.get("verification") or {}
+        commit = verification.get("delivery_commit")
+        if not isinstance(commit, str):
+            raise StateError("Review evidence requires a sealed delivery commit.")
+        delivery = canonical_delivery(paths, record.get("base_commit"), commit)
+        computed_snapshot = snapshot_id(record, delivery["delivery_hash"])
+        if expected != computed_snapshot:
+            raise StateError("Review evidence snapshot does not match the canonical delivery.")
+        claim_fingerprints = validate_developer_evidence(
+            paths,
+            record.get("developer"),
+            snapshot_id_value=computed_snapshot,
+            delivery=delivery,
+        )
+        record["review"] = prepare_review_evidence(
+            paths,
+            review,
+            claim_fingerprints=claim_fingerprints,
+        )
         record["phase"] = "coordinator"
 
     mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
@@ -888,18 +921,23 @@ def _reset_after_requirements_continuation(record: dict[str, Any]) -> None:
         "changed_paths": [],
     }
     record["developer"] = {
+        "evidence_contract_version": None,
         "agent_id": None,
         "snapshot_id": None,
+        "scopes": [],
         "commands": [],
+        "claims": [],
         "handoff": None,
     }
     record["review"] = {
+        "evidence_contract_version": None,
         "agent_id": None,
         "snapshot_id": None,
         "status": "pending",
         "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
         "requirement_checklist": [],
         "accepted_findings": [],
+        "claim_assessments": [],
         "summary": None,
     }
     record["human_approvals"] = []

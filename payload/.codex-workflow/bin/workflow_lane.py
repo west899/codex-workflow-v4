@@ -1249,14 +1249,24 @@ def _reset_after_base_refresh(record: dict[str, Any], base_ref: str, base_commit
         "snapshot_id": None,
         "changed_paths": [],
     }
-    record["developer"] = {"agent_id": None, "snapshot_id": None, "commands": [], "handoff": None}
+    record["developer"] = {
+        "evidence_contract_version": None,
+        "agent_id": None,
+        "snapshot_id": None,
+        "scopes": [],
+        "commands": [],
+        "claims": [],
+        "handoff": None,
+    }
     record["review"] = {
+        "evidence_contract_version": None,
         "agent_id": None,
         "snapshot_id": None,
         "status": "pending",
         "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
         "requirement_checklist": [],
         "accepted_findings": [],
+        "claim_assessments": [],
         "summary": None,
     }
     record["human_approvals"] = []

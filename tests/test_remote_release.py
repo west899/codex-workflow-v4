@@ -281,6 +281,14 @@ class RemoteReleaseTests(unittest.TestCase):
             root = fixture["root"]
             bare = fixture["bare"]
 
+            historical = json.loads((owner / relative).read_text(encoding="utf-8"))
+            self.assertNotIn("evidence_contract_version", historical["developer"])
+            closeout_gate = run(
+                workflow_command(owner, "workflow_check.py", "closeout-gate", relative),
+                cwd=owner,
+            )
+            self._assert_ok(closeout_gate)
+
             dry_run = run(
                 workflow_command(owner, "workflow_lane.py", "remote-release", relative),
                 cwd=owner,

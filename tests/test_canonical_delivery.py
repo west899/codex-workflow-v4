@@ -156,6 +156,16 @@ class CanonicalDeliveryTests(unittest.TestCase):
             delivery["delivery_hash"],
             sha256_json({"algorithm": "codex-delta-v1", "base_commit": base, "entries": entries}),
         )
+        self.assertEqual(
+            delivery["scope"],
+            {
+                "kind": "base_to_target_product_delta",
+                "base_commit": base,
+                "target_commit": result,
+                "included_paths": delivery["changed_paths"],
+                "excluded_path_class": "mutable_workflow_control",
+            },
+        )
 
     def test_merge_conflict_fixture_hashes_the_resolved_tree_not_parent_patches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

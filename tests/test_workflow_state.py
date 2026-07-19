@@ -11,9 +11,11 @@ from support import (
     basic_v3_record,
     commit_all,
     create_baseline,
+    developer_evidence_v1,
     git,
     install_project,
     record_relative,
+    review_evidence_v1,
     run,
     workflow_command,
     write_record,
@@ -86,6 +88,205 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertEqual(record_path.read_bytes(), before)
             self.assertIn('"apply": false', result.stdout)
 
+    def test_aggregate_evidence_scopes_fail_without_record_mutation(self) -> None:
+        cases = (
+            ("declared_path_call_graph", "repository_wide"),
+            ("explicit_command_set", "all_dry_runs"),
+            ("explicit_command_set", "all dry-run variants"),
+        )
+        for scope_kind, target_name in cases:
+            with self.subTest(scope_kind=scope_kind, target=target_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    target = Path(directory) / "project"
+                    self.assertEqual(install_project(target).returncode, 0)
+                    record_path, delivery_commit = self._prepare_delivery(target)
+                    relative = record_relative(record_path, target)
+                    payload = developer_evidence_v1("developer-scope")
+                    payload["scopes"][0]["kind"] = scope_kind
+                    payload["scopes"][0]["targets"] = [target_name]
+                    evidence = self._write_json(target.parent / "developer.json", payload)
+                    before = record_path.read_bytes()
+
+                    result = run(
+                        workflow_command(
+                            target,
+                            "workflow_state.py",
+                            "record-developer",
+                            relative,
+                            "--evidence-json",
+                            str(evidence),
+                            "--delivery-commit",
+                            delivery_commit,
+                            "--apply",
+                        ),
+                        cwd=target,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("aggregate", result.stderr)
+                    self.assertEqual(record_path.read_bytes(), before)
+                    self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["generation"], 0)
+
+    def test_review_scope_assessment_and_fingerprint_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            record_path, delivery_commit = self._prepare_delivery(target)
+            relative = record_relative(record_path, target)
+            evidence = self._write_json(
+                target.parent / "developer.json",
+                developer_evidence_v1("developer-review-contract"),
+            )
+            recorded = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            current = json.loads(record_path.read_text(encoding="utf-8"))
+
+            narrowed = review_evidence_v1("reviewer-contract", current)
+            narrowed["claim_assessments"][0]["assessment"] = "narrowed"
+            review_path = self._write_json(target.parent / "review.json", narrowed)
+            before = record_path.read_bytes()
+            rejected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-review",
+                    relative,
+                    "--review-json",
+                    str(review_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("requires every claim assessment to be confirmed", rejected.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+
+            drifted = review_evidence_v1("reviewer-contract", current)
+            drifted["claim_assessments"][0]["evidence_fingerprint"] = "0" * 64
+            self._write_json(review_path, drifted)
+            rejected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-review",
+                    relative,
+                    "--review-json",
+                    str(review_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("fingerprint", rejected.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+
+            narrowed["status"] = "changes_requested"
+            self._write_json(review_path, narrowed)
+            requested = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-review",
+                    relative,
+                    "--review-json",
+                    str(review_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(requested.returncode, 0, requested.stderr)
+            narrowed_record = json.loads(record_path.read_text(encoding="utf-8"))
+            original_snapshot = narrowed_record["verification"]["snapshot_id"]
+            original_fingerprint = narrowed_record["developer"]["claims"][0]["evidence_fingerprint"]
+
+            corrected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(corrected.returncode, 0, corrected.stderr)
+            corrected_record = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(corrected_record["verification"]["snapshot_id"], original_snapshot)
+            self.assertEqual(
+                corrected_record["developer"]["claims"][0]["evidence_fingerprint"],
+                original_fingerprint,
+            )
+            self.assertEqual(corrected_record["review"]["status"], "pending")
+
+    def test_repository_tree_scope_requires_control_path_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            record_path, delivery_commit = self._prepare_delivery(target)
+            relative = record_relative(record_path, target)
+            payload = developer_evidence_v1("developer-repository-tree")
+            payload["scopes"][0].update({"kind": "repository_tree", "targets": ["."]})
+            evidence = self._write_json(target.parent / "developer.json", payload)
+            before = record_path.read_bytes()
+
+            rejected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("mutable_workflow_control", rejected.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+
+            payload["scopes"][0]["excluded_targets"] = ["mutable_workflow_control"]
+            self._write_json(evidence, payload)
+            recorded = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            current = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                current["developer"]["scopes"][0]["excluded_targets"],
+                ["mutable_workflow_control"],
+            )
+
     def test_two_process_generation_cas_has_exactly_one_winner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"
@@ -121,11 +322,7 @@ class WorkflowStateTests(unittest.TestCase):
             relative = record_relative(record_path, target)
             evidence = self._write_json(
                 target.parent / "developer.json",
-                {
-                    "agent_id": "developer-1",
-                    "commands": [{"command": "python -m unittest", "exit_code": 0, "expected_failure": False, "result": "passed"}],
-                    "handoff": "Delivery is ready for independent review.",
-                },
+                developer_evidence_v1("developer-1"),
             )
             developer = run(
                 workflow_command(target, "workflow_state.py", "record-developer", relative, "--evidence-json", str(evidence), "--delivery-commit", delivery_commit, "--apply"),
@@ -133,18 +330,11 @@ class WorkflowStateTests(unittest.TestCase):
             )
             self.assertEqual(developer.returncode, 0, developer.stderr)
             record = json.loads(record_path.read_text(encoding="utf-8"))
-            snapshot = record["verification"]["snapshot_id"]
+            self.assertEqual(record["developer"]["evidence_contract_version"], 1)
+            self.assertRegex(record["developer"]["claims"][0]["evidence_fingerprint"], r"^[0-9a-f]{64}$")
             review = self._write_json(
                 target.parent / "review.json",
-                {
-                    "agent_id": "reviewer-1",
-                    "snapshot_id": snapshot,
-                    "status": "pass",
-                    "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
-                    "requirement_checklist": ["AC-001 is observable"],
-                    "accepted_findings": [],
-                    "summary": "Independent review passed.",
-                },
+                review_evidence_v1("reviewer-1", record),
             )
             reviewed = run(workflow_command(target, "workflow_state.py", "record-review", relative, "--review-json", str(review), "--apply"), cwd=target)
             self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
@@ -165,6 +355,45 @@ class WorkflowStateTests(unittest.TestCase):
             )
             completed = run(workflow_command(target, "workflow_state.py", "complete-task", relative, "--acceptance-json", str(acceptance), "--apply"), cwd=target)
             self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            valid_bytes = record_path.read_bytes()
+            valid_record = json.loads(valid_bytes)
+            legacy_record = json.loads(valid_bytes)
+            legacy_record["developer"] = {
+                "agent_id": "developer-legacy",
+                "snapshot_id": legacy_record["verification"]["snapshot_id"],
+                "commands": [
+                    {
+                        "command": "python -m unittest",
+                        "exit_code": 0,
+                        "expected_failure": False,
+                        "result": "passed",
+                    }
+                ],
+                "handoff": "Legacy handoff.",
+            }
+            legacy_record["review"] = {
+                "agent_id": "reviewer-legacy",
+                "snapshot_id": legacy_record["verification"]["snapshot_id"],
+                "status": "pass",
+                "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+                "requirement_checklist": ["AC-001 is observable"],
+                "accepted_findings": [],
+                "summary": "Legacy review passed.",
+            }
+            record_path.write_text(json.dumps(legacy_record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            legacy_gate = run(workflow_command(target, "workflow_check.py", "gate", relative), cwd=target)
+            self.assertNotEqual(legacy_gate.returncode, 0)
+            self.assertIn("requires Evidence Contract v1", legacy_gate.stderr)
+
+            drifted_record = valid_record
+            drifted_record["developer"]["claims"][0]["predicate"] += " Expanded claim."
+            record_path.write_text(json.dumps(drifted_record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            drift_gate = run(workflow_command(target, "workflow_check.py", "gate", relative), cwd=target)
+            self.assertNotEqual(drift_gate.returncode, 0)
+            self.assertIn("fingerprint", drift_gate.stderr)
+            record_path.write_bytes(valid_bytes)
+
             gate = run(workflow_command(target, "workflow_check.py", "gate", relative), cwd=target)
             self.assertEqual(gate.returncode, 0, gate.stderr)
             marked = run(workflow_command(target, "workflow_state.py", "mark-verified", relative, "--apply"), cwd=target)

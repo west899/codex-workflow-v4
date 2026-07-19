@@ -30,9 +30,9 @@ py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs
 
 ### 3.1 JSON Schema 结构门禁
 
-四份随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` 在所有 V3 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
+六份随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` 在所有 V3 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
 
-校验器仅支持这四份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
+校验器仅支持这六份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
 
 ### 3.2 已批准 Requirements 的变更
 
@@ -105,6 +105,145 @@ Developer 只修改 lane 的 allowed paths，形成干净、可恢复的 deliver
 py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery-commit HEAD --evidence-json developer.json
 py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery-commit HEAD --evidence-json developer.json --apply
 ```
+
+### 5.1 Evidence Contract v1
+
+Developer evidence 和 Review evidence 必须声明 `evidence_contract_version: 1`。Contract 把“执行了什么”与“证据能够支持多大结论”分开记录，任何结论都不能从命令成功自动扩张到更大的路径、调用图、测试集或 runtime 表面。
+
+Developer evidence 包含四个受约束部分：
+
+- `commands`：每项有唯一 `id`、精确命令、repo-relative `cwd`、exit code、是否为预期失败、精确结果和非空 `scope_ids`；
+- `scopes`：每项有唯一 `id`、有限 `kind`、非空 `targets`，以及显式 `observed_surfaces`、`excluded_targets`；
+- `claims`：每项有唯一 `id`、有限 `kind`、单一可验证 `predicate`、一个 `scope_id` 和非空 `supporting_command_ids`；
+- `handoff`：只允许 `claim_ids`、`remaining_risks` 和 `review_focus`，不得用自由文本扩大 claim。
+
+`claim.kind` 只允许 `static_analysis`、`runtime_observation`、`test_result` 或 `manual_observation`。非零 command exit code 必须同时声明 `expected_failure: true`；`explicit_runtime_surfaces` 必须逐项填写非空 `observed_surfaces`。`canonical_delivery_paths.targets` 必须与 workflow 重算的 canonical `changed_paths` 完全一致。
+
+`scope.kind` 只允许以下值：
+
+| kind | `targets` 的精确含义 |
+| --- | --- |
+| `canonical_delivery_paths` | canonical delivery 中逐项列出的规范化变更路径 |
+| `declared_path_call_graph` | 明确列出的入口符号、路径边界和本次实际追踪到的调用图节点 |
+| `explicit_command_set` | 逐项列出的命令入口、子命令或 mode 组合 |
+| `explicit_test_set` | 完整限定的测试 ID 或精确测试文件与选择器 |
+| `explicit_runtime_surfaces` | 明确列出的命令、mode、runtime bucket、接口或可观察表面 |
+| `repository_tree` | target 只能是仓库根 `.`，`excluded_targets` 必须包含 `mutable_workflow_control`；精确 canonical product tree 由 sealed `snapshot_id` 绑定，supporting command 的 `cwd` 也必须为 `.` |
+
+`targets` 不得包含 `*`，经规范化后也不得等于 `all`、`repository_wide`、`all_dry_runs` 或其他等价聚合 token。需要覆盖完整 canonical product tree 时只能使用 `repository_tree` 的 target `.`，并显式排除 canonical delivery 不纳入摘要的 `mutable_workflow_control`；其他 kind 不产生隐式“全仓”“全部调用点”“所有 dry-run”语义。路径 glob 也不能作为已观察路径集合的替代品。
+
+每个 claim 必须同时引用一个已声明 scope 和实际 supporting commands，且每个 supporting command 的 `scope_ids` 必须包含该 claim 的 `scope_id`。每个 scope 和 command 都必须至少支持一个 claim，handoff 的 `claim_ids` 必须恰好覆盖全部 claims。`result`、`predicate`、handoff 或自然语言摘要都不能超出引用 scope。Developer 不填写 fingerprint；`record-developer` 在 sealed snapshot 上生成 `evidence_fingerprint`，并把 `snapshot_id` 与 fingerprint 加入持久化 Developer evidence。其 canonical JSON SHA-256 材料为算法 `codex-evidence-claim-v1`、`snapshot_id`、完整规范化 claim、完整引用 scope，以及按 command `id` 排序的完整 supporting commands。Reviewer 使用该 fingerprint 识别 snapshot、陈述、范围或命令证据的任何漂移。
+
+完整 Developer evidence 示例：
+
+```json
+{
+  "evidence_contract_version": 1,
+  "agent_id": "developer-1",
+  "commands": [
+    {
+      "id": "CMD-001",
+      "command": "git diff --name-only <base> HEAD",
+      "cwd": ".",
+      "exit_code": 0,
+      "expected_failure": false,
+      "result": "Printed exactly src/feature.py and tests/test_feature.py",
+      "scope_ids": ["SCOPE-001"]
+    },
+    {
+      "id": "CMD-002",
+      "command": "python -B -m unittest tests.test_feature.FeatureTests.test_happy_path tests.test_feature.FeatureTests.test_invalid_input",
+      "cwd": ".",
+      "exit_code": 0,
+      "expected_failure": false,
+      "result": "2/2 explicit tests passed",
+      "scope_ids": ["SCOPE-002"]
+    }
+  ],
+  "scopes": [
+    {
+      "id": "SCOPE-001",
+      "kind": "canonical_delivery_paths",
+      "targets": ["src/feature.py", "tests/test_feature.py"],
+      "observed_surfaces": [],
+      "excluded_targets": []
+    },
+    {
+      "id": "SCOPE-002",
+      "kind": "explicit_test_set",
+      "targets": [
+        "tests.test_feature.FeatureTests.test_happy_path",
+        "tests.test_feature.FeatureTests.test_invalid_input"
+      ],
+      "observed_surfaces": [],
+      "excluded_targets": ["all other test IDs"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "CLAIM-001",
+      "kind": "static_analysis",
+      "predicate": "The canonical delivery changes exactly the two listed paths.",
+      "scope_id": "SCOPE-001",
+      "supporting_command_ids": ["CMD-001"]
+    },
+    {
+      "id": "CLAIM-002",
+      "kind": "test_result",
+      "predicate": "The two explicitly named feature tests pass.",
+      "scope_id": "SCOPE-002",
+      "supporting_command_ids": ["CMD-002"]
+    }
+  ],
+  "handoff": {
+    "claim_ids": ["CLAIM-001", "CLAIM-002"],
+    "remaining_risks": ["No claim is made about tests outside SCOPE-002."],
+    "review_focus": ["Check callers outside the changed paths for compatibility impact."]
+  }
+}
+```
+
+Reviewer 必须对当前 Developer evidence 的每个 claim 精确提交一次 `claim_assessments`。每项绑定 `claim_id + evidence_fingerprint`，并使用以下 assessment：
+
+- `confirmed`：陈述、scope 和 supporting commands 全部足以支持原 claim；
+- `narrowed`：证据只支持更窄范围，必须在 `notes` 中写明可确认的精确 targets 或 surface；
+- `rejected`：证据或实现与 claim 冲突；
+- `unverified`：Reviewer 在授权的只读边界内无法确认。
+
+Review `status=pass` 只允许所有 claim assessment 都为 `confirmed`。出现任一 `narrowed`、`rejected` 或 `unverified` 时，Review 必须为 `changes_requested`；不得把范围修正降格为可随 `pass` 带过的自由文本备注。P0-P3 findings 继续描述独立发现，不能替代逐 claim assessment。
+
+完整 Review evidence 示例。以下 64 个 `a` 表示演示 snapshot，两个 fingerprint 是上方 Developer evidence 在该 snapshot 下按合同算法计算出的有效示例值；实际提交必须使用当前 sealed snapshot 与 workflow 持久化的 fingerprint：
+
+```json
+{
+  "evidence_contract_version": 1,
+  "agent_id": "reviewer-1",
+  "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "status": "pass",
+  "claim_assessments": [
+    {
+      "claim_id": "CLAIM-001",
+      "evidence_fingerprint": "b3e1adb1bb978978358f7d9cfb0f03d3bd464d0bbe8aa666dd3a0512202a3590",
+      "assessment": "confirmed",
+      "notes": "Canonical base-to-delivery reconstruction contains exactly the two scoped paths."
+    },
+    {
+      "claim_id": "CLAIM-002",
+      "evidence_fingerprint": "5640edd6eacd01961b8184a6671ce5f1827a94e7f4bd189b8f620ce7d684533e",
+      "assessment": "confirmed",
+      "notes": "The command and result are limited to the two named test IDs and do not claim broader coverage."
+    }
+  ],
+  "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+  "requirement_checklist": [
+    "AC-001: implementation and scoped command evidence match the sealed snapshot."
+  ],
+  "accepted_findings": [],
+  "summary": "Every Developer claim fingerprint is confirmed at its declared scope."
+}
+```
+
+Evidence Contract v1 不从旧自由文本推断 claim。已经 `integration.status=integrated` 的旧记录保持只读兼容，不重写历史，也不重新开启 gate。尚未集成的任务只要 Developer 或 Review evidence 仍是旧格式，就必须在继续 Review、`complete-task`、gate 或 integration 前重新记录 Contract v1 evidence；内容发生变化时仍按新 snapshot 完整重走 Developer 与 Reviewer。
 
 Reviewer 只读 exact commit/snapshot。Coordinator 原样记录 review，不得让 Developer 自审：
 

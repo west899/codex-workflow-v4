@@ -187,6 +187,70 @@ def approved_requirements(target: Path, *, brief_id: str = "REQ-001") -> tuple[P
     return brief, fingerprint
 
 
+def developer_evidence_v1(agent_id: str) -> dict:
+    return {
+        "evidence_contract_version": 1,
+        "agent_id": agent_id,
+        "scopes": [
+            {
+                "id": "SCOPE-001",
+                "kind": "explicit_test_set",
+                "targets": ["python -m unittest"],
+                "observed_surfaces": [],
+                "excluded_targets": [],
+            }
+        ],
+        "commands": [
+            {
+                "id": "CMD-001",
+                "command": "python -m unittest",
+                "cwd": ".",
+                "exit_code": 0,
+                "expected_failure": False,
+                "result": "passed",
+                "scope_ids": ["SCOPE-001"],
+            }
+        ],
+        "claims": [
+            {
+                "id": "CLAIM-001",
+                "kind": "test_result",
+                "predicate": "The explicit test set passes.",
+                "scope_id": "SCOPE-001",
+                "supporting_command_ids": ["CMD-001"],
+            }
+        ],
+        "handoff": {
+            "claim_ids": ["CLAIM-001"],
+            "remaining_risks": [],
+            "review_focus": ["Verify CLAIM-001 against its explicit test-set scope."],
+        },
+    }
+
+
+def review_evidence_v1(agent_id: str, record: dict) -> dict:
+    claims = record["developer"]["claims"]
+    return {
+        "evidence_contract_version": 1,
+        "agent_id": agent_id,
+        "snapshot_id": record["verification"]["snapshot_id"],
+        "status": "pass",
+        "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+        "requirement_checklist": ["AC-001 is observable"],
+        "accepted_findings": [],
+        "claim_assessments": [
+            {
+                "claim_id": claim["id"],
+                "evidence_fingerprint": claim["evidence_fingerprint"],
+                "assessment": "confirmed",
+                "notes": "The exact claim scope and supporting command were reviewed.",
+            }
+            for claim in claims
+        ],
+        "summary": "Independent review passed.",
+    }
+
+
 def basic_v3_record(
     base_commit: str,
     *,

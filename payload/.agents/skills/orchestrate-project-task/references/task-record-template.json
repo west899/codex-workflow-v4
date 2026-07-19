@@ -37,8 +37,8 @@
     "dependency_snapshot": {"backlog_commit": null, "dependencies": []}
   },
   "verification": {"status": "pending", "delivery_commit": null, "delivery_hash": null, "patch_hash": null, "snapshot_id": null, "changed_paths": []},
-  "developer": {"agent_id": null, "snapshot_id": null, "commands": [], "handoff": null},
-  "review": {"agent_id": null, "snapshot_id": null, "status": "pending", "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0}, "requirement_checklist": [], "accepted_findings": [], "summary": null},
+  "developer": {"evidence_contract_version": null, "agent_id": null, "snapshot_id": null, "scopes": [], "commands": [], "claims": [], "handoff": null},
+  "review": {"evidence_contract_version": null, "agent_id": null, "snapshot_id": null, "status": "pending", "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0}, "requirement_checklist": [], "accepted_findings": [], "claim_assessments": [], "summary": null},
   "human_approvals": [],
   "integration": {"status": "not_ready", "mode": null, "policy_id": null, "source_ref": null, "target_ref": null, "target_parent": null, "pr_head_commit": null, "result_commit": null, "merge_strategy": null, "queue_id": null, "queued_at": null, "queue_priority": null, "closeout_commit": null, "closeout_state_fingerprint": null, "pr_url": null, "ci_checks": [], "evidence": []},
   "process_retrospective": {"completed": false, "completed_by": null, "completed_at": null, "questions": {"repeated_problem_found": false, "guidance_gap_found": false, "deterministic_check_candidate_found": false}, "summary": null},

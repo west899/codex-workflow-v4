@@ -13,9 +13,11 @@ from support import (
     commit_all,
     configure_git,
     create_baseline,
+    developer_evidence_v1,
     git,
     install_project,
     record_relative,
+    review_evidence_v1,
     run,
     workflow_command,
     write_record,
@@ -222,11 +224,7 @@ class RemoteClaimEndToEndTests(unittest.TestCase):
             delivery_commit = commit_all(developer, "remote delivery")
             developer_evidence = self._write_json(
                 root / "developer-evidence.json",
-                {
-                    "agent_id": "developer-1",
-                    "commands": [{"command": "python -m unittest", "exit_code": 0, "expected_failure": False, "result": "passed"}],
-                    "handoff": "Remote delivery is ready for review.",
-                },
+                developer_evidence_v1("developer-1"),
             )
             recorded = run(
                 workflow_command(
@@ -246,15 +244,7 @@ class RemoteClaimEndToEndTests(unittest.TestCase):
             pending_record = json.loads((developer / relative).read_text(encoding="utf-8"))
             review_evidence = self._write_json(
                 root / "review-evidence.json",
-                {
-                    "agent_id": "reviewer-1",
-                    "snapshot_id": pending_record["verification"]["snapshot_id"],
-                    "status": "pass",
-                    "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
-                    "requirement_checklist": ["AC-001 is observable"],
-                    "accepted_findings": [],
-                    "summary": "Independent review passed.",
-                },
+                review_evidence_v1("reviewer-1", pending_record),
             )
             reviewed = run(
                 workflow_command(developer, "workflow_state.py", "record-review", relative, "--review-json", str(review_evidence), "--apply"),

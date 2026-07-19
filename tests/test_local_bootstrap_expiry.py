@@ -10,8 +10,10 @@ from support import (
     basic_v3_record,
     commit_all,
     create_baseline,
+    developer_evidence_v1,
     install_project,
     record_relative,
+    review_evidence_v1,
     run,
     workflow_command,
     write_record,
@@ -88,18 +90,7 @@ class LocalBootstrapExpiryTests(unittest.TestCase):
 
         developer = self._write_json(
             root / "developer.json",
-            {
-                "agent_id": "developer-expiry",
-                "commands": [
-                    {
-                        "command": "python -m unittest",
-                        "exit_code": 0,
-                        "expected_failure": False,
-                        "result": "passed",
-                    }
-                ],
-                "handoff": "Ready for independent review.",
-            },
+            developer_evidence_v1("developer-expiry"),
         )
         self._assert_ok(
             run(
@@ -120,15 +111,7 @@ class LocalBootstrapExpiryTests(unittest.TestCase):
         current = json.loads(record_path.read_text(encoding="utf-8"))
         review = self._write_json(
             root / "review.json",
-            {
-                "agent_id": "reviewer-expiry",
-                "snapshot_id": current["verification"]["snapshot_id"],
-                "status": "pass",
-                "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
-                "requirement_checklist": ["AC-001 is observable"],
-                "accepted_findings": [],
-                "summary": "Independent review passed.",
-            },
+            review_evidence_v1("reviewer-expiry", current),
         )
         self._assert_ok(
             run(

@@ -88,6 +88,36 @@
         "changed_paths": {"type": "array", "items": {"type": "string"}}
       }
     },
+    "developer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "snapshot_id", "commands", "handoff"],
+      "properties": {
+        "evidence_contract_version": {"enum": [null, 1]},
+        "agent_id": {"type": ["string", "null"]},
+        "snapshot_id": {"type": ["string", "null"]},
+        "scopes": {"type": "array"},
+        "commands": {"type": "array"},
+        "claims": {"type": "array"},
+        "handoff": {"type": ["string", "object", "null"]}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "snapshot_id", "status", "findings", "requirement_checklist", "accepted_findings", "summary"],
+      "properties": {
+        "evidence_contract_version": {"enum": [null, 1]},
+        "agent_id": {"type": ["string", "null"]},
+        "snapshot_id": {"type": ["string", "null"]},
+        "status": {"enum": ["pending", "pass", "changes_requested"]},
+        "findings": {"type": "object"},
+        "requirement_checklist": {"type": "array"},
+        "accepted_findings": {"type": "array"},
+        "claim_assessments": {"type": "array"},
+        "summary": {"type": ["string", "null"]}
+      }
+    },
     "integration": {
       "type": "object",
       "required": ["status", "mode", "policy_id", "source_ref", "target_ref", "target_parent", "pr_head_commit", "result_commit", "merge_strategy", "queue_id", "queued_at", "queue_priority", "closeout_commit", "closeout_state_fingerprint", "pr_url", "ci_checks", "evidence"],

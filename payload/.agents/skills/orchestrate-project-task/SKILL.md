@@ -42,7 +42,7 @@ Select a durable `ready` Backlog item or record a typed exception. Create `state
 - Medium: ordered record steps and a PLAN summary.
 - Large/high-risk: ExecPlan under `state/plans/`; get user approval for scope or irreversible choices.
 
-Run preflight before delegation. `requirements-v1`、`task-record-v3`（含 `lane-v1`）和 `remote-claim-v1` 都是强制结构门禁：Brief/record/claim 读写前会 fail closed 校验，错误时修复源数据或受管 schema/实现并补测试，绝不通过手改 JSON 绕开。All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
+Run preflight before delegation. `requirements-v1`、`task-record-v3`（含 `lane-v1`）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 都是强制结构门禁：Brief/record/evidence/claim 在对应读写边界会 fail closed 校验，错误时修复源数据或受管 schema/实现并补测试，绝不通过手改 JSON 绕开。All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
 
 ## 4. Choose single or isolated lane
 
@@ -61,11 +61,13 @@ For different machines, prefer `remote_preassigned`: Coordinator writes random o
 
 ## 5. Delegate Developer and Reviewer
 
-Spawn the project `developer` in the assigned worktree with the raw request, record, requirements/acceptance IDs, constraints and ExecPlan. Require `$implement-project-task`. It must create one clean delivery commit, then use `record-developer` with exact commands and handoff evidence.
+Spawn the project `developer` in the assigned worktree with the raw request, record, requirements/acceptance IDs, constraints and ExecPlan. Require `$implement-project-task`. It must create one clean delivery commit, then use `record-developer` with Evidence Contract v1 commands, finite scopes, command-bound claims, and a handoff containing only `claim_ids`, `remaining_risks` and `review_focus`; the workflow generates each sealed `evidence_fingerprint`.
 
-Spawn a different project `reviewer` against that same worktree, delivery commit and snapshot. Give Developer evidence as untrusted input. Reviewer uses `$review-project-change`, remains read-only and reconstructs the acceptance checklist independently. Coordinator records its report using `record-review`.
+Spawn a different project `reviewer` against that same worktree, delivery commit and snapshot. Give Developer evidence as untrusted input. Reviewer uses `$review-project-change`, remains read-only, reconstructs the acceptance checklist independently, and records one `confirmed/narrowed/rejected/unverified` assessment for every exact `evidence_fingerprint`. Coordinator records its report using `record-review`; `pass` is allowed only when every claim is `confirmed`.
 
 Return P0/P1 and unaccepted P2 findings to the same lane Developer. Any fix that changes delivery content invalidates the old snapshot and requires a new Developer evidence + full Reviewer pass.
+
+Keep already integrated legacy evidence read-only. For any unfinished task with pre-Contract Developer or Review evidence, return to the appropriate evidence step and record Contract v1 again before Review, `complete-task`, gate or integration. Never infer claims, scopes or fingerprints from an old free-text handoff.
 
 ## 6. Complete local verification
 

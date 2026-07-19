@@ -41,6 +41,8 @@ REQUIRED = {
     "payload/.codex-workflow/bin/workflow_lane.py",
     "payload/.codex-workflow/bin/codex_stop_hook.py",
     "payload/.codex-workflow/schemas/task-record-v3.schema.json",
+    "payload/.codex-workflow/schemas/developer-evidence-v1.schema.json",
+    "payload/.codex-workflow/schemas/review-evidence-v1.schema.json",
     "payload/.codex-workflow/schemas/requirements-v1.schema.json",
     "payload/.codex-workflow/schemas/lane-v1.schema.json",
     "payload/.codex-workflow/schemas/remote-claim-v1.schema.json",

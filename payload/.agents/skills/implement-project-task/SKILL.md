@@ -40,10 +40,18 @@ py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery
 py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery-commit HEAD --evidence-json <file> --apply
 ```
 
-Evidence names the Developer agent, exact commands/exit codes/results and handoff. Do not write review fields, verification passed, integration or Backlog state.
+Evidence must follow Evidence Contract v1 in `.codex-workflow/docs/WORKFLOW.md`:
+
+- give every command a unique `id`, normalized repository-relative `cwd`, exact command, exit code, expected-failure flag, result and non-empty `scope_ids`;
+- declare only `canonical_delivery_paths`, `declared_path_call_graph`, `explicit_command_set`, `explicit_test_set`, `explicit_runtime_surfaces` or `repository_tree` scopes with exact targets; enumerate non-empty `observed_surfaces` for runtime scopes and make canonical-delivery targets exactly match changed paths;
+- never use `all`, `*`, `repository_wide` or `all_dry_runs` as an aggregate target; a full canonical product-tree scope uses `repository_tree` target `.`, explicitly excludes `mutable_workflow_control`, and runs supporting commands from `cwd="."`;
+- bind every claim to one declared scope and actual supporting commands; do not submit a fingerprint because `record-developer` binds the normalized closure to the sealed snapshot and generates `evidence_fingerprint`;
+- keep `handoff` to exactly `claim_ids`, `remaining_risks` and `review_focus`.
+
+Command success does not justify a broader claim than its referenced scope. Do not write review fields, verification passed, integration or Backlog state.
 
 When Coordinator has advanced the target and instructed a local lane to rebase, complete the rebase first and wait for `workflow_lane.py refresh-base` to reset the old state. Then create a new clean delivery commit and repeat the full Developer evidence flow; the prior snapshot, review and approval no longer bind to the refreshed base.
 
 ## 5. Handoff
 
-Return behavior delivered, changed interfaces, delivery commit/hash/snapshot, exact evidence, assumptions/deviations, remaining risks, Reviewer focus areas and process-improvement candidates. A candidate includes concrete evidence, recurrence, smallest enforceable target and suggested change. Explicitly say what remains unverified. Never call the work done, synced, released or independently reviewed.
+List every submitted claim ID in `handoff.claim_ids`. Put unresolved assumptions, deviations and unverified surfaces in `handoff.remaining_risks`, and put concrete inspection requests in `handoff.review_focus`. Describe delivered behavior or changed interfaces only through claims bound to finite scopes and supporting commands. Do not add a free-text handoff summary or use handoff to widen a claim. Never call the work done, synced, released or independently reviewed.

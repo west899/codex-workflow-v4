@@ -15,6 +15,8 @@ Before trusting Developer rationale, derive a checklist from user-confirmed sour
 
 Passing Developer tests are untrusted evidence, not proof. Do not lower acceptance criteria to match implementation. Do not edit files or fix findings.
 
+Reconstruct every Evidence Contract v1 `evidence_fingerprint` from the sealed snapshot, full normalized claim, full referenced finite scope and full supporting commands sorted by command ID. Reject aggregate scope targets `all`, `*`, `repository_wide` and `all_dry_runs`; a full canonical product-tree scope requires `repository_tree` target `.`, exclusion `mutable_workflow_control`, and supporting commands with `cwd="."`, while exact product-tree identity comes from the snapshot. Confirm that Developer handoff contains only `claim_ids`, `remaining_risks` and `review_focus` and that its claim IDs exactly match the submitted claims.
+
 ## 3. Report
 
 Findings first:
@@ -24,7 +26,13 @@ Findings first:
 - P2: meaningful resilience, maintainability, performance or test gap;
 - P3: optional low-risk improvement.
 
-For each finding give title, tight file/line, concrete failure path, impact and required correction/test. Then report exact snapshot ID, independently derived checklist, unverified gaps, process candidates and result (`changes_requested` or `pass`). Developer and Reviewer agent IDs must differ.
+For each Developer claim, report the exact `claim_id + evidence_fingerprint` and one assessment:
+
+- `confirmed`: the statement, scope and supporting commands support the claim as written;
+- `narrowed`: evidence supports only a smaller scope; state the exact supported targets or surfaces in `notes`;
+- `rejected`: evidence or implementation conflicts with the claim;
+- `unverified`: the authorized read-only review cannot confirm it.
+
+Use `pass` only when every claim assessment is `confirmed`. Any `narrowed`, `rejected` or `unverified` assessment requires `changes_requested`, even when no independent P0-P3 finding exists. For each independent finding give title, tight file/line, concrete failure path, impact and required correction/test. Then report exact snapshot ID, independently derived checklist, residual gaps and result. Developer and Reviewer agent IDs must differ.
 
 Coordinator records the report through `workflow_state.py record-review`; Reviewer does not modify the record. After any delivery-content fix, re-review the full new snapshot from scratch.
-

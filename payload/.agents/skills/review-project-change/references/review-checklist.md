@@ -2,6 +2,18 @@
 
 Use only the sections relevant to the change. This is a prompt for investigation, not a box-ticking substitute for reasoning.
 
+## Evidence Contract v1
+
+- Does every command have a unique ID and preserve the exact command, normalized repository-relative `cwd`, exit code, expected-failure flag, result and non-empty scope IDs? Does every non-zero exit declare `expected_failure: true`?
+- Is every scope one of `canonical_delivery_paths`, `declared_path_call_graph`, `explicit_command_set`, `explicit_test_set`, `explicit_runtime_surfaces` or `repository_tree`?
+- Are scope targets exact, non-empty and free of the aggregate sentinels `all`, `*`, `repository_wide` and `all_dry_runs`?
+- Does every `repository_tree` scope use target `.`, exclude `mutable_workflow_control`, and run supporting commands with `cwd="."`, with exact canonical product-tree identity supplied by the sealed snapshot? Do runtime scopes enumerate observed surfaces, and do canonical-delivery targets exactly match changed paths?
+- Does every claim reference exactly one declared scope and non-empty actual supporting commands whose scope IDs contain that scope? Does every scope and command support at least one claim?
+- Does independent canonical reconstruction over snapshot, full normalized claim, full scope and command-ID-sorted full commands reproduce every workflow-generated `evidence_fingerprint`?
+- Does Developer handoff contain only `claim_ids`, `remaining_risks` and `review_focus`, with no wider free-text assertion?
+- Is there exactly one `confirmed/narrowed/rejected/unverified` assessment for every Developer claim fingerprint?
+- Is Review `pass` used only when every assessment is `confirmed`? Any other assessment requires `changes_requested`.
+
 ## Requirement Coverage
 
 - Does every acceptance criterion have an implementation and test or observable proof?
@@ -42,4 +54,3 @@ Use only the sections relevant to the change. This is a prompt for investigation
 - Assertions verify behavior rather than implementation detail
 - Negative, permission, error, and integration paths are covered
 - Mocks do not conceal the real boundary or incompatible behavior
-

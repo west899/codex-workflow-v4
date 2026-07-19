@@ -34,6 +34,7 @@ from workflow_common import (
     load_record,
     local_bootstrap_policy_gate,
     parse_json_resource,
+    prepare_review_evidence,
     read_embedded_json,
     read_requirements_brief,
     requirements_impact,
@@ -41,6 +42,7 @@ from workflow_common import (
     snapshot_id,
     status_paths,
     utc_now,
+    validate_developer_evidence,
     workflow_status_is_current,
 )
 from workflow_lock import lock_probe
@@ -556,9 +558,51 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
     if not isinstance(developer, dict):
         checks.error("task.developer must be an object.")
         developer = {}
+    review = record.get("review")
+    if not isinstance(review, dict):
+        checks.error("task.review must be an object.")
+        review = {}
     developer_id = checks.require_text(developer.get("agent_id"), "task.developer.agent_id")
     if developer.get("snapshot_id") != delivery["snapshot_id"]:
         checks.error("Developer evidence is not bound to the sealed snapshot.")
+    contract_version = developer.get("evidence_contract_version")
+    review_contract_version = review.get("evidence_contract_version")
+    claim_fingerprints: dict[str, str] = {}
+    if contract_version == 1:
+        if review_contract_version != 1:
+            checks.error("Developer and Review evidence must use Evidence Contract v1 together.")
+        try:
+            claim_fingerprints = validate_developer_evidence(
+                paths,
+                developer,
+                snapshot_id_value=delivery["snapshot_id"],
+                delivery=delivery,
+            )
+        except WorkflowDataError as exc:
+            checks.error(str(exc))
+        if claim_fingerprints and review_contract_version == 1:
+            try:
+                prepare_review_evidence(
+                    paths,
+                    review,
+                    claim_fingerprints=claim_fingerprints,
+                )
+            except WorkflowDataError as exc:
+                checks.error(str(exc))
+    elif contract_version is None:
+        integration = record.get("integration") or {}
+        if integration.get("status") == "integrated" and review_contract_version is None:
+            checks.warn(
+                "Historical integrated task uses legacy Developer/Review evidence without scoped claims."
+            )
+        else:
+            checks.error(
+                "Final gate requires Evidence Contract v1; re-record scoped Developer evidence and independent Review."
+            )
+        checks.require_text(developer.get("handoff"), "task.developer.handoff")
+    else:
+        checks.error(f"Unsupported Developer evidence contract version: {contract_version!r}.")
+
     commands = _objects(developer.get("commands"), checks, "task.developer.commands")
     successes = 0
     for index, command in enumerate(commands):
@@ -570,12 +614,7 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
         checks.require_text(command.get("result"), f"task.developer.commands[{index}].result")
     if successes == 0:
         checks.error("Developer evidence requires at least one successful command.")
-    checks.require_text(developer.get("handoff"), "task.developer.handoff")
 
-    review = record.get("review")
-    if not isinstance(review, dict):
-        checks.error("task.review must be an object.")
-        review = {}
     reviewer_id = checks.require_text(review.get("agent_id"), "task.review.agent_id")
     if reviewer_id and reviewer_id == developer_id:
         checks.error("Developer and Reviewer agent IDs must differ.")

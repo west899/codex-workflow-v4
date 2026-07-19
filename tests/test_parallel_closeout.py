@@ -10,9 +10,11 @@ from support import (
     basic_v3_record,
     commit_all,
     create_baseline,
+    developer_evidence_v1,
     git,
     install_project,
     record_relative,
+    review_evidence_v1,
     run,
     workflow_command,
     write_record,
@@ -48,18 +50,7 @@ class LocalParallelCloseoutEndToEndTests(unittest.TestCase):
     ) -> str:
         developer_evidence = self._write_json(
             evidence_root / f"{task_id}-{round_id}-developer.json",
-            {
-                "agent_id": f"developer-{task_id}-{round_id}",
-                "commands": [
-                    {
-                        "command": "python -m unittest",
-                        "exit_code": 0,
-                        "expected_failure": False,
-                        "result": "passed",
-                    }
-                ],
-                "handoff": "Delivery is ready for independent review.",
-            },
+            developer_evidence_v1(f"developer-{task_id}-{round_id}"),
         )
         self._assert_ok(
             run(
@@ -80,15 +71,7 @@ class LocalParallelCloseoutEndToEndTests(unittest.TestCase):
         current = json.loads((lane_path / record).read_text(encoding="utf-8"))
         review_evidence = self._write_json(
             evidence_root / f"{task_id}-{round_id}-review.json",
-            {
-                "agent_id": f"reviewer-{task_id}-{round_id}",
-                "snapshot_id": current["verification"]["snapshot_id"],
-                "status": "pass",
-                "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
-                "requirement_checklist": ["AC-001 is observable"],
-                "accepted_findings": [],
-                "summary": "Independent review passed.",
-            },
+            review_evidence_v1(f"reviewer-{task_id}-{round_id}", current),
         )
         self._assert_ok(
             run(

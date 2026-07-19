@@ -76,6 +76,26 @@ class JsonSchemaGateTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkflowDataError, r"future\.schema\.json.*maxLength"):
                 validate_json_schema(schema, {}, label="Future payload")
 
+    def test_additional_properties_false_is_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schema = Path(directory) / "strict.schema.json"
+            schema.write_text(
+                json.dumps(
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"allowed": {"type": "string"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(WorkflowDataError, r"unexpected.*additional property"):
+                validate_json_schema(
+                    schema,
+                    {"allowed": "yes", "unexpected": "no"},
+                    label="Strict payload",
+                )
+
     def test_lane_schema_reference_blocks_state_write_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"
@@ -100,6 +120,32 @@ class JsonSchemaGateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("task-record-v3.schema.json", result.stderr)
             self.assertIn("dependency_snapshot.dependencies[0]", result.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+
+    def test_task_schema_rejects_an_untracked_developer_narrative_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self._assert_ok(install_project(target))
+            base = create_baseline(target)
+            record = basic_v3_record(base)
+            record["developer"]["global_summary"] = "Repository-wide coverage passed."
+            record_path = write_record(target, record)
+            before = record_path.read_bytes()
+            result = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "invalidate-integration",
+                    record_relative(record_path, target),
+                    "--reason",
+                    "schema-test",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("global_summary", result.stderr)
+            self.assertIn("additional property", result.stderr)
             self.assertEqual(record_path.read_bytes(), before)
 
     def test_state_writer_revalidates_its_updated_record_before_write(self) -> None:
