@@ -445,6 +445,8 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         computed_snapshot = snapshot_id(record, delivery["delivery_hash"])
         if verification.get("snapshot_id") != computed_snapshot:
             raise StateError("Task completion evidence does not match the canonical delivery snapshot.")
+        if review.get("snapshot_id") != computed_snapshot:
+            raise StateError("Task completion Review snapshot does not match the canonical delivery.")
         claim_fingerprints = validate_developer_evidence(
             paths,
             developer,

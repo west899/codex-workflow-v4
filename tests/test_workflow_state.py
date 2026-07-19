@@ -287,7 +287,7 @@ class WorkflowStateTests(unittest.TestCase):
                 ["mutable_workflow_control"],
             )
 
-    def test_complete_task_rejects_legacy_evidence_without_mutation(self) -> None:
+    def test_complete_task_rejects_invalid_evidence_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"
             self.assertEqual(install_project(target).returncode, 0)
@@ -331,7 +331,57 @@ class WorkflowStateTests(unittest.TestCase):
             )
             self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
 
-            legacy = json.loads(record_path.read_text(encoding="utf-8"))
+            valid = json.loads(record_path.read_text(encoding="utf-8"))
+            acceptance_path = self._write_json(
+                target.parent / "acceptance.json",
+                {
+                    "acceptance": [
+                        {"id": "AC-001", "status": "passed", "evidence": ["invalid"]}
+                    ],
+                    "process_retrospective": {
+                        "completed": True,
+                        "completed_by": "coordinator-1",
+                        "completed_at": "2026-07-19T00:00:00Z",
+                        "questions": {
+                            "repeated_problem_found": False,
+                            "guidance_gap_found": False,
+                            "deterministic_check_candidate_found": False,
+                        },
+                        "summary": "Invalid completion must stop.",
+                    },
+                    "rule_proposals": [],
+                    "remaining_risks": [],
+                },
+            )
+
+            mismatched = json.loads(json.dumps(valid))
+            mismatched["review"]["snapshot_id"] = "0" * 64
+            record_path.write_text(
+                json.dumps(mismatched, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            before = record_path.read_bytes()
+            rejected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "complete-task",
+                    relative,
+                    "--acceptance-json",
+                    str(acceptance_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("Review snapshot", rejected.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+            self.assertEqual(
+                json.loads(record_path.read_text(encoding="utf-8"))["generation"],
+                valid["generation"],
+            )
+
+            legacy = json.loads(json.dumps(valid))
             legacy["developer"] = {
                 "agent_id": legacy["developer"]["agent_id"],
                 "snapshot_id": legacy["developer"]["snapshot_id"],
@@ -358,27 +408,6 @@ class WorkflowStateTests(unittest.TestCase):
                 )
             }
             record_path.write_text(json.dumps(legacy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            acceptance_path = self._write_json(
-                target.parent / "acceptance.json",
-                {
-                    "acceptance": [
-                        {"id": "AC-001", "status": "passed", "evidence": ["legacy"]}
-                    ],
-                    "process_retrospective": {
-                        "completed": True,
-                        "completed_by": "coordinator-1",
-                        "completed_at": "2026-07-19T00:00:00Z",
-                        "questions": {
-                            "repeated_problem_found": False,
-                            "guidance_gap_found": False,
-                            "deterministic_check_candidate_found": False,
-                        },
-                        "summary": "Legacy completion must stop.",
-                    },
-                    "rule_proposals": [],
-                    "remaining_risks": [],
-                },
-            )
             before = record_path.read_bytes()
             generation = legacy["generation"]
             rejected = run(
