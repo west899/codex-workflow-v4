@@ -287,6 +287,117 @@ class WorkflowStateTests(unittest.TestCase):
                 ["mutable_workflow_control"],
             )
 
+    def test_complete_task_rejects_legacy_evidence_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            record_path, delivery_commit = self._prepare_delivery(target)
+            relative = record_relative(record_path, target)
+            developer_path = self._write_json(
+                target.parent / "developer.json",
+                developer_evidence_v1("developer-completion-contract"),
+            )
+            recorded = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-developer",
+                    relative,
+                    "--evidence-json",
+                    str(developer_path),
+                    "--delivery-commit",
+                    delivery_commit,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            current = json.loads(record_path.read_text(encoding="utf-8"))
+            review_path = self._write_json(
+                target.parent / "review.json",
+                review_evidence_v1("reviewer-completion-contract", current),
+            )
+            reviewed = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-review",
+                    relative,
+                    "--review-json",
+                    str(review_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+
+            legacy = json.loads(record_path.read_text(encoding="utf-8"))
+            legacy["developer"] = {
+                "agent_id": legacy["developer"]["agent_id"],
+                "snapshot_id": legacy["developer"]["snapshot_id"],
+                "commands": [
+                    {
+                        "command": "python -m unittest",
+                        "exit_code": 0,
+                        "expected_failure": False,
+                        "result": "passed",
+                    }
+                ],
+                "handoff": "Legacy handoff.",
+            }
+            legacy["review"] = {
+                key: legacy["review"][key]
+                for key in (
+                    "agent_id",
+                    "snapshot_id",
+                    "status",
+                    "findings",
+                    "requirement_checklist",
+                    "accepted_findings",
+                    "summary",
+                )
+            }
+            record_path.write_text(json.dumps(legacy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            acceptance_path = self._write_json(
+                target.parent / "acceptance.json",
+                {
+                    "acceptance": [
+                        {"id": "AC-001", "status": "passed", "evidence": ["legacy"]}
+                    ],
+                    "process_retrospective": {
+                        "completed": True,
+                        "completed_by": "coordinator-1",
+                        "completed_at": "2026-07-19T00:00:00Z",
+                        "questions": {
+                            "repeated_problem_found": False,
+                            "guidance_gap_found": False,
+                            "deterministic_check_candidate_found": False,
+                        },
+                        "summary": "Legacy completion must stop.",
+                    },
+                    "rule_proposals": [],
+                    "remaining_risks": [],
+                },
+            )
+            before = record_path.read_bytes()
+            generation = legacy["generation"]
+            rejected = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "complete-task",
+                    relative,
+                    "--acceptance-json",
+                    str(acceptance_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("requires Evidence Contract v1", rejected.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+            self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["generation"], generation)
+
     def test_two_process_generation_cas_has_exactly_one_winner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"

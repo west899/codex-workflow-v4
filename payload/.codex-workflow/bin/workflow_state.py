@@ -424,6 +424,38 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     acceptance = read_json(args.acceptance_json, name="acceptance evidence")
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("phase") != "coordinator":
+            raise StateError("Task completion requires coordinator phase after independent Review.")
+        developer = record.get("developer") or {}
+        review = record.get("review") or {}
+        if (
+            developer.get("evidence_contract_version") != 1
+            or review.get("evidence_contract_version") != 1
+        ):
+            raise StateError(
+                "Task completion requires Evidence Contract v1 Developer and Review evidence."
+            )
+        if review.get("status") != "pass":
+            raise StateError("Task completion requires independent Review status pass.")
+        verification = record.get("verification") or {}
+        commit = verification.get("delivery_commit")
+        if not isinstance(commit, str):
+            raise StateError("Task completion requires a sealed delivery commit.")
+        delivery = canonical_delivery(paths, record.get("base_commit"), commit)
+        computed_snapshot = snapshot_id(record, delivery["delivery_hash"])
+        if verification.get("snapshot_id") != computed_snapshot:
+            raise StateError("Task completion evidence does not match the canonical delivery snapshot.")
+        claim_fingerprints = validate_developer_evidence(
+            paths,
+            developer,
+            snapshot_id_value=computed_snapshot,
+            delivery=delivery,
+        )
+        prepare_review_evidence(
+            paths,
+            review,
+            claim_fingerprints=claim_fingerprints,
+        )
         updates = acceptance.get("acceptance")
         retrospective = acceptance.get("process_retrospective")
         if not isinstance(updates, list) or not isinstance(retrospective, dict):
