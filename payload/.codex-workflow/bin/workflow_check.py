@@ -687,7 +687,7 @@ def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
         return DoctorFinding("UNKNOWN", f"The V3 install manifest could not be read: {exc}", boundary)
     try:
         manifest = parse_json_resource(raw, label="The V3 install manifest")
-    except WorkflowDataError as exc:
+    except WorkflowJSONError as exc:
         return DoctorFinding("INVALID", str(exc), boundary)
     if not isinstance(manifest, dict):
         return DoctorFinding("INVALID", "The V3 install manifest root must be an object.", boundary)
@@ -839,7 +839,7 @@ def _doctor_hooks(paths: WorkflowPaths) -> DoctorFinding:
         )
     try:
         payload = parse_json_resource(raw, label="The project Hook configuration")
-    except WorkflowDataError as exc:
+    except WorkflowJSONError as exc:
         return DoctorFinding(
             "INVALID",
             str(exc),
@@ -947,7 +947,7 @@ def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
         return DoctorFinding("UNKNOWN", f"The startup observation could not be read: {exc}")
     try:
         observation = parse_json_resource(raw, label="The startup observation")
-    except WorkflowDataError as exc:
+    except WorkflowJSONError as exc:
         return DoctorFinding("INVALID", str(exc))
     if not isinstance(observation, dict):
         return DoctorFinding("INVALID", "The startup observation root must be an object.")

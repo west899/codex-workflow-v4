@@ -38,15 +38,15 @@ class WorkflowDataError(ValueError):
     """Tracked workflow data is missing, inconsistent, or unsafe."""
 
 
-class WorkflowJSONError(WorkflowDataError):
-    """A JSON resource failed inside the standard-library parser."""
+class WorkflowJSONError(Exception):
+    """Common marker for classified JSON parser failures."""
 
 
-class WorkflowJSONSyntaxError(WorkflowJSONError):
+class WorkflowJSONSyntaxError(WorkflowDataError, WorkflowJSONError):
     """A JSON resource contains ordinary invalid syntax or data."""
 
 
-class WorkflowJSONResourceError(WorkflowJSONError):
+class WorkflowJSONResourceError(RuntimeError, WorkflowJSONError):
     """A JSON resource exceeded a deterministic parser resource boundary."""
 
 

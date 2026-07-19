@@ -614,6 +614,18 @@ class WorkflowCheckTests(unittest.TestCase):
     def test_json_syntax_and_resource_failures_have_distinct_types(self) -> None:
         workflow_check = self.load_payload_workflow_check()
 
+        self.assertTrue(
+            issubclass(workflow_check.WorkflowJSONSyntaxError, workflow_check.WorkflowDataError)
+        )
+        self.assertFalse(
+            issubclass(workflow_check.WorkflowJSONResourceError, workflow_check.WorkflowDataError)
+        )
+        self.assertTrue(
+            issubclass(workflow_check.WorkflowJSONSyntaxError, workflow_check.WorkflowJSONError)
+        )
+        self.assertTrue(
+            issubclass(workflow_check.WorkflowJSONResourceError, workflow_check.WorkflowJSONError)
+        )
         with self.assertRaises(workflow_check.WorkflowJSONSyntaxError):
             workflow_check.parse_json_resource("{", label="syntax fixture")
         with self.assertRaises(workflow_check.WorkflowJSONResourceError):
@@ -681,6 +693,78 @@ class WorkflowCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CODEX_REQUIREMENTS_BASELINE is invalid JSON", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_non_doctor_json_resource_errors_cross_command_boundaries(self) -> None:
+        payload = self.json_resource_limit_fixture("huge_integer")
+
+        def assert_resource_traceback(result) -> None:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("JSONResourceLimitError", result.stderr)
+            self.assertIn("Traceback", result.stderr)
+
+        candidate = (
+            self.target
+            / ".codex-workflow/governance/requirements/REQ-RESOURCE-BOUNDARY.md"
+        )
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(
+            self.embedded_json_fixture("CODEX_REQUIREMENTS_JSON", payload)
+        )
+        result = run(
+            workflow_command(
+                self.target,
+                "workflow_check.py",
+                "requirements-snapshot",
+                candidate.relative_to(self.target).as_posix(),
+            ),
+            cwd=self.target,
+        )
+        assert_resource_traceback(result)
+
+        brief, _ = approved_requirements(self.target)
+        status = self.target / ".codex-workflow/state/STATUS.md"
+        schema = self.target / ".codex-workflow/schemas/task-record-v3.schema.json"
+        originals = {
+            brief: brief.read_bytes(),
+            status: status.read_bytes(),
+            schema: schema.read_bytes(),
+        }
+        try:
+            brief.write_bytes(
+                self.embedded_json_fixture("CODEX_REQUIREMENTS_JSON", payload)
+            )
+            result = run(
+                workflow_command(self.target, "workflow_check.py", "status"),
+                cwd=self.target,
+            )
+            assert_resource_traceback(result)
+
+            brief.write_bytes(originals[brief])
+            status.write_bytes(
+                self.embedded_json_fixture("CODEX_WORKFLOW_STATUS_JSON", payload)
+            )
+            result = run(
+                workflow_command(self.target, "workflow_check.py", "status"),
+                cwd=self.target,
+            )
+            assert_resource_traceback(result)
+
+            status.write_bytes(originals[status])
+            record_path = write_record(self.target, basic_v3_record(self.baseline))
+            schema.write_bytes(payload)
+            result = run(
+                workflow_command(
+                    self.target,
+                    "workflow_check.py",
+                    "preflight",
+                    record_relative(record_path, self.target),
+                ),
+                cwd=self.target,
+            )
+            assert_resource_traceback(result)
+        finally:
+            for path, original in originals.items():
+                path.write_bytes(original)
 
     def test_doctor_ordinary_python_is_strictly_read_only_and_creates_no_bytecode(self) -> None:
         script = self.target / ".codex-workflow/bin/workflow_check.py"
