@@ -36,7 +36,7 @@ class WorkflowPathError(ValueError):
     """A configured or discovered workflow path is unsafe or invalid."""
 
 
-class WorkflowPathResourceError(WorkflowPathError):
+class WorkflowPathResourceError(RuntimeError):
     """A configured JSON path resource failed inside its parser."""
 
 

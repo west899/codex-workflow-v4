@@ -1138,7 +1138,7 @@ def main() -> None:
             if not candidate.is_absolute():
                 candidate = paths.root / candidate
             try:
-                candidate = candidate.resolve()
+                candidate = resolve_path(candidate, label="Requirements brief")
                 requirements_root = paths.tracked("requirements")
                 if requirements_root not in candidate.parents:
                     raise WorkflowPathError("Requirements brief must be under the configured requirements directory.")

@@ -512,6 +512,13 @@ class WorkflowCheckTests(unittest.TestCase):
     def test_shared_path_boundary_classifies_runtime_only(self) -> None:
         workflow_check = self.load_payload_workflow_check()
 
+        self.assertFalse(
+            issubclass(
+                workflow_check.WorkflowPathResourceError,
+                workflow_check.WorkflowPathError,
+            )
+        )
+
         class ResolveFailure:
             def resolve(self, *, strict: bool = False):
                 raise RuntimeError("filesystem resolve loop")
@@ -580,6 +587,29 @@ class WorkflowCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assert_doctor_shape(result.stdout)
         self.assertIn("STARTUP OBSERVATION: UNKNOWN", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_requirements_candidate_symlink_loop_uses_shared_resolver(self) -> None:
+        requirements = self.target / ".codex-workflow/governance/requirements"
+        loop_a = requirements / "candidate-loop-a"
+        loop_b = requirements / "candidate-loop-b"
+        try:
+            loop_a.symlink_to(loop_b)
+            loop_b.symlink_to(loop_a)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+
+        result = run(
+            workflow_command(
+                self.target,
+                "workflow_check.py",
+                "requirements-snapshot",
+                loop_a.relative_to(self.target).as_posix(),
+            ),
+            cwd=self.target,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unable to resolve Requirements brief", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_json_integer_resource_limit_is_exact_and_sign_independent(self) -> None:
