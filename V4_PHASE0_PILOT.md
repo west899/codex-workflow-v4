@@ -4,11 +4,11 @@
 
 ## 1. 当前状态
 
-- 状态：`checkpointed_with_known_review_findings`
-- 当前阶段：第四轮独立 Reviewer 已完成并以 1 个 P1、1 个 P2 返回 `changes_requested`；用户决定不再修复，要求按当前状态提交检查点
+- 状态：`ready_for_snapshot`
+- 当前阶段：第九轮独立文档复核 `PASS`，无 P0-P3 findings；Python 3.9/3.12/3.13 下 31 项 doctor 专项与 75 项完整包测试均通过，可形成新 delivery snapshot
 - 仍未开始：V4 Schema、V4 task record、decision 命令、强制 product checkpoint、强制 gate
 - 已确认：隔离 self-hosting pilot、`DOC-001 doctor`、会话未观察时采用 `0 + WARN`
-- 下一门禁：当前不运行 gate、integration 或 closeout；若以后恢复，必须先授权共享 JSON/path 边界的精确范围，形成新 snapshot，并重新完成人类观察和独立 Review
+- 下一门禁：形成包含共享 JSON/path 边界修复的新 snapshot，重新完成人类观察和独立 Review；当前不运行 gate、integration 或 closeout
 
 已批准的精确 Requirements 基线：
 
@@ -179,6 +179,12 @@ python .codex-workflow/bin/workflow_check.py doctor
 | E-004A | P1 修复后的新可观察结果 | delivery `861e932570b6cfaf7d43af565ad5b2c1768a40a0`；delivery hash `ea6a29d48d56af63fbb4c65a2549b47127558b4d6a206398a18e95b614d0302e`；snapshot `46deff6f00788a9a65707e0bda5574c756f1a180c263bfe293bda217bf784e94`；四类非法 UTF-8 由 traceback 改为对应域 `INVALID`、四域输出和唯一 next action 保持；普通 Python 正常路径仍为四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；18 focused 与 62 full tests PASS，等待人类重新观察 |
 | E-004B | 第二个 P1 修复后的新可观察结果 | delivery `4510c1562797387bab422cca128bab20d5b7c25f`；delivery hash `1a2d43acddb0e8496730ff24ce24c697804fe4fdb71bc12f9debfe3cba3ecd36`；snapshot `52d94ee9f7a8c6c07de9e8fb9aa5ed3568711f72d08cb0b49ee7295b45065490`；非法 UTF-8 `layout.json` 只在 doctor discovery 边界转为四域 `UNKNOWN`、唯一 next action、非零且无 traceback，非 doctor 继续抛出；普通 Python正常路径仍为四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；19 focused 与 63 full tests PASS，等待人类重新观察 |
 | E-004C | 第三轮系统性 Review 后的统一边界结果 | delivery `431c2caebadb9740e3623b70ef21910d8461b4d4`；delivery hash `660758a8ce094aa0b943485f61887790bf7718d99aab9425d4077bc9fc4aeaa3`；snapshot `5c2880111694825811958e5a32fca1e07136fd7b3379981a633e9a626ae8d415`；局部 JSON ValueError/RecursionError 映射、中央动态文本单行转义、observation containment/resolve 异常隔离已统一实现；非 doctor 与编程/import failure 仍不被吞掉；普通 Python正常路径保持四域 `PASS/PASS/PASS/WARN`、exit 0、无 pycache/pyc | Developer 完成；25 focused 与 69 full tests PASS，等待人类重新观察 |
+| E-004D | 第四轮 P1/P2 的共享边界修复 | `workflow_common.py` 增加明确的 `WorkflowJSONError` 与跨 Python 一致的 640 位整数资源上限；`workflow_paths.py` 集中封装 layout JSON 和 `Path.resolve` 资源异常；doctor 删除 governance/discovery 的宽泛 `ValueError/RecursionError` 捕获；新增业务异常传播与路径边界回归测试 | Developer 完成；27 focused 与 71 full tests PASS，等待形成新 snapshot、产品观察和独立 Review |
+| E-004E | 第五轮 Review findings 的全局边界修复 | layout 文件读取与 JSON 解析拆为独立边界；路径解析分别产生 `WorkflowPathOSError` 与 `WorkflowPathRuntimeError`；observation location 删除裸 `RuntimeError` 捕获并恢复 `OSError=INVALID`、`RuntimeError=UNKNOWN`；增加 640/641 位正负整数及读取/解析异常矩阵 | Developer 完成；29 focused 与 73 full tests PASS，等待形成新 snapshot、产品观察和再次独立 Review |
+| E-004F | 第六轮符号链接环 P2 的跨版本修复 | 共享 resolver 先以 `strict=True` 探测真实路径错误，缺失叶路径再回退 non-strict；Python 3.9-3.12 的 loop `RuntimeError` 与 Python 3.13+ 的 `OSError(ELOOP)` 统一为 `WorkflowPathRuntimeError`；JSON 嵌套增加显式 256 层限制，消除解释器默认行为差异；加入真实 symlink loop 与 256/257 层 fixture | Developer 完成；Python 3.9/3.12/3.13 各 31 focused 与 75 full tests PASS，等待再次独立 Review |
+| E-004G | Python 3.13 真实环境复核与证据同步 | 通过 `uv` 安装 CPython 3.13.14；真实双向 symlink loop 产生 `OSError(ELOOP)` 并稳定映射为 `WorkflowPathRuntimeError`；doctor observation 输出 `UNKNOWN` 且无 traceback；独立 Reviewer 复核运行时代码 PASS | Python 3.13.14 的 31 focused 与 75 full tests PASS；全仓无新增 `__pycache__`/`*.pyc`；证据文档 P3 已修正 |
+| E-004H | 第八轮文档状态一致性修正 | 将第四轮 25 focused / 69 full 明确标为历史证据；临时状态更新为第八轮 finding 已修正且待复核；第四轮“不修复”决定明确标为已被后续用户授权取代的历史决定 | 当前工作树表达单一状态：findings 已修正，尚未形成新 snapshot，等待独立文档复核 |
+| E-004I | 第九轮独立文档复核 | 完整复核顶部状态、E-004H、历史检查点、临时状态、历史决定、下一门禁和阶段 A 冻结条件 | `PASS`，无 P0-P3 findings；`git diff --check` PASS；Reviewer 未修改文件 |
 | E-005 | 实质决定在固化前提出 | D-002 在实现前提出；用户选择仅缺启动观察记录时 `0 + WARN`；exact snapshot 真实行为为 WARN + exit 0 | 已完成并由真实行为验证 |
 | E-006 | 架构越界在 Reviewer/integration 前发现 | 受控 fixture 将历史观察错误描述成“当前会话可信”，对应护栏测试按预期 exit 1；同时测试严格禁止 runtime/pycache 写入 | 已完成，发生在独立 Reviewer 前 |
 | E-007 | 人类产品观察 | 用户于 2026-07-13 回复 `accepted`；接受对象为 delivery `781422d997e50a76459cf973ab7a422b56f6cb03` / snapshot `1f23a277c58737256f6af20e5caf984e174a9a3ce1fd04b6eff2d35f1b657bdc`；进入 Reviewer 前重新计算 snapshot 一致，exact install 重放仍为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；产品方向被接受，允许进入独立 Reviewer |
@@ -189,7 +195,7 @@ python .codex-workflow/bin/workflow_check.py doctor
 | E-009 | 负担与重复确认复盘 | 首次可观察结果前经历 pilot 安装、3 轮 Requirements fingerprint、2 次精确 fingerprint 人类批准、一次批准自失效、一次 task ID 兼容修正、task/lane 建立、focused + 多轮 full verification；四轮 Review 依次暴露 UTF-8 域边界、discovery/layout 边界、JSON/控制字符/observation path 矩阵，以及共享 JSON/path 边界中的异常归类问题，形成四轮 Developer/观察/Review 与四个被人类接受的 snapshot | 已记录；阶段 A 若恢复，必须把异常归类放到共享资源读取和路径解析的精确边界，避免按异常类别逐轮补丁与重复人类确认 |
 | E-010 | 当前产品状态提交到主 `v4` | pilot delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` 的最终产品树被压成主仓库提交 `5121cc2c0a7edd1850db820cbe9f7a539ad1116a`；范围精确为 `payload/.codex-workflow/bin/workflow_check.py` 与 `tests/test_workflow_check.py` | 本地 `v4` 产品检查点已完成；不包含 pilot 治理/control-plane 文件，也不改变 `changes_requested` 结论 |
 
-### 当前产品检查点（已知审查问题）
+### 历史产品检查点（第四轮后，当时带已知审查问题）
 
 直接执行：
 
@@ -198,13 +204,13 @@ Set-Location C:\Users\31286\AppData\Local\Temp\codex-v4-doc001-exact-431c2ca-202
 python .codex-workflow\bin\workflow_check.py doctor
 ```
 
-真实工作：exact delivery 安装后的四域只读诊断、固定优先级唯一下一步、缺启动观察记录时 `0 + WARN`、普通 Python 不写 runtime/字节码缓存；中央渲染保证已覆盖的动态文本不能伪造域标题或第二个 action。25 个 focused tests 和 69 个完整包测试在第四轮 Review 中通过。
+真实工作：exact delivery 安装后的四域只读诊断、固定优先级唯一下一步、缺启动观察记录时 `0 + WARN`、普通 Python 不写 runtime/字节码缓存；中央渲染保证已覆盖的动态文本不能伪造域标题或第二个 action。历史证据：第四轮 Review 对当时 snapshot 运行 25 个 focused tests 和 69 个完整包测试，均通过。
 
-临时部分：观察项目位于本机 Temp；尚无真实 SessionStart 记录；产品代码已经历四轮 Reviewer，但第四轮结论为 `changes_requested`，尚未 gate、integration 或 closeout。
+临时部分：观察项目位于本机 Temp；尚无真实 SessionStart 记录；第四至第八轮 Review 发现的运行时与文档 findings 已在当前工作树修正，尚未形成新 snapshot、完成修复后人类观察或获得 snapshot 绑定的 Reviewer pass，也尚未运行 gate、integration 或 closeout。
 
 当前限制：manifest 只证明合作式安装记录一致性；Hook configured 不证明 Hook 已执行；历史启动记录不证明当前/唯一会话；doctor 自身或启动依赖无法加载属于外部 bootstrap failure。
 
-第四轮 Review 的未修复问题：discovery/governance 仍可能把编程型 `ValueError/RecursionError` 误归类为资源诊断；package/governance/discovery 的路径解析 `RuntimeError` 仍可能绕过四域结构化输出。Reviewer 判断，正确修复点更可能位于共享 `workflow_common.py` / `workflow_paths.py` 的精确 JSON/path 边界，超出原 task 的两个允许产品路径。
+第四至第八轮 Review 的共享边界与证据 findings 已进入修复后待审状态：doctor 涉及的 manifest、governance、Hooks、observation 和 layout JSON 资源在各自解析器边界转换为明确异常，读取与业务代码产生的编程型异常继续传播；共享路径解析边界按操作系统错误、运行时解析错误和 `ELOOP` 语义稳定分类；JSON 整数与嵌套深度使用显式资源上限。Python 3.9/3.12/3.13 下各 31 项 doctor 专项与 75 项完整包测试通过，尚待形成新 snapshot 并获得 snapshot 绑定的独立 Reviewer pass。
 
 历史决定：用户对旧 delivery `781422d...` / snapshot `1f23...` 回复过 `accepted`。首轮 Reviewer 随后提出非法 UTF-8 的 P1；旧决定保留为历史，没有自动沿用。
 
@@ -212,7 +218,7 @@ python .codex-workflow\bin\workflow_check.py doctor
 
 历史决定：用户对 delivery `4510c15...` / snapshot `52d94e...` 回复 `accepted；开始第三轮review`。第三轮 Reviewer 随后系统性发现 2 个 P1 和 1 个 P2；该决定作为产品方向历史保留，没有自动沿用。
 
-当前决定：用户先对 delivery `431c2ca...` / snapshot `5c2880...` 回复 `accepted`，随后在第四轮 Reviewer 返回 1 个 P1、1 个 P2 后明确要求不修复并按当前状态提交到本地 `v4`。因此当前只形成带已知问题的检查点，不替代 Reviewer pass、V3 gate、集成审批或 closeout。
+历史决定（已被后续授权取代）：用户先对 delivery `431c2ca...` / snapshot `5c2880...` 回复 `accepted`，随后在第四轮 Reviewer 返回 1 个 P1、1 个 P2 后要求不修复并按当时状态提交到本地 `v4`，因而当时只形成带已知问题的检查点。2026-07-18 至 2026-07-19，用户后续明确授权全局修复、多轮独立 Review 和 Python 3.13 复核；当前工作树已包含第四至第八轮 findings 的修正，带已知问题的旧检查点不再代表当前产品状态。当前修正仍需新 snapshot、人类观察、Reviewer pass、V3 gate、集成审批和 closeout。
 
 ## 8. 进入阶段 A 的冻结条件
 
@@ -227,6 +233,6 @@ python .codex-workflow\bin\workflow_check.py doctor
 - 填写负担、理解成本和重复确认均被记录；
 - 阶段 A 的字段和门禁已经依据试运行结果删减，而不是照搬提案。
 
-当前至少“Reviewer pass、integration 与 closeout”三项未满足，且第四轮仍有未接受的 P1/P2，因此阶段 A 冻结条件尚未达成。
+当前至少“修复后产品观察、Reviewer pass、integration 与 closeout”四项未满足，因此阶段 A 冻结条件尚未达成。
 
 只要上述任一条件未满足，本文件状态就不能改为 `phase0_passed`。

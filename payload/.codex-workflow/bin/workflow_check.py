@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 
 from workflow_common import (
     WorkflowDataError,
+    WorkflowJSONError,
     allowed_path,
     backlog_rows,
     canonical_delivery,
@@ -30,6 +31,7 @@ from workflow_common import (
     is_mutable_control_path,
     load_record,
     local_bootstrap_policy_gate,
+    parse_json_resource,
     read_embedded_json,
     read_requirements_brief,
     requirements_impact,
@@ -40,7 +42,15 @@ from workflow_common import (
     workflow_status_is_current,
 )
 from workflow_lock import lock_probe
-from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json
+from workflow_paths import (
+    WorkflowPathError,
+    WorkflowPathOSError,
+    WorkflowPathResourceError,
+    WorkflowPathRuntimeError,
+    WorkflowPaths,
+    atomic_write_json,
+    resolve_path,
+)
 
 
 PLACEHOLDER = re.compile(r"(?:<[^>]+>|\b(?:TBD|TODO|placeholder)\b|\.\.\.)", re.IGNORECASE)
@@ -137,6 +147,8 @@ def requirements_gate(paths: WorkflowPaths, path: Path, checks: Checks) -> Any:
             path,
             schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
         )
+    except WorkflowJSONError:
+        raise
     except (OSError, WorkflowDataError) as exc:
         checks.error(str(exc))
         return None
@@ -301,6 +313,8 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
         text = backlog.read_text(encoding="utf-8")
         try:
             metadata = read_embedded_json(text, BASELINE_MARKER)
+        except WorkflowJSONError:
+            raise
         except WorkflowDataError as exc:
             checks.error(str(exc))
             metadata = {}
@@ -364,6 +378,8 @@ def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
                 + " and apply its reviewed result before continuing."
             )
         return baseline
+    except WorkflowJSONError:
+        raise
     except WorkflowDataError as exc:
         checks.error(str(exc))
         return None
@@ -667,9 +683,9 @@ def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
     except OSError as exc:
         return DoctorFinding("UNKNOWN", f"The V3 install manifest could not be read: {exc}", boundary)
     try:
-        manifest = json.loads(raw)
-    except (ValueError, RecursionError) as exc:
-        return DoctorFinding("INVALID", f"The V3 install manifest is invalid JSON: {exc}", boundary)
+        manifest = parse_json_resource(raw, label="The V3 install manifest")
+    except WorkflowDataError as exc:
+        return DoctorFinding("INVALID", str(exc), boundary)
     if not isinstance(manifest, dict):
         return DoctorFinding("INVALID", "The V3 install manifest root must be an object.", boundary)
 
@@ -749,13 +765,10 @@ def _doctor_governance(paths: WorkflowPaths) -> DoctorFinding:
             )
     except UnicodeDecodeError as exc:
         return DoctorFinding("INVALID", f"Project governance is not valid UTF-8: {exc}")
+    except WorkflowJSONError as exc:
+        return DoctorFinding("INVALID", str(exc))
     except (OSError, WorkflowDataError, WorkflowPathError) as exc:
         return DoctorFinding("UNKNOWN", f"Project governance could not be read reliably: {exc}")
-    except (ValueError, RecursionError) as exc:
-        return DoctorFinding(
-            "INVALID",
-            f"Project governance contains JSON that could not be parsed safely: {exc}",
-        )
     if checks.errors:
         return DoctorFinding("FAIL", *checks.errors, *checks.warnings)
     if checks.warnings:
@@ -822,11 +835,11 @@ def _doctor_hooks(paths: WorkflowPaths) -> DoctorFinding:
             "Hook configuration only; it does not prove that a Hook ran.",
         )
     try:
-        payload = json.loads(raw)
-    except (ValueError, RecursionError) as exc:
+        payload = parse_json_resource(raw, label="The project Hook configuration")
+    except WorkflowDataError as exc:
         return DoctorFinding(
             "INVALID",
-            f"The project Hook configuration is invalid JSON: {exc}",
+            str(exc),
             "Hook configuration only; it does not prove that a Hook ran.",
         )
     if not isinstance(payload, dict):
@@ -912,7 +925,7 @@ def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
         observation_path = paths.shared_runtime / "audit" / "last-session-check.json"
     except RecursionError:
         raise
-    except (WorkflowPathError, OSError, RuntimeError) as exc:
+    except (WorkflowPathError, OSError) as exc:
         return DoctorFinding(
             "UNKNOWN",
             f"The startup observation location could not be resolved reliably: {exc}",
@@ -930,9 +943,9 @@ def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
     except OSError as exc:
         return DoctorFinding("UNKNOWN", f"The startup observation could not be read: {exc}")
     try:
-        observation = json.loads(raw)
-    except (ValueError, RecursionError) as exc:
-        return DoctorFinding("INVALID", f"The startup observation is invalid JSON: {exc}")
+        observation = parse_json_resource(raw, label="The startup observation")
+    except WorkflowDataError as exc:
+        return DoctorFinding("INVALID", str(exc))
     if not isinstance(observation, dict):
         return DoctorFinding("INVALID", "The startup observation root must be an object.")
     try:
@@ -944,12 +957,13 @@ def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
     if not isinstance(recorded_worktree, str) or not recorded_worktree.strip():
         return DoctorFinding("INVALID", "The startup observation has an invalid worktree.")
     try:
-        resolved_worktree = Path(recorded_worktree).expanduser().resolve()
-    except OSError as exc:
+        resolved_worktree = resolve_path(
+            Path(recorded_worktree).expanduser(),
+            label="startup observation worktree",
+        )
+    except WorkflowPathOSError as exc:
         return DoctorFinding("INVALID", f"The startup observation worktree is invalid: {exc}")
-    except RecursionError:
-        raise
-    except RuntimeError as exc:
+    except WorkflowPathError as exc:
         return DoctorFinding(
             "UNKNOWN",
             f"The startup observation worktree could not be resolved reliably: {exc}",
@@ -1075,14 +1089,16 @@ def main() -> None:
         if args.mode == "doctor":
             raise SystemExit(_doctor_discovery_failure(exc)) from exc
         raise
+    except WorkflowPathResourceError as exc:
+        if args.mode == "doctor":
+            raise SystemExit(_doctor_discovery_failure(exc)) from exc
+        if exc.__cause__ is not None:
+            raise exc.__cause__
+        raise
     except (WorkflowPathError, OSError) as exc:
         if args.mode == "doctor":
             raise SystemExit(_doctor_discovery_failure(exc)) from exc
         raise SystemExit(f"[workflow-check] ERROR: {exc}") from exc
-    except (ValueError, RecursionError) as exc:
-        if args.mode == "doctor":
-            raise SystemExit(_doctor_discovery_failure(exc)) from exc
-        raise
 
     if args.mode == "doctor":
         raise SystemExit(doctor(paths))

@@ -15,7 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_text, normalize_repo_path
+from workflow_paths import (
+    WorkflowPathError,
+    WorkflowPaths,
+    atomic_write_text,
+    normalize_repo_path,
+    parse_bounded_json,
+    resolve_path,
+)
 
 
 REQUIREMENTS_START = "<!-- CODEX_REQUIREMENTS_JSON_START -->"
@@ -28,6 +35,19 @@ REQUIREMENT_ID = re.compile(r"\bREQ-[A-Za-z0-9._-]+\b")
 
 class WorkflowDataError(ValueError):
     """Tracked workflow data is missing, inconsistent, or unsafe."""
+
+
+class WorkflowJSONError(WorkflowDataError):
+    """A JSON resource failed inside the standard-library parser."""
+
+
+def parse_json_resource(text: str, *, label: str) -> Any:
+    """Parse one JSON resource and classify failures at the parser boundary."""
+
+    try:
+        return parse_bounded_json(text)
+    except (ValueError, RecursionError) as exc:
+        raise WorkflowJSONError(f"{label} is invalid JSON: {exc}") from exc
 
 
 def fault_injection(name: str) -> None:
@@ -112,14 +132,19 @@ def _schema_json_equal(left: Any, right: Any) -> bool:
 
 
 def _load_json_schema(path: Path, schema_root: Path, cache: dict[Path, Any]) -> Any:
-    resolved = path.resolve()
+    resolved = resolve_path(path, label="JSON Schema path")
     if schema_root != resolved.parent and schema_root not in resolved.parents:
         raise WorkflowDataError(f"JSON Schema reference escapes the schemas directory: {path}")
     if resolved in cache:
         return cache[resolved]
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = parse_json_resource(
+            resolved.read_text(encoding="utf-8"),
+            label=f"JSON Schema {resolved.name}",
+        )
+    except WorkflowJSONError:
+        raise
+    except (OSError, WorkflowDataError) as exc:
         raise WorkflowDataError(f"Unable to read JSON Schema {resolved.name}: {exc}") from exc
     if not isinstance(payload, (dict, bool)):
         raise WorkflowDataError(f"JSON Schema {resolved.name} must be an object or boolean.")
@@ -139,7 +164,11 @@ def _resolve_json_schema_ref(
     document, marker, fragment = reference.partition("#")
     if "://" in document or document.startswith(("/", "\\")):
         raise WorkflowDataError(f"JSON Schema external $ref is not allowed: {reference}")
-    target_path = current_path if not document else (current_path.parent / document).resolve()
+    target_path = (
+        current_path
+        if not document
+        else resolve_path(current_path.parent / document, label="JSON Schema reference")
+    )
     target = _load_json_schema(target_path, schema_root, cache)
     if not marker:
         return target, target_path
@@ -446,7 +475,7 @@ def validate_json_schema(schema_path: Path, payload: Any, *, label: str) -> None
     standard library makes the package portable to a fresh Python installation.
     """
 
-    resolved = schema_path.resolve()
+    resolved = resolve_path(schema_path, label="workflow schema")
     schema_root = resolved.parent
     cache: dict[Path, Any] = {}
     schema = _load_json_schema(resolved, schema_root, cache)
@@ -484,8 +513,8 @@ def validate_workflow_schema(
 ) -> None:
     if Path(schema_name).name != schema_name:
         raise WorkflowDataError(f"Workflow schema name is unsafe: {schema_name}")
-    schemas = paths.tracked("schemas").resolve()
-    schema_path = (schemas / schema_name).resolve()
+    schemas = resolve_path(paths.tracked("schemas"), label="schemas directory")
+    schema_path = resolve_path(schemas / schema_name, label="workflow schema")
     if schemas not in schema_path.parents or not schema_path.is_file():
         raise WorkflowDataError(f"Workflow JSON Schema is unavailable: {schema_name}")
     validate_json_schema(schema_path, payload, label=label)
@@ -517,9 +546,9 @@ def parse_requirements_brief(
     if before.strip():
         raise WorkflowDataError("Requirements JSON marker must be the first brief content.")
     try:
-        metadata = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        raise WorkflowDataError(f"Requirements metadata is invalid JSON: {exc}") from exc
+        metadata = parse_json_resource(raw_json, label="Requirements metadata")
+    except WorkflowDataError:
+        raise
     if not isinstance(metadata, dict):
         raise WorkflowDataError("Requirements metadata root must be an object.")
     if schema_path is not None:
@@ -730,9 +759,9 @@ def read_embedded_json(text: str, marker_name: str) -> dict[str, Any]:
         raise WorkflowDataError(f"Expected one {marker_name} marker pair.")
     raw = text.split(start, 1)[1].split(end, 1)[0]
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise WorkflowDataError(f"Invalid {marker_name} JSON: {exc}") from exc
+        payload = parse_json_resource(raw, label=marker_name)
+    except WorkflowDataError:
+        raise
     if not isinstance(payload, dict):
         raise WorkflowDataError(f"{marker_name} JSON must be an object.")
     return payload
@@ -850,7 +879,9 @@ def _historical_requirements_brief(
     schema_path = paths.tracked("schemas") / "requirements-v1.schema.json"
     historical_path = paths.tracked("requirements") / f"{previous_brief_id}.md"
     candidates = [current_path]
-    if historical_path.resolve() != current_path.resolve():
+    if resolve_path(historical_path, label="historical Requirements path") != resolve_path(
+        current_path, label="current Requirements path"
+    ):
         candidates.append(historical_path)
     for candidate_path in candidates:
         relative = paths.relative(candidate_path)
@@ -1156,8 +1187,11 @@ def snapshot_id(record: dict[str, Any], delivery_hash: str) -> str:
 def load_record(paths: WorkflowPaths, relative: str | Path) -> tuple[Path, dict[str, Any]]:
     raw = str(relative).replace("\\", "/")
     normalized = normalize_repo_path(raw)
-    candidate = (paths.root / Path(*PurePosixPath(normalized).parts)).resolve()
-    runs = paths.tracked("runs").resolve()
+    candidate = resolve_path(
+        paths.root / Path(*PurePosixPath(normalized).parts),
+        label="task record",
+    )
+    runs = resolve_path(paths.tracked("runs"), label="task runs directory")
     if runs not in candidate.parents or not candidate.is_file():
         raise WorkflowDataError("Task record must be an existing file under the configured runs directory.")
     try:

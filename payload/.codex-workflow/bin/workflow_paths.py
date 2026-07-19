@@ -12,6 +12,7 @@ Every other V3 command imports this module instead of rebuilding paths itself.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -23,10 +24,86 @@ from typing import Any, Iterable
 
 LAYOUT_RELATIVE = PurePosixPath(".codex-workflow/layout.json")
 RUNTIME_NAME = "codex-workflow-v3"
+MAX_JSON_INTEGER_DIGITS = 640
+MAX_JSON_NESTING = 256
 
 
 class WorkflowPathError(ValueError):
     """A configured or discovered workflow path is unsafe or invalid."""
+
+
+class WorkflowPathResourceError(WorkflowPathError):
+    """A configured JSON path resource failed inside its parser."""
+
+
+class WorkflowPathOSError(WorkflowPathError):
+    """The operating system prevented a filesystem path from resolving."""
+
+
+class WorkflowPathRuntimeError(WorkflowPathError):
+    """The filesystem resolver rejected a path at runtime."""
+
+
+def bounded_json_integer(value: str) -> int:
+    """Reject JSON integers whose decimal representation is a resource hazard."""
+
+    digits = value.lstrip("-")
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            f"JSON integer exceeds the {MAX_JSON_INTEGER_DIGITS}-digit resource limit"
+        )
+    return int(value)
+
+
+def parse_bounded_json(text: str) -> Any:
+    """Parse JSON with deterministic integer and nesting resource limits."""
+
+    payload = json.loads(text, parse_int=bounded_json_integer)
+    pending: list[tuple[Any, int]] = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if not isinstance(value, (dict, list)):
+            continue
+        next_depth = depth + 1
+        if next_depth > MAX_JSON_NESTING:
+            raise ValueError(
+                f"JSON nesting exceeds the {MAX_JSON_NESTING}-level resource limit"
+            )
+        children = value.values() if isinstance(value, dict) else value
+        pending.extend((child, next_depth) for child in children)
+    return payload
+
+
+def resolve_path(path: Path, *, label: str) -> Path:
+    """Resolve a path with version-independent symlink-loop classification."""
+
+    try:
+        return path.resolve(strict=True)
+    except RecursionError:
+        raise
+    except RuntimeError as exc:
+        # Python <= 3.12 reports a symlink loop as RuntimeError.
+        raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
+    except OSError as exc:
+        # Python >= 3.13 reports the same loop as OSError(ELOOP).
+        if exc.errno == errno.ELOOP:
+            raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
+        if not isinstance(exc, FileNotFoundError):
+            raise WorkflowPathOSError(f"Unable to resolve {label}: {exc}") from exc
+
+    # Workflow paths may be planned before their final component exists. The
+    # strict probe above detects loops consistently; this fallback preserves
+    # the package's existing support for missing leaf paths.
+    try:
+        return path.resolve(strict=False)
+    except RecursionError:
+        raise
+    except RuntimeError as exc:
+        raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
+        raise WorkflowPathOSError(f"Unable to resolve {label}: {exc}") from exc
 
 
 def _run_git(start: Path, *arguments: str) -> str:
@@ -54,22 +131,22 @@ def _git_absolute_dir(start: Path, flag: str, root: Path | None = None) -> Path:
         errors="replace",
     )
     if result.returncode == 0:
-        return Path(result.stdout.strip()).resolve()
+        return resolve_path(Path(result.stdout.strip()), label=f"Git {flag} path")
 
     raw = _run_git(start, "rev-parse", flag)
     candidate = Path(raw)
     if not candidate.is_absolute():
         # rev-parse directory output is relative to the command's -C directory.
         candidate = start / candidate
-    resolved = candidate.resolve()
+    resolved = resolve_path(candidate, label=f"Git {flag} path")
     if flag == "--show-toplevel" and root is not None and resolved != root:
         raise WorkflowPathError("Git root changed while resolving workflow paths.")
     return resolved
 
 
 def _is_descendant(path: Path, parent: Path, *, allow_equal: bool = False) -> bool:
-    path = path.resolve()
-    parent = parent.resolve()
+    path = resolve_path(path, label="containment candidate")
+    parent = resolve_path(parent, label="containment parent")
     return path == parent if allow_equal and path == parent else parent in path.parents
 
 
@@ -94,11 +171,13 @@ def normalize_repo_path(value: str | PurePosixPath) -> str:
 def _load_layout(root: Path) -> dict[str, Any]:
     layout_path = root / Path(*LAYOUT_RELATIVE.parts)
     try:
-        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        raw = layout_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise WorkflowPathError(f"Missing workflow layout: {layout_path}") from exc
-    except json.JSONDecodeError as exc:
-        raise WorkflowPathError(f"Invalid workflow layout JSON: {exc}") from exc
+    try:
+        layout = parse_bounded_json(raw)
+    except (ValueError, RecursionError) as exc:
+        raise WorkflowPathResourceError(f"Invalid workflow layout JSON: {exc}") from exc
     if not isinstance(layout, dict):
         raise WorkflowPathError("Workflow layout root must be an object.")
     for key in ("layout_version", "protocol_version", "workflow_schema_version"):
@@ -124,7 +203,7 @@ class WorkflowPaths:
 
     @classmethod
     def discover(cls, start: Path | str | None = None) -> "WorkflowPaths":
-        origin = Path(start or Path.cwd()).expanduser().resolve()
+        origin = resolve_path(Path(start or Path.cwd()).expanduser(), label="workflow origin")
         if origin.is_file():
             origin = origin.parent
         root = _git_absolute_dir(origin, "--show-toplevel")
@@ -141,21 +220,24 @@ class WorkflowPaths:
             relative = paths[key_or_relative]
         else:
             relative = normalize_repo_path(key_or_relative)
-        candidate = (self.root / Path(*PurePosixPath(relative).parts)).resolve()
+        candidate = resolve_path(
+            self.root / Path(*PurePosixPath(relative).parts),
+            label=f"tracked path {relative}",
+        )
         if not _is_descendant(candidate, self.root):
             raise WorkflowPathError(f"Tracked path escapes worktree root: {relative}")
         return candidate
 
     @property
     def shared_runtime(self) -> Path:
-        candidate = (self.common_dir / RUNTIME_NAME).resolve()
+        candidate = resolve_path(self.common_dir / RUNTIME_NAME, label="shared runtime")
         if not _is_descendant(candidate, self.common_dir):
             raise WorkflowPathError("Shared runtime escapes git common directory.")
         return candidate
 
     @property
     def lane_runtime(self) -> Path:
-        candidate = (self.git_dir / RUNTIME_NAME).resolve()
+        candidate = resolve_path(self.git_dir / RUNTIME_NAME, label="lane runtime")
         if not _is_descendant(candidate, self.git_dir):
             raise WorkflowPathError("Lane runtime escapes worktree Git directory.")
         return candidate
@@ -175,7 +257,7 @@ class WorkflowPaths:
         self.lane_runtime.mkdir(parents=True, exist_ok=True)
 
     def relative(self, path: Path) -> str:
-        resolved = path.resolve()
+        resolved = resolve_path(path, label="worktree-relative path")
         if not _is_descendant(resolved, self.root):
             raise WorkflowPathError(f"Path is outside current worktree: {path}")
         return resolved.relative_to(self.root).as_posix()
@@ -226,8 +308,7 @@ def safe_join(parent: Path, components: Iterable[str]) -> Path:
         ):
             raise WorkflowPathError(f"Unsafe path component: {component!r}")
         candidate /= component
-    candidate = candidate.resolve()
+    candidate = resolve_path(candidate, label="runtime path")
     if not _is_descendant(candidate, parent):
         raise WorkflowPathError("Joined path escapes its runtime domain.")
     return candidate
-

@@ -430,7 +430,7 @@ class WorkflowCheckTests(unittest.TestCase):
 
         for failure in (
             workflow_check.WorkflowPathError("runtime containment escape\nPRIMARY NEXT ACTION:"),
-            RuntimeError("runtime resolve loop\nSTARTUP OBSERVATION: PASS"),
+            OSError("runtime filesystem failure\nSTARTUP OBSERVATION: PASS"),
         ):
             with self.subTest(failure=type(failure).__name__):
                 finding = workflow_check._doctor_observation(SharedRuntimeFailure(failure))
@@ -439,6 +439,10 @@ class WorkflowCheckTests(unittest.TestCase):
         with self.assertRaises(RecursionError):
             workflow_check._doctor_observation(
                 SharedRuntimeFailure(RecursionError("programming recursion is not path diagnosis"))
+            )
+        with self.assertRaises(RuntimeError):
+            workflow_check._doctor_observation(
+                SharedRuntimeFailure(RuntimeError("programming runtime failure"))
             )
 
         observation = self.startup_observation_path()
@@ -455,12 +459,135 @@ class WorkflowCheckTests(unittest.TestCase):
             def expanduser(self):
                 return self
 
-            def resolve(self):
+            def resolve(self, *, strict: bool = False):
                 raise RuntimeError("recorded worktree resolve loop\nPACKAGE: PASS")
 
         with mock.patch.object(workflow_check, "Path", ResolveFailure):
             finding = workflow_check._doctor_observation(ObservationPaths())
         self.assertEqual(finding.status, "UNKNOWN")
+
+        class OSResolveFailure(ResolveFailure):
+            def resolve(self, *, strict: bool = False):
+                raise OSError("recorded worktree permission failure")
+
+        with mock.patch.object(workflow_check, "Path", OSResolveFailure):
+            finding = workflow_check._doctor_observation(ObservationPaths())
+        self.assertEqual(finding.status, "INVALID")
+
+    def test_doctor_governance_does_not_reclassify_programming_exceptions(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        for failure in (
+            ValueError("programming value failure"),
+            RecursionError("programming recursion failure"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(
+                    workflow_check,
+                    "check_governance",
+                    side_effect=failure,
+                ):
+                    with self.assertRaises(type(failure)):
+                        workflow_check._doctor_governance(mock.Mock())
+
+    def test_shared_path_boundary_classifies_runtime_only(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        class ResolveFailure:
+            def resolve(self, *, strict: bool = False):
+                raise RuntimeError("filesystem resolve loop")
+
+        with self.assertRaises(workflow_check.WorkflowPathRuntimeError):
+            workflow_check.resolve_path(ResolveFailure(), label="test path")
+
+        class OSFailure:
+            def resolve(self, *, strict: bool = False):
+                raise OSError("filesystem permission failure")
+
+        with self.assertRaises(workflow_check.WorkflowPathOSError):
+            workflow_check.resolve_path(OSFailure(), label="test path")
+
+        class RecursionFailure:
+            def resolve(self, *, strict: bool = False):
+                raise RecursionError("programming recursion failure")
+
+        with self.assertRaises(RecursionError):
+            workflow_check.resolve_path(RecursionFailure(), label="test path")
+
+    def test_real_symlink_loop_has_stable_runtime_classification(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+        loop_a = Path(self.temporary.name) / "loop-a"
+        loop_b = Path(self.temporary.name) / "loop-b"
+        try:
+            loop_a.symlink_to(loop_b)
+            loop_b.symlink_to(loop_a)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+
+        with self.assertRaises(workflow_check.WorkflowPathRuntimeError):
+            workflow_check.resolve_path(loop_a, label="symlink loop")
+
+        observation = self.startup_observation_path()
+        observation.parent.mkdir(parents=True, exist_ok=True)
+        observation.write_text(
+            json.dumps(
+                {
+                    "checked_at": "2026-07-01T02:03:04+00:00",
+                    "worktree": str(loop_a),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        result = self.doctor()
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_doctor_shape(result.stdout)
+        self.assertIn("STARTUP OBSERVATION: UNKNOWN", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_json_integer_resource_limit_is_exact_and_sign_independent(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        for sign in ("", "-"):
+            with self.subTest(sign=sign, digits=640):
+                payload = workflow_check.parse_json_resource(
+                    '{"value":' + sign + ("9" * 640) + "}",
+                    label="boundary fixture",
+                )
+                self.assertIsInstance(payload["value"], int)
+            with self.subTest(sign=sign, digits=641):
+                with self.assertRaises(workflow_check.WorkflowJSONError):
+                    workflow_check.parse_json_resource(
+                        '{"value":' + sign + ("9" * 641) + "}",
+                        label="boundary fixture",
+                    )
+
+    def test_json_nesting_resource_limit_is_exact(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        accepted = ("[" * 256) + "0" + ("]" * 256)
+        self.assertIsInstance(
+            workflow_check.parse_json_resource(accepted, label="boundary fixture"),
+            list,
+        )
+        rejected = ("[" * 257) + "0" + ("]" * 257)
+        with self.assertRaises(workflow_check.WorkflowJSONError):
+            workflow_check.parse_json_resource(rejected, label="boundary fixture")
+
+    def test_layout_read_recursion_is_not_reclassified_as_json(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+        workflow_paths = sys.modules[workflow_check.WorkflowPaths.__module__]
+
+        class LayoutFile:
+            def read_text(self, *, encoding: str):
+                raise RecursionError("programming recursion while reading")
+
+        class LayoutRoot:
+            def __truediv__(self, other):
+                return LayoutFile()
+
+        with self.assertRaises(RecursionError):
+            workflow_paths._load_layout(LayoutRoot())
 
     def test_non_doctor_layout_resource_error_is_not_swallowed(self) -> None:
         layout = self.target / ".codex-workflow/layout.json"
@@ -651,4 +778,3 @@ class WorkflowCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
