@@ -56,6 +56,7 @@ class WorkflowCheckTests(unittest.TestCase):
         *,
         checked_at: str = "2026-07-01T02:03:04+00:00",
         worktree: Path | None = None,
+        worktree_text: str | None = None,
     ) -> None:
         path = self.startup_observation_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +64,11 @@ class WorkflowCheckTests(unittest.TestCase):
             json.dumps(
                 {
                     "checked_at": checked_at,
-                    "worktree": str((worktree or self.target).resolve()),
+                    "worktree": (
+                        worktree_text
+                        if worktree_text is not None
+                        else str((worktree or self.target).resolve())
+                    ),
                 },
                 ensure_ascii=False,
             )
@@ -474,6 +479,20 @@ class WorkflowCheckTests(unittest.TestCase):
             finding = workflow_check._doctor_observation(ObservationPaths())
         self.assertEqual(finding.status, "INVALID")
 
+    def test_doctor_observation_user_and_value_paths_stay_in_four_domains(self) -> None:
+        cases = [("invalid\x00worktree", "INVALID")]
+        if os.name == "posix":
+            cases.append(("~codex-workflow-user-that-does-not-exist-7f0f", "UNKNOWN"))
+
+        for worktree, status in cases:
+            with self.subTest(worktree=worktree, status=status):
+                self.write_startup_observation(worktree_text=worktree)
+                result = self.doctor()
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_doctor_shape(result.stdout)
+                self.assertIn(f"STARTUP OBSERVATION: {status}", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_doctor_governance_does_not_reclassify_programming_exceptions(self) -> None:
         workflow_check = self.load_payload_workflow_check()
 
@@ -506,6 +525,24 @@ class WorkflowCheckTests(unittest.TestCase):
 
         with self.assertRaises(workflow_check.WorkflowPathOSError):
             workflow_check.resolve_path(OSFailure(), label="test path")
+
+        class ValueFailure:
+            def resolve(self, *, strict: bool = False):
+                raise ValueError("invalid path value")
+
+        with self.assertRaises(workflow_check.WorkflowPathValueError):
+            workflow_check.resolve_path(ValueFailure(), label="test path")
+
+        class ExpandRuntimeFailure:
+            def expanduser(self):
+                raise RuntimeError("unknown home directory")
+
+        with self.assertRaises(workflow_check.WorkflowPathRuntimeError):
+            workflow_check.resolve_path(
+                ExpandRuntimeFailure(),
+                label="test path",
+                expand_user=True,
+            )
 
         class RecursionFailure:
             def resolve(self, *, strict: bool = False):
@@ -556,7 +593,7 @@ class WorkflowCheckTests(unittest.TestCase):
                 )
                 self.assertIsInstance(payload["value"], int)
             with self.subTest(sign=sign, digits=641):
-                with self.assertRaises(workflow_check.WorkflowJSONError):
+                with self.assertRaises(workflow_check.WorkflowJSONResourceError):
                     workflow_check.parse_json_resource(
                         '{"value":' + sign + ("9" * 641) + "}",
                         label="boundary fixture",
@@ -571,8 +608,19 @@ class WorkflowCheckTests(unittest.TestCase):
             list,
         )
         rejected = ("[" * 257) + "0" + ("]" * 257)
-        with self.assertRaises(workflow_check.WorkflowJSONError):
+        with self.assertRaises(workflow_check.WorkflowJSONResourceError):
             workflow_check.parse_json_resource(rejected, label="boundary fixture")
+
+    def test_json_syntax_and_resource_failures_have_distinct_types(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+
+        with self.assertRaises(workflow_check.WorkflowJSONSyntaxError):
+            workflow_check.parse_json_resource("{", label="syntax fixture")
+        with self.assertRaises(workflow_check.WorkflowJSONResourceError):
+            workflow_check.parse_json_resource(
+                '{"value":' + ("9" * 641) + "}",
+                label="resource fixture",
+            )
 
     def test_layout_read_recursion_is_not_reclassified_as_json(self) -> None:
         workflow_check = self.load_payload_workflow_check()
@@ -605,9 +653,34 @@ class WorkflowCheckTests(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ValueError", result.stderr)
+        self.assertIn("JSONResourceLimitError", result.stderr)
         self.assertIn("Traceback", result.stderr)
         self.assertNotIn("PRIMARY NEXT ACTION:", result.stdout)
+
+    def test_non_doctor_json_syntax_errors_remain_structured(self) -> None:
+        layout = self.target / ".codex-workflow/layout.json"
+        layout_bytes = layout.read_bytes()
+        layout.write_text("{", encoding="utf-8")
+        result = run(
+            workflow_command(self.target, "workflow_check.py", "manual"),
+            cwd=self.target,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid workflow layout JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        layout.write_bytes(layout_bytes)
+        backlog = self.target / ".codex-workflow/state/MVP_BACKLOG.md"
+        backlog.write_bytes(
+            self.embedded_json_fixture("CODEX_REQUIREMENTS_BASELINE", b"{")
+        )
+        result = run(
+            workflow_command(self.target, "workflow_check.py", "manual"),
+            cwd=self.target,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CODEX_REQUIREMENTS_BASELINE is invalid JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_doctor_ordinary_python_is_strictly_read_only_and_creates_no_bytecode(self) -> None:
         script = self.target / ".codex-workflow/bin/workflow_check.py"

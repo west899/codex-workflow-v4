@@ -28,6 +28,10 @@ MAX_JSON_INTEGER_DIGITS = 640
 MAX_JSON_NESTING = 256
 
 
+class JSONResourceLimitError(ValueError):
+    """A JSON value exceeded an explicit workflow resource boundary."""
+
+
 class WorkflowPathError(ValueError):
     """A configured or discovered workflow path is unsafe or invalid."""
 
@@ -44,12 +48,16 @@ class WorkflowPathRuntimeError(WorkflowPathError):
     """The filesystem resolver rejected a path at runtime."""
 
 
+class WorkflowPathValueError(WorkflowPathError):
+    """A path value was invalid before the filesystem could resolve it."""
+
+
 def bounded_json_integer(value: str) -> int:
     """Reject JSON integers whose decimal representation is a resource hazard."""
 
     digits = value.lstrip("-")
     if len(digits) > MAX_JSON_INTEGER_DIGITS:
-        raise ValueError(
+        raise JSONResourceLimitError(
             f"JSON integer exceeds the {MAX_JSON_INTEGER_DIGITS}-digit resource limit"
         )
     return int(value)
@@ -66,7 +74,7 @@ def parse_bounded_json(text: str) -> Any:
             continue
         next_depth = depth + 1
         if next_depth > MAX_JSON_NESTING:
-            raise ValueError(
+            raise JSONResourceLimitError(
                 f"JSON nesting exceeds the {MAX_JSON_NESTING}-level resource limit"
             )
         children = value.values() if isinstance(value, dict) else value
@@ -74,8 +82,20 @@ def parse_bounded_json(text: str) -> Any:
     return payload
 
 
-def resolve_path(path: Path, *, label: str) -> Path:
+def resolve_path(path: Path, *, label: str, expand_user: bool = False) -> Path:
     """Resolve a path with version-independent symlink-loop classification."""
+
+    if expand_user:
+        try:
+            path = path.expanduser()
+        except RecursionError:
+            raise
+        except RuntimeError as exc:
+            raise WorkflowPathRuntimeError(f"Unable to expand {label}: {exc}") from exc
+        except OSError as exc:
+            raise WorkflowPathOSError(f"Unable to expand {label}: {exc}") from exc
+        except ValueError as exc:
+            raise WorkflowPathValueError(f"Unable to expand {label}: {exc}") from exc
 
     try:
         return path.resolve(strict=True)
@@ -90,6 +110,8 @@ def resolve_path(path: Path, *, label: str) -> Path:
             raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
         if not isinstance(exc, FileNotFoundError):
             raise WorkflowPathOSError(f"Unable to resolve {label}: {exc}") from exc
+    except ValueError as exc:
+        raise WorkflowPathValueError(f"Unable to resolve {label}: {exc}") from exc
 
     # Workflow paths may be planned before their final component exists. The
     # strict probe above detects loops consistently; this fallback preserves
@@ -104,6 +126,8 @@ def resolve_path(path: Path, *, label: str) -> Path:
         if exc.errno == errno.ELOOP:
             raise WorkflowPathRuntimeError(f"Unable to resolve {label}: {exc}") from exc
         raise WorkflowPathOSError(f"Unable to resolve {label}: {exc}") from exc
+    except ValueError as exc:
+        raise WorkflowPathValueError(f"Unable to resolve {label}: {exc}") from exc
 
 
 def _run_git(start: Path, *arguments: str) -> str:
@@ -176,7 +200,9 @@ def _load_layout(root: Path) -> dict[str, Any]:
         raise WorkflowPathError(f"Missing workflow layout: {layout_path}") from exc
     try:
         layout = parse_bounded_json(raw)
-    except (ValueError, RecursionError) as exc:
+    except json.JSONDecodeError as exc:
+        raise WorkflowPathError(f"Invalid workflow layout JSON: {exc}") from exc
+    except (JSONResourceLimitError, RecursionError) as exc:
         raise WorkflowPathResourceError(f"Invalid workflow layout JSON: {exc}") from exc
     if not isinstance(layout, dict):
         raise WorkflowPathError("Workflow layout root must be an object.")
@@ -203,7 +229,11 @@ class WorkflowPaths:
 
     @classmethod
     def discover(cls, start: Path | str | None = None) -> "WorkflowPaths":
-        origin = resolve_path(Path(start or Path.cwd()).expanduser(), label="workflow origin")
+        origin = resolve_path(
+            Path(start or Path.cwd()),
+            label="workflow origin",
+            expand_user=True,
+        )
         if origin.is_file():
             origin = origin.parent
         root = _git_absolute_dir(origin, "--show-toplevel")

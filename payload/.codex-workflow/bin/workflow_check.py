@@ -20,6 +20,8 @@ sys.dont_write_bytecode = True
 from workflow_common import (
     WorkflowDataError,
     WorkflowJSONError,
+    WorkflowJSONResourceError,
+    WorkflowJSONSyntaxError,
     allowed_path,
     backlog_rows,
     canonical_delivery,
@@ -47,6 +49,7 @@ from workflow_paths import (
     WorkflowPathOSError,
     WorkflowPathResourceError,
     WorkflowPathRuntimeError,
+    WorkflowPathValueError,
     WorkflowPaths,
     atomic_write_json,
     resolve_path,
@@ -147,7 +150,7 @@ def requirements_gate(paths: WorkflowPaths, path: Path, checks: Checks) -> Any:
             path,
             schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
         )
-    except WorkflowJSONError:
+    except WorkflowJSONResourceError:
         raise
     except (OSError, WorkflowDataError) as exc:
         checks.error(str(exc))
@@ -313,7 +316,7 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
         text = backlog.read_text(encoding="utf-8")
         try:
             metadata = read_embedded_json(text, BASELINE_MARKER)
-        except WorkflowJSONError:
+        except WorkflowJSONResourceError:
             raise
         except WorkflowDataError as exc:
             checks.error(str(exc))
@@ -378,7 +381,7 @@ def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
                 + " and apply its reviewed result before continuing."
             )
         return baseline
-    except WorkflowJSONError:
+    except WorkflowJSONResourceError:
         raise
     except WorkflowDataError as exc:
         checks.error(str(exc))
@@ -958,10 +961,11 @@ def _doctor_observation(paths: WorkflowPaths) -> DoctorFinding:
         return DoctorFinding("INVALID", "The startup observation has an invalid worktree.")
     try:
         resolved_worktree = resolve_path(
-            Path(recorded_worktree).expanduser(),
+            Path(recorded_worktree),
             label="startup observation worktree",
+            expand_user=True,
         )
-    except WorkflowPathOSError as exc:
+    except (WorkflowPathOSError, WorkflowPathValueError) as exc:
         return DoctorFinding("INVALID", f"The startup observation worktree is invalid: {exc}")
     except WorkflowPathError as exc:
         return DoctorFinding(

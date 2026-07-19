@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from workflow_paths import (
+    JSONResourceLimitError,
     WorkflowPathError,
     WorkflowPaths,
     atomic_write_text,
@@ -41,13 +42,23 @@ class WorkflowJSONError(WorkflowDataError):
     """A JSON resource failed inside the standard-library parser."""
 
 
+class WorkflowJSONSyntaxError(WorkflowJSONError):
+    """A JSON resource contains ordinary invalid syntax or data."""
+
+
+class WorkflowJSONResourceError(WorkflowJSONError):
+    """A JSON resource exceeded a deterministic parser resource boundary."""
+
+
 def parse_json_resource(text: str, *, label: str) -> Any:
     """Parse one JSON resource and classify failures at the parser boundary."""
 
     try:
         return parse_bounded_json(text)
-    except (ValueError, RecursionError) as exc:
-        raise WorkflowJSONError(f"{label} is invalid JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise WorkflowJSONSyntaxError(f"{label} is invalid JSON: {exc}") from exc
+    except (JSONResourceLimitError, RecursionError) as exc:
+        raise WorkflowJSONResourceError(f"{label} is invalid JSON: {exc}") from exc
 
 
 def fault_injection(name: str) -> None:
