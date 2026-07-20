@@ -4,12 +4,13 @@
 
 ## 1. 当前状态
 
-- 状态：`product_candidate_complete`
-- 当前产品证据：共享 JSON/path 边界修复、跨版本测试和人类可读记录已进入同一交付候选
-- 生命周期真相源：精确 snapshot、Review、gate、integration 和 closeout 状态只读取隔离 V3 Pilot 的 `MVP-DOC-001` task record；本文件封存产品证据，不镜像封存后的可变流程状态
-- 仍未开始：V4 Schema、V4 task record、decision 命令、强制 product checkpoint、强制 gate
+- 状态：`phase0_passed`
+- 正式落账日期：`2026-07-20`
+- 当前产品证据：`MVP-DOC-001` 已完成 snapshot-bound Review、gate、pilot integration 和 closeout，封存产品树已正式集成到本地 `v4`
+- 生命周期真相源：精确 snapshot、Review、gate、integration 和 closeout 状态读取隔离 V3 Pilot 的 `MVP-DOC-001` task record、closeout bundle、持久化 manifest 和目标 ref；本文件只记录阶段判定
+- Phase A：`standby / not_authorized`；V4 Schema、V4 task record、decision 命令、强制 product checkpoint 和强制 gate 均未开始
 - 已确认：隔离 self-hosting pilot、`DOC-001 doctor`、会话未观察时采用 `0 + WARN`
-- 阶段门：只有 task record 与目标 ref 共同证明 snapshot-bound Review、gate、integration 和 closeout 后，阶段 0 才可标记 `phase0_passed`
+- 阶段门：task record、closeout bundle、持久化 manifest 与目标 ref 已共同证明退出条件；核验材料见第 8 节
 
 已批准的精确 Requirements 基线：
 
@@ -195,7 +196,8 @@ python .codex-workflow/bin/workflow_check.py doctor
 | E-007C | 系统性边界修复后的第四次人类产品观察 | 用户回复 `accepted`；接受对象为 delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` / snapshot `5c2880111694825811958e5a32fca1e07136fd7b3379981a633e9a626ae8d415`；进入第四轮 Reviewer 前复算 snapshot/preflight PASS，统一边界矩阵 6/6 PASS，exact install 重放为四域结果、唯一 next action、exit 0、无 pycache/pyc | 已完成；第四个产品方向被接受，允许第四轮独立 Reviewer |
 | E-008 | V3 Reviewer 到 closeout | 首轮 Reviewer 对 snapshot `1f23...` 以 P1 指出四域内非法 UTF-8 traceback；第二轮 Reviewer 对 `46deff...` 以 P1 指出 discovery/layout 非法 UTF-8 traceback；第三轮 Reviewer 对 `52d94e...` 系统性发现 JSON resource 异常、控制字符 action 注入与 observation path 异常，以 2 P1 + 1 P2 / `changes_requested` 写入 generation 7；第四轮 Reviewer `codex-doc001-reviewer-r4-20260713` 对 snapshot `5c2880...d415` 重跑 25 focused 与 69 full tests，均通过，但仍发现 discovery/governance 过宽捕获编程型 `ValueError/RecursionError` 的 P1，以及 package/governance/discovery path `RuntimeError` 可能绕过结构化四域输出的 P2；结论以 `changes_requested` 写入 generation 9 | 用户决定不修复；Review 状态已提交为 pilot lane `7966785`，未运行 gate/integration/closeout |
 | E-009 | 负担与重复确认复盘 | 首次可观察结果前经历 pilot 安装、3 轮 Requirements fingerprint、2 次精确 fingerprint 人类批准、一次批准自失效、一次 task ID 兼容修正、task/lane 建立、focused + 多轮 full verification；四轮 Review 依次暴露 UTF-8 域边界、discovery/layout 边界、JSON/控制字符/observation path 矩阵，以及共享 JSON/path 边界中的异常归类问题，形成四轮 Developer/观察/Review 与四个被人类接受的 snapshot | 已记录；阶段 A 若恢复，必须把异常归类放到共享资源读取和路径解析的精确边界，避免按异常类别逐轮补丁与重复人类确认 |
-| E-010 | 当前产品状态提交到主 `v4` | pilot delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` 的最终产品树被压成主仓库提交 `5121cc2c0a7edd1850db820cbe9f7a539ad1116a`；范围精确为 `payload/.codex-workflow/bin/workflow_check.py` 与 `tests/test_workflow_check.py` | 本地 `v4` 产品检查点已完成；不包含 pilot 治理/control-plane 文件，也不改变 `changes_requested` 结论 |
+| E-010 | 历史产品检查点提交到主 `v4` | pilot delivery `431c2caebadb9740e3623b70ef21910d8461b4d4` 的当时产品树被压成主仓库提交 `5121cc2c0a7edd1850db820cbe9f7a539ad1116a`；范围精确为 `payload/.codex-workflow/bin/workflow_check.py` 与 `tests/test_workflow_check.py` | 当时的本地 `v4` 产品检查点已完成；不包含 pilot 治理/control-plane 文件，也不改变当时的 `changes_requested` 结论 |
+| E-011 | Phase 0 正式落账 | `MVP-DOC-001` generation 16 的 task record 显示 `completed / passed / review pass / integrated`；pilot closeout 提交 `9e1642b42142ddf8533894ba291e86d737319de1`；closeout bundle SHA-256 `6748928484ced15e87e194387c93b4e339b6985710f1ae64f444c045451157f1`；封存产品树正式集成提交 `2388d2231e7ac69240fc550848883545cd4d4352` 是当前 `v4` 的祖先；P3 证据范围修正已持久化 | 阶段 0 退出条件已满足，状态记录为 `phase0_passed`；Phase A 进入待命且未获实施授权 |
 
 ### 历史产品检查点（第四轮后，当时带已知审查问题）
 
@@ -212,7 +214,7 @@ python .codex-workflow\bin\workflow_check.py doctor
 
 当前限制：manifest 只证明合作式安装记录一致性；Hook configured 不证明 Hook 已执行；历史启动记录不证明当前/唯一会话；doctor 自身或启动依赖无法加载属于外部 bootstrap failure。
 
-共享边界修复候选将普通 JSON syntax、显式 resource limit 与编程型异常分开传播；doctor 涉及的 manifest、governance、Hooks、observation 和 layout JSON 在各自资源边界转换为明确异常。共享路径解析同时覆盖 expanduser、非法路径值、操作系统错误、运行时解析错误和 `ELOOP` 差异。交付候选的测试事实写入 task record 的 Developer evidence；其 snapshot-bound Review 结论也只从该 record 读取。
+后续共享边界修复将普通 JSON syntax、显式 resource limit 与编程型异常分开传播；doctor 涉及的 manifest、governance、Hooks、observation 和 layout JSON 在各自资源边界转换为明确异常。共享路径解析同时覆盖 expanduser、非法路径值、操作系统错误、运行时解析错误和 `ELOOP` 差异。封存交付的测试事实写入 task record 的 Developer evidence；其 snapshot-bound Review 结论也只从该 record 读取。
 
 历史决定：用户对旧 delivery `781422d...` / snapshot `1f23...` 回复过 `accepted`。首轮 Reviewer 随后提出非法 UTF-8 的 P1；旧决定保留为历史，没有自动沿用。
 
@@ -222,7 +224,9 @@ python .codex-workflow\bin\workflow_check.py doctor
 
 历史决定（已被后续授权取代）：用户先对 delivery `431c2ca...` / snapshot `5c2880...` 回复 `accepted`，随后在第四轮 Reviewer 返回 1 个 P1、1 个 P2 后要求不修复并按当时状态提交到本地 `v4`，因而当时只形成带已知问题的检查点。2026-07-18 至 2026-07-19，用户后续明确授权全局修复、多轮独立 Review 和 Python 3.13 复核；带已知问题的旧检查点不再代表产品候选。后续每个 snapshot 与流程结论由对应 V3 task record 保存。
 
-## 8. 进入阶段 A 的冻结条件
+## 8. 阶段 0 退出与阶段 A 待命
+
+### 8.1 退出条件核验
 
 以下各项全部有真实证据后，才允许冻结阶段 A 最小规格：
 
@@ -235,6 +239,30 @@ python .codex-workflow\bin\workflow_check.py doctor
 - 填写负担、理解成本和重复确认均被记录；
 - 阶段 A 的字段和门禁已经依据试运行结果删减，而不是照搬提案。
 
-阶段 A 冻结判断必须同时读取 `MVP-DOC-001` task record、目标 ref 和人类观察证据；本文件不独立推断这些可变门禁的完成状态。
+核验结论：
 
-只要上述任一条件未满足，本文件状态就不能改为 `phase0_passed`。
+- E-004 至 E-007C 证明真实功能可执行、人类可直接观察，且真实部分、临时部分与限制已被记录。
+- D-002 与 E-005 证明实质决定在相关语义固化前提出。
+- E-006 证明已知架构越界在 Reviewer/integration 前被发现。
+- E-009 记录了核心结果顺序、填写负担、理解成本和重复确认，并已用于收窄阶段 A 设计。
+- E-011 将最终 task record、closeout bundle、持久化 manifest、正式集成目标 ref 和证据范围修正绑定到同一阶段判定。
+
+上述退出条件均有对应证据，阶段 0 正式判定为 `phase0_passed`。
+
+### 8.2 正式落账证据
+
+| 证据 | 封存值 |
+| --- | --- |
+| Pilot task record | `/Users/xy/codex-workflow-v4-doc001-gate-pilot-183c69b/.codex-workflow/state/runs/MVP-DOC-001.json`；status `completed`；verification `passed`；Review `pass`；integration `integrated`；generation `16` |
+| Pilot closeout | commit `9e1642b42142ddf8533894ba291e86d737319de1`；bundle SHA-256 `6748928484ced15e87e194387c93b4e339b6985710f1ae64f444c045451157f1` |
+| Persistence manifest | `/Users/xy/codex-workflow-v4-evidence/MVP-DOC-001/MVP-DOC-001-persistence-manifest.json`；SHA-256 `2f9bd4690dc98d904e9f94152053fd9398d25ca95b5bc18bf0c54a40b9d03f3c` |
+| Formal integration | `v4` result commit `2388d2231e7ac69240fc550848883545cd4d4352`；sealed product match `true`；evidence SHA-256 `dcb5dec5fb0e8a59152c7910ff5f05f33c78391c1e4eab7eb5fc90c9b891bcb6` |
+| P3 scope correction | `MVP-DOC-001-evidence-scope-correction-addendum.json`；SHA-256 `d3db67bddd9eaaf6c974d99690e7a9f129d159b2f8e9a01de0b7544889a45442`；历史证据保持不变 |
+| Global verification | 正式 `v4` 在 Python 3.9.6、3.12.13 和 3.13.14 各通过 `86/86` package tests |
+
+### 8.3 Phase A 待命边界
+
+- 状态：`standby / not_authorized`。
+- 不新增 task-record-v4 Schema、`delivery_contract`、`decision_log`、decision 命令、product checkpoint 或 V4 gate。
+- 不建立 Developer lane，不执行 Phase A 实现、integration 或 closeout。
+- 下一次状态转换需要人类明确授权启动 Phase A；授权前只允许保存和核验本阶段的封存证据。
