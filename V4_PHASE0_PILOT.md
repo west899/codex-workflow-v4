@@ -8,7 +8,7 @@
 - 正式落账日期：`2026-07-20`
 - 当前产品证据：`MVP-DOC-001` 已完成 snapshot-bound Review、gate、pilot integration 和 closeout，封存产品树已正式集成到本地 `v4`
 - 生命周期真相源：精确 snapshot、Review、gate、integration 和 closeout 状态读取隔离 V3 Pilot 的 `MVP-DOC-001` task record、closeout bundle、持久化 manifest 和目标 ref；本文件只记录阶段判定
-- Phase A：`planning / implementation_not_authorized`；唯一规划源为 [V4 Phase A 执行计划](V4_PHASEA_PLAN.md)，V4 Schema、V4 task record、decision 命令、强制 product checkpoint 和强制 gate 均未开始
+- Phase A：`approved_not_started / implementation_not_authorized`；唯一规划源为 [V4 Phase A 执行计划](V4_PHASEA_PLAN.md)，V4 Schema、V4 task record、decision 命令、强制 product checkpoint 和强制 gate 均未开始
 - 已确认：隔离 self-hosting pilot、`DOC-001 doctor`、会话未观察时采用 `0 + WARN`
 - 阶段门：task record、closeout bundle、持久化 manifest 与目标 ref 已共同证明退出条件；核验材料见第 8 节
 
@@ -262,8 +262,8 @@ python .codex-workflow\bin\workflow_check.py doctor
 
 ### 8.3 Phase A 规划交接边界
 
-- 状态：`planning / implementation_not_authorized`。
+- 状态：`approved_not_started / implementation_not_authorized`。
 - 规划真相源：[V4 Phase A 执行计划](V4_PHASEA_PLAN.md)；安装模板不代表当前 Phase A 进度。
-- 本轮只允许审阅、纠偏和冻结任务计划，不新增 task-record-v4 Schema、`delivery_contract`、`decision_log`、decision 命令、product checkpoint 或 V4 gate。
+- Phase A 计划 revision 1 已获人类批准；实施授权仍关闭，不新增 task-record-v4 Schema、`delivery_contract`、`decision_log`、decision 命令、product checkpoint 或 V4 gate。
 - 不建立 Developer lane，不执行 Phase A 实现、integration 或 closeout。
 - 计划批准和实施授权分开；人类批准精确计划 revision 后，仍需另行授权相应里程碑才能开始实现。

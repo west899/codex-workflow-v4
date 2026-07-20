@@ -10,7 +10,7 @@
 | Revision | `1` |
 | Normative fingerprint | `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
-| 计划状态 | `awaiting_human_review` |
+| 计划状态 | `approved_not_started` |
 | 实施授权 | `not_granted` |
 | 目标分支 | `v4` |
 | Phase 0 基线 | `69c52ad09576a181f18dbe8b8735a8a638a3d27c` / `phase0_passed` |
