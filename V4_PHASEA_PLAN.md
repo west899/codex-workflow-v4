@@ -10,13 +10,13 @@
 | Revision | `1` |
 | Normative fingerprint | `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
-| 计划状态 | `approved_not_started` |
-| 实施授权 | `not_granted` |
+| 计划状态 | `executing` |
+| 实施授权 | `M2_correction_authorized_live_requirements_gate` / 用户于 2026-07-20 授权修复第二次独立 Review 发现的 M2 问题；Review PASS 前 M2 保持未完成 |
 | 目标分支 | `v4` |
 | Phase 0 基线 | `69c52ad09576a181f18dbe8b8735a8a638a3d27c` / `phase0_passed` |
 | 设计输入 | `改进建议.md` 第 14–19 节、第 23–24 节 |
-| 当前允许动作 | 审阅、纠偏、冻结计划 |
-| 当前禁止动作 | 建立 Developer lane、修改产品代码、执行 Phase A integration/closeout |
+| 当前允许动作 | 修复、验证并独立审阅 PA-004–PA-007 的 live Requirements 与防绕过问题 |
+| 当前禁止动作 | 开始 PA-008–PA-012，执行 M3/M4 的 STATUS、Stop Hook、V4 closeout、安装升级、文档同步或真实闭环工作 |
 
 规范指纹校验命令：
 

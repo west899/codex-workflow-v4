@@ -1,0 +1,180 @@
+{
+  "version": 4,
+  "generation": 0,
+  "phase": "coordinator",
+  "task_id": "MVP-SUP-001",
+  "status": "planned",
+  "contract_fingerprint": "b9d329ab383e521f5823323543dbe707a4be6ba9f1051fa3adb0e66e04c48170",
+  "source": {
+    "type": "mvp_backlog",
+    "reference": "MVP-SUP-001",
+    "priority_reason": "Minimum prerequisite for the current focus core slice",
+    "requirements_baseline": {
+      "brief_id": "REQ-001",
+      "revision": 1,
+      "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "requirements_impact": null,
+  "request": "Provide the minimum prerequisite that makes one core observation step possible.",
+  "scope": {
+    "in": ["Expose the narrow prerequisite contract used by the focus slice."],
+    "out": ["General platform work and standalone product progress claims."],
+    "allowed_paths": ["src/support/**", "tests/support/**"],
+    "resource_keys": ["path:src/support", "path:tests/support"]
+  },
+  "planning": {
+    "level": "small",
+    "exec_plan": null,
+    "steps": ["Implement the narrow prerequisite.", "Run its contract example and architecture check."]
+  },
+  "implementation_authorization": {
+    "authorized": false,
+    "authorized_by": null,
+    "authorized_at": null,
+    "source": null
+  },
+  "risk": {
+    "product_scope": false,
+    "sensitive_data": false,
+    "destructive_change": false,
+    "irreversible_architecture": false,
+    "production_release": false
+  },
+  "base_commit": null,
+  "acceptance": [
+    {
+      "id": "AC-101",
+      "criterion": "The core slice can call the prerequisite through the declared narrow contract.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "AC-102",
+      "criterion": "The prerequisite remains inside the approved module boundary.",
+      "status": "pending",
+      "evidence": []
+    }
+  ],
+  "delivery_contract": {
+    "kind": "supporting",
+    "focus_slice_id": "MVP-001",
+    "supports_task_id": "MVP-001",
+    "supporting": {
+      "necessity": "The core observation cannot run until this prerequisite returns its narrow result.",
+      "minimal_boundary": "Only the callable contract and its focused verification are included.",
+      "blocked_observation_step": "Perform the core action."
+    },
+    "requirement_ids": ["REQ-F-001", "REQ-S-001"],
+    "acceptance_ids": ["AC-101", "AC-102"],
+    "checkpoint": {
+      "mode": "not_required",
+      "reason": "The prerequisite adds no independent user behavior and is uniquely constrained by the focus contract.",
+      "source": "user:approved-requirements"
+    },
+    "observation": {
+      "method": "capability",
+      "entrypoint_ref": "project-script:observe-support-contract",
+      "fixture_ref": "fixture:support-contract-v1",
+      "healthcheck_ref": null,
+      "steps": ["Run the minimum caller example.", "Check the stable contract output."],
+      "cleanup_ref": null
+    },
+    "known_placeholders": [],
+    "decision_refs": [],
+    "dependency_refs": [],
+    "execution_mode": "formal",
+    "architecture": {
+      "baseline": {
+        "source": ".codex-workflow/governance/DECISIONS.md",
+        "revision": 1,
+        "fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "declared_impact": "within_guardrails",
+      "guardrails": [
+        {
+          "id": "ARCH-G-101",
+          "statement": "The prerequisite must remain behind the approved module boundary.",
+          "source": "decision:ARCH-BASELINE-001",
+          "acceptance_id": "AC-102",
+          "verification_refs": ["test:support-boundary"]
+        }
+      ]
+    }
+  },
+  "decision_log": [],
+  "lane": {
+    "lane_id": null,
+    "mode": "single",
+    "branch": null,
+    "base_ref": null,
+    "base_commit": null,
+    "claim_id": null,
+    "owner_generation": 0,
+    "assignment": null,
+    "allowed_paths": ["src/support/**", "tests/support/**"],
+    "resource_keys": ["path:src/support", "path:tests/support"],
+    "dependency_snapshot": {"backlog_commit": null, "dependencies": []}
+  },
+  "verification": {
+    "status": "pending",
+    "delivery_commit": null,
+    "delivery_hash": null,
+    "patch_hash": null,
+    "snapshot_id": null,
+    "changed_paths": []
+  },
+  "developer": {
+    "evidence_contract_version": null,
+    "agent_id": null,
+    "snapshot_id": null,
+    "scopes": [],
+    "commands": [],
+    "claims": [],
+    "handoff": null
+  },
+  "review": {
+    "evidence_contract_version": null,
+    "agent_id": null,
+    "snapshot_id": null,
+    "status": "pending",
+    "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+    "requirement_checklist": [],
+    "accepted_findings": [],
+    "claim_assessments": [],
+    "summary": null
+  },
+  "human_approvals": [],
+  "integration": {
+    "status": "not_ready",
+    "mode": null,
+    "policy_id": null,
+    "source_ref": null,
+    "target_ref": null,
+    "target_parent": null,
+    "pr_head_commit": null,
+    "result_commit": null,
+    "merge_strategy": null,
+    "queue_id": null,
+    "queued_at": null,
+    "queue_priority": null,
+    "closeout_commit": null,
+    "closeout_state_fingerprint": null,
+    "pr_url": null,
+    "ci_checks": [],
+    "evidence": []
+  },
+  "process_retrospective": {
+    "completed": false,
+    "completed_by": null,
+    "completed_at": null,
+    "questions": {
+      "repeated_problem_found": false,
+      "guidance_gap_found": false,
+      "deterministic_check_candidate_found": false
+    },
+    "summary": null
+  },
+  "rule_proposals": [],
+  "remaining_risks": []
+}

@@ -96,6 +96,27 @@ class JsonSchemaGateTests(unittest.TestCase):
                     label="Strict payload",
                 )
 
+    def test_defs_and_one_of_require_exactly_one_matching_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            schema = Path(directory) / "union.schema.json"
+            schema.write_text(
+                json.dumps(
+                    {
+                        "$defs": {"text": {"type": "string"}},
+                        "oneOf": [
+                            {"$ref": "#/$defs/text"},
+                            {"const": "ambiguous"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            validate_json_schema(schema, "single", label="Single branch")
+            with self.assertRaisesRegex(WorkflowDataError, r"matched 2"):
+                validate_json_schema(schema, "ambiguous", label="Two branches")
+            with self.assertRaisesRegex(WorkflowDataError, r"matched 0"):
+                validate_json_schema(schema, 7, label="No branch")
+
     def test_lane_schema_reference_blocks_state_write_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"

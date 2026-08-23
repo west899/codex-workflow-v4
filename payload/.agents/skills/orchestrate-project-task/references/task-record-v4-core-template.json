@@ -1,0 +1,182 @@
+{
+  "version": 4,
+  "generation": 0,
+  "phase": "coordinator",
+  "task_id": "MVP-001",
+  "status": "planned",
+  "contract_fingerprint": "49209c9a7f9a1a99bbd1c8e8593b8ec6265aa8bfc6794d4d33228843468a11b3",
+  "source": {
+    "type": "mvp_backlog",
+    "reference": "MVP-001",
+    "priority_reason": "Current human-confirmed focus core slice",
+    "requirements_baseline": {
+      "brief_id": "REQ-001",
+      "revision": 1,
+      "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "requirements_impact": null,
+  "request": "Deliver one directly observable core result for the current focus slice.",
+  "scope": {
+    "in": ["The user can complete and observe the core action."],
+    "out": ["Production release and nonessential supporting platform work."],
+    "allowed_paths": ["src/**", "tests/**"],
+    "resource_keys": ["path:src", "path:tests"]
+  },
+  "planning": {
+    "level": "medium",
+    "exec_plan": null,
+    "steps": ["Build the smallest observable path.", "Verify its product and guardrail acceptance criteria."]
+  },
+  "implementation_authorization": {
+    "authorized": false,
+    "authorized_by": null,
+    "authorized_at": null,
+    "source": null
+  },
+  "risk": {
+    "product_scope": true,
+    "sensitive_data": false,
+    "destructive_change": false,
+    "irreversible_architecture": false,
+    "production_release": false
+  },
+  "base_commit": null,
+  "acceptance": [
+    {
+      "id": "AC-001",
+      "criterion": "The core user result is directly observable through the declared recipe.",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "AC-002",
+      "criterion": "The slice preserves the approved module dependency direction.",
+      "status": "pending",
+      "evidence": []
+    }
+  ],
+  "delivery_contract": {
+    "kind": "core_slice",
+    "focus_slice_id": "MVP-001",
+    "supports_task_id": null,
+    "supporting": null,
+    "requirement_ids": ["REQ-O-001", "REQ-F-001", "REQ-S-001"],
+    "acceptance_ids": ["AC-001", "AC-002"],
+    "checkpoint": {
+      "mode": "required",
+      "reason": "This is the first observable result for the current focus slice.",
+      "source": "user:approved-requirements"
+    },
+    "observation": {
+      "method": "cli",
+      "entrypoint_ref": "project-script:observe-core-slice",
+      "fixture_ref": "fixture:core-slice-v1",
+      "healthcheck_ref": "project-script:healthcheck",
+      "steps": ["Run the observation command.", "Perform the core action.", "Check the declared visible result."],
+      "cleanup_ref": "project-script:cleanup-observation"
+    },
+    "known_placeholders": ["The template uses test data until the project contract replaces this entry."],
+    "decision_refs": [],
+    "dependency_refs": [
+      {
+        "task_id": "MVP-SUP-001",
+        "closeout_ref": "task:MVP-SUP-001",
+        "closeout_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "execution_mode": "formal",
+    "architecture": {
+      "baseline": {
+        "source": ".codex-workflow/governance/DECISIONS.md",
+        "revision": 1,
+        "fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "declared_impact": "within_guardrails",
+      "guardrails": [
+        {
+          "id": "ARCH-G-001",
+          "statement": "The slice must preserve the approved module dependency direction.",
+          "source": "decision:ARCH-BASELINE-001",
+          "acceptance_id": "AC-002",
+          "verification_refs": ["test:architecture-boundary"]
+        }
+      ]
+    }
+  },
+  "decision_log": [],
+  "lane": {
+    "lane_id": null,
+    "mode": "single",
+    "branch": null,
+    "base_ref": null,
+    "base_commit": null,
+    "claim_id": null,
+    "owner_generation": 0,
+    "assignment": null,
+    "allowed_paths": ["src/**", "tests/**"],
+    "resource_keys": ["path:src", "path:tests"],
+    "dependency_snapshot": {"backlog_commit": null, "dependencies": ["MVP-SUP-001"]}
+  },
+  "verification": {
+    "status": "pending",
+    "delivery_commit": null,
+    "delivery_hash": null,
+    "patch_hash": null,
+    "snapshot_id": null,
+    "changed_paths": []
+  },
+  "developer": {
+    "evidence_contract_version": null,
+    "agent_id": null,
+    "snapshot_id": null,
+    "scopes": [],
+    "commands": [],
+    "claims": [],
+    "handoff": null
+  },
+  "review": {
+    "evidence_contract_version": null,
+    "agent_id": null,
+    "snapshot_id": null,
+    "status": "pending",
+    "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+    "requirement_checklist": [],
+    "accepted_findings": [],
+    "claim_assessments": [],
+    "summary": null
+  },
+  "human_approvals": [],
+  "integration": {
+    "status": "not_ready",
+    "mode": null,
+    "policy_id": null,
+    "source_ref": null,
+    "target_ref": null,
+    "target_parent": null,
+    "pr_head_commit": null,
+    "result_commit": null,
+    "merge_strategy": null,
+    "queue_id": null,
+    "queued_at": null,
+    "queue_priority": null,
+    "closeout_commit": null,
+    "closeout_state_fingerprint": null,
+    "pr_url": null,
+    "ci_checks": [],
+    "evidence": []
+  },
+  "process_retrospective": {
+    "completed": false,
+    "completed_by": null,
+    "completed_at": null,
+    "questions": {
+      "repeated_problem_found": false,
+      "guidance_gap_found": false,
+      "deterministic_check_candidate_found": false
+    },
+    "summary": null
+  },
+  "rule_proposals": [],
+  "remaining_risks": []
+}

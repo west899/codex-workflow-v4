@@ -1,0 +1,250 @@
+{
+  "product_checkpoint": {
+    "id": "HD-001",
+    "kind": "product_checkpoint",
+    "status": "open",
+    "blocking": true,
+    "affected_scope": ["current_slice", "user_flow"],
+    "latest_decision_point": "before_review",
+    "current_delivery_independent": false,
+    "binding": {
+      "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "delivery_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contract_fingerprint": "49209c9a7f9a1a99bbd1c8e8593b8ec6265aa8bfc6794d4d33228843468a11b3",
+      "requirements_baseline": {
+        "brief_id": "REQ-001",
+        "revision": 1,
+        "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    "observation_receipt": {
+      "receipt_version": 1,
+      "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "delivery_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contract_fingerprint": "49209c9a7f9a1a99bbd1c8e8593b8ec6265aa8bfc6794d4d33228843468a11b3",
+      "entrypoint": {
+        "reference": "project-script:observe-core-slice",
+        "resolved_reference": "command:observe-core-slice",
+        "status": "ready",
+        "checked_at": "2026-07-20T00:00:00Z",
+        "expires_at": null
+      },
+      "healthcheck": {
+        "reference": "project-script:healthcheck",
+        "status": "passed",
+        "checked_at": "2026-07-20T00:00:00Z"
+      },
+      "artifact": {
+        "reference": "git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "environment": {
+        "kind": "isolated_preview",
+        "reference": "environment:preview-v1",
+        "configuration_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "expires_at": "2099-12-31T00:00:00Z"
+      },
+      "fixture": {
+        "reference": "fixture:core-slice-v1",
+        "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "data_class": "test"
+      },
+      "recipe_replayed": true,
+      "observed_at": "2026-07-20T00:00:00Z",
+      "observer_source": "user:owner",
+      "requirement_ids": ["REQ-O-001", "REQ-F-001", "REQ-S-001"],
+      "acceptance_ids": ["AC-001", "AC-002"],
+      "evidence_refs": ["evidence:core-slice-transcript"],
+      "normalized_result": {
+        "surface": "cli",
+        "method_evidence": {
+          "kind": "cli",
+          "command_ref": "command:observe-core-slice",
+          "exit_code": 0,
+          "stdout_ref": "evidence:core-slice-stdout",
+          "stderr_ref": null
+        },
+        "assertions": [
+          {
+            "id": "OBS-001",
+            "status": "passed",
+            "actual": "The core action completed and printed the declared result."
+          }
+        ],
+        "stable_output": [
+          {"name": "exit_code", "value": "0"},
+          {"name": "result", "value": "CORE_READY"}
+        ],
+        "contracts": {
+          "public_api": [
+            {
+              "ref": "cli:observe-core-slice",
+              "digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            }
+          ],
+          "schemas": [],
+          "dependencies": []
+        }
+      },
+      "real_components": ["The core action and output are executable."],
+      "temporary_components": ["The example uses test fixture data."],
+      "material_changes": ["The core result is observable for the first time."],
+      "reversible_assumptions": ["The output label follows the existing CLI convention."],
+      "known_limitations": ["Production credentials and release are outside this slice."],
+      "redaction": {"status": "not_required", "notes": []}
+    },
+    "observation_fingerprint": "bfa1f699df4fe7c959e8ce7093c27aad4714233035ee79671a7010e821c0e315",
+    "question": "Does this observed core result match the current product direction?",
+    "decision_fingerprint": "a6567c91e87005ea62afe6e1eb0fda3b52138ac8cbad18052592d6c235c7524c",
+    "decision_state_fingerprint": "2701d96084c9da1c6286ee09117d0cd2c85edc1aeaaf45938fdd637c56a15d41",
+    "resolution": null,
+    "deferrals": []
+  },
+  "product_decision": {
+    "id": "HD-002",
+    "kind": "product_decision",
+    "status": "open",
+    "blocking": true,
+    "affected_scope": ["current_slice", "user_flow"],
+    "latest_decision_point": "before_implementation",
+    "current_delivery_independent": false,
+    "question": "Should confirmation appear before the core action is committed?",
+    "options": [
+      {
+        "id": "A",
+        "label": "Confirm first",
+        "impact": "Adds one reversible user step and reduces accidental commits.",
+        "reversibility": "reversible"
+      },
+      {
+        "id": "B",
+        "label": "Commit directly",
+        "impact": "Removes one step and increases recovery cost after mistakes.",
+        "reversibility": "costly"
+      }
+    ],
+    "recommendation": {
+      "option_id": "A",
+      "reason": "The approved outcome prioritizes recovery from user mistakes."
+    },
+    "requirements_baseline": {
+      "brief_id": "REQ-001",
+      "revision": 1,
+      "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "product_context": {
+      "user_behavior": "changes",
+      "data_contract": "unchanged",
+      "public_interface": "unchanged",
+      "dependencies": "unchanged"
+    },
+    "decision_fingerprint": "c72fa6e3725853827e9b2e7785128ac3c01d1ec5898d442526c78dd16dd73b86",
+    "decision_state_fingerprint": "02bb1b75895dbaf726672bba087cf2bd56547132857d68e5c110a6df4b5fc3ab",
+    "resolution": null,
+    "deferrals": []
+  },
+  "architecture_decision": {
+    "id": "HD-003",
+    "kind": "architecture_decision",
+    "status": "resolved",
+    "blocking": true,
+    "affected_scope": ["current_slice", "module_boundary"],
+    "latest_decision_point": "before_implementation",
+    "current_delivery_independent": false,
+    "question": "Where should the new public capability be owned?",
+    "options": [
+      {
+        "id": "A",
+        "label": "Existing module",
+        "impact": "Preserves the current dependency direction and ownership boundary.",
+        "reversibility": "reversible"
+      },
+      {
+        "id": "B",
+        "label": "New shared module",
+        "impact": "Creates a cross-module contract and a higher migration cost.",
+        "reversibility": "costly"
+      }
+    ],
+    "recommendation": {
+      "option_id": "A",
+      "reason": "The existing boundary already owns the relevant data and behavior."
+    },
+    "requirements_baseline": {
+      "brief_id": "REQ-001",
+      "revision": 1,
+      "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "architecture_context": {
+      "baseline": {
+        "source": ".codex-workflow/governance/DECISIONS.md",
+        "revision": 1,
+        "fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "guardrail_ids": ["ARCH-G-001"],
+      "declared_impact": "changes_guardrail"
+    },
+    "decision_fingerprint": "4f5508a7279a08d1a29c67d06d6f8ea7d37f50e71e4555f0c86b703e24f4319f",
+    "decision_state_fingerprint": "976ecf78e0ebcb3dca6a76bc458cc203f4e8865ff7ac70b6b2afbd1630d9bb59",
+    "resolution": {
+      "selected_option_id": "A",
+      "decided_by": "human-owner",
+      "decided_at": "2026-07-20T00:05:00Z",
+      "source": "external-receipt:architecture-choice",
+      "rationale": "Keep ownership aligned with the approved baseline."
+    },
+    "deferrals": []
+  },
+  "risk_acceptance": {
+    "id": "HD-004",
+    "kind": "risk_acceptance",
+    "status": "open",
+    "blocking": true,
+    "affected_scope": ["current_slice", "data_retention"],
+    "latest_decision_point": "before_integration",
+    "current_delivery_independent": true,
+    "question": "May the isolated preview retain test records for seven days?",
+    "options": [
+      {
+        "id": "A",
+        "label": "Seven days",
+        "impact": "Improves debugging and retains test-only data for a bounded period.",
+        "reversibility": "reversible"
+      },
+      {
+        "id": "B",
+        "label": "Delete immediately",
+        "impact": "Minimizes retention and removes post-session debugging evidence.",
+        "reversibility": "reversible"
+      }
+    ],
+    "recommendation": {
+      "option_id": "B",
+      "reason": "The current acceptance does not require retained preview data."
+    },
+    "requirements_baseline": {
+      "brief_id": "REQ-001",
+      "revision": 1,
+      "approval_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "risk_context": {
+      "risk": "Test records remain available after the preview session.",
+      "consequence": "A broader retention window increases unnecessary data exposure.",
+      "mitigations": ["Use synthetic data.", "Delete the isolated store at expiry."],
+      "reversibility": "reversible",
+      "expires_at": "2026-08-20T00:00:00Z"
+    },
+    "decision_fingerprint": "72563482d5521161038f35b05772d16d570a482460e26db8c9a7cd39cd05e1af",
+    "decision_state_fingerprint": "39031ab60d2c1913292c1876885a33fe7b21c3578642416f8ceaca0a5772a6c0",
+    "resolution": null,
+    "deferrals": [
+      {
+        "deferred_by": "human-owner",
+        "deferred_at": "2026-07-20T00:10:00Z",
+        "source": "external-receipt:risk-deferral",
+        "reason": "The preview is not ready for integration.",
+        "latest_observation_point": "Before prepare-integration."
+      }
+    ]
+  }
+}

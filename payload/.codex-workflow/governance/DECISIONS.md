@@ -2,6 +2,28 @@
 
 > 项目：{{PROJECT_NAME}}｜用途：解释“为什么这样做”｜更新：{{INSTALL_DATE}}
 
+## 项目级最小架构基线
+
+<!-- CODEX_ARCHITECTURE_BASELINE_START -->
+{
+  "schema_version": 1,
+  "baseline_id": "ARCH-BASELINE-001",
+  "revision": 1,
+  "status": "not_configured",
+  "guardrails": [],
+  "approval": {
+    "approved_by": null,
+    "approved_at": null,
+    "source": null,
+    "approved_fingerprint": null
+  }
+}
+<!-- CODEX_ARCHITECTURE_BASELINE_END -->
+
+`not_configured` 只表示安装模板尚无项目事实。授权首个 V4 task 前，Coordinator 必须将当前已成立且需要保护的边界写入 `guardrails`，取得人类批准，并填入精确 fingerprint；不得由模板、安装器或 AI 自动批准。
+
+每条 guardrail 使用 `id + statement + source + verification_refs`。Fingerprint v1 材料只包含 `schema_version`、`baseline_id`、`revision` 和 `guardrails` 的 canonical JSON；`status` 与 `approval` 记录不进入材料。Task 只保存本文件路径、revision 和已批准 fingerprint 引用，切片专属护栏继续内联到 `delivery_contract.architecture.guardrails`。
+
 ## 当前有效决定
 
 | ID | 日期/状态 | 决定 | 原因 | 影响 |
@@ -24,4 +46,3 @@
 | --- | --- | --- | --- | --- |
 
 历史决定只追加；失效项保留并链接替代 ID。
-

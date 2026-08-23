@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -10,6 +11,10 @@ from pathlib import Path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+V4_CORE_TEMPLATE = PACKAGE_ROOT / (
+    "payload/.agents/skills/orchestrate-project-task/references/"
+    "task-record-v4-core-template.json"
+)
 
 
 def run(
@@ -292,6 +297,226 @@ def basic_v3_record(
         "process_retrospective": {"completed": False, "completed_by": None, "completed_at": None, "questions": {"repeated_problem_found": False, "guidance_gap_found": False, "deterministic_check_candidate_found": False}, "summary": None},
         "rule_proposals": [],
         "remaining_risks": [],
+    }
+
+
+def configure_v4_architecture_baseline(target: Path) -> str:
+    bin_path = PACKAGE_ROOT / "payload/.codex-workflow/bin"
+    sys.path.insert(0, str(bin_path))
+    try:
+        from workflow_common import architecture_baseline_fingerprint
+    finally:
+        sys.path.pop(0)
+    baseline = {
+        "schema_version": 1,
+        "baseline_id": "ARCH-BASELINE-001",
+        "revision": 1,
+        "status": "approved",
+        "guardrails": [
+            {
+                "id": "ARCH-G-001",
+                "statement": "The slice must preserve the approved module dependency direction.",
+                "source": "user:test",
+                "verification_refs": ["test:architecture-boundary"],
+            }
+        ],
+        "approval": {
+            "approved_by": "test-user",
+            "approved_at": "2026-07-20T00:00:00Z",
+            "source": "user:test",
+            "approved_fingerprint": None,
+        },
+    }
+    fingerprint = architecture_baseline_fingerprint(baseline)
+    baseline["approval"]["approved_fingerprint"] = fingerprint
+    path = target / ".codex-workflow/governance/DECISIONS.md"
+    text = path.read_text(encoding="utf-8")
+    start = "<!-- CODEX_ARCHITECTURE_BASELINE_START -->"
+    end = "<!-- CODEX_ARCHITECTURE_BASELINE_END -->"
+    text = (
+        text.split(start, 1)[0]
+        + start
+        + "\n"
+        + json.dumps(baseline, ensure_ascii=False, indent=2)
+        + "\n"
+        + end
+        + text.split(end, 1)[1]
+    )
+    path.write_text(text, encoding="utf-8")
+    return fingerprint
+
+
+def basic_v4_record(
+    base_commit: str,
+    *,
+    task_id: str = "MVP-001",
+    requirements_baseline: dict | None = None,
+    architecture_fingerprint: str = "2" * 64,
+    checkpoint_mode: str = "required",
+    execution_mode: str = "formal",
+    allowed_paths: list[str] | None = None,
+    resources: list[str] | None = None,
+) -> dict:
+    record = copy.deepcopy(json.loads(V4_CORE_TEMPLATE.read_text(encoding="utf-8")))
+    allowed_paths = allowed_paths or ["src/**", "tests/**", "docs/**"]
+    resources = resources or ["path:src", "path:tests", "path:docs"]
+    baseline = requirements_baseline or {
+        "brief_id": "REQ-001",
+        "revision": 1,
+        "approval_fingerprint": "1" * 64,
+    }
+    record["task_id"] = task_id
+    record["status"] = "in_progress"
+    record["phase"] = "developer"
+    record["source"] = {
+        "type": "user_directive",
+        "reference": "user:test-v4",
+        "priority_reason": "V4 M2 regression",
+        "requirements_baseline": copy.deepcopy(baseline),
+    }
+    record["implementation_authorization"] = {
+        "authorized": True,
+        "authorized_by": "test-user",
+        "authorized_at": "2026-07-20T00:00:00Z",
+        "source": "user:test",
+    }
+    record["base_commit"] = base_commit
+    record["scope"]["allowed_paths"] = list(allowed_paths)
+    record["scope"]["resource_keys"] = list(resources)
+    contract = record["delivery_contract"]
+    contract["focus_slice_id"] = task_id
+    contract["dependency_refs"] = []
+    contract["checkpoint"]["mode"] = checkpoint_mode
+    contract["checkpoint"]["reason"] = f"M2 checkpoint mode {checkpoint_mode}."
+    contract["execution_mode"] = execution_mode
+    contract["architecture"]["baseline"]["fingerprint"] = architecture_fingerprint
+    record["lane"] = {
+        "lane_id": f"lane-{task_id}-single",
+        "mode": "single",
+        "branch": "main",
+        "base_ref": "main",
+        "base_commit": base_commit,
+        "claim_id": "00000000-0000-4000-8000-000000000001",
+        "owner_generation": 1,
+        "assignment": {
+            "assigned_owner_id": "00000000-0000-4000-8000-000000000002",
+            "assignment_generation": 1,
+            "assigned_at": "2026-07-20T00:00:00Z",
+            "assigned_by": "test",
+        },
+        "allowed_paths": list(allowed_paths),
+        "resource_keys": list(resources),
+        "dependency_snapshot": {"backlog_commit": base_commit, "dependencies": []},
+    }
+    bin_path = PACKAGE_ROOT / "payload/.codex-workflow/bin"
+    sys.path.insert(0, str(bin_path))
+    try:
+        from workflow_common import contract_fingerprint
+    finally:
+        sys.path.pop(0)
+    record["contract_fingerprint"] = contract_fingerprint(record)
+    return record
+
+
+def v4_observation_receipt(record: dict) -> dict:
+    verification = record["verification"]
+    contract = record["delivery_contract"]
+    entrypoint_ref = contract["observation"]["entrypoint_ref"]
+    resolved_entrypoint = (
+        "command:" + entrypoint_ref.removeprefix("project-script:")
+        if entrypoint_ref.startswith("project-script:")
+        else entrypoint_ref
+    )
+    healthcheck_ref = contract["observation"]["healthcheck_ref"]
+    return {
+        "receipt_version": 1,
+        "snapshot_id": verification["snapshot_id"],
+        "delivery_commit": verification["delivery_commit"],
+        "contract_fingerprint": record["contract_fingerprint"],
+        "entrypoint": {
+            "reference": entrypoint_ref,
+            "resolved_reference": resolved_entrypoint,
+            "status": "ready",
+            "checked_at": "2026-07-20T00:00:00Z",
+            "expires_at": None,
+        },
+        "healthcheck": (
+            {
+                "reference": healthcheck_ref,
+                "status": "passed",
+                "checked_at": "2026-07-20T00:00:00Z",
+            }
+            if healthcheck_ref is not None
+            else None
+        ),
+        "artifact": {
+            "reference": f"git:{verification['delivery_commit']}",
+            "digest": verification["delivery_hash"],
+        },
+        "environment": {
+            "kind": "test",
+            "reference": "environment:v4-m2-test",
+            "configuration_fingerprint": "d" * 64,
+        },
+        "fixture": {
+            "reference": contract["observation"]["fixture_ref"],
+            "digest": "e" * 64,
+            "data_class": "test",
+        },
+        "recipe_replayed": True,
+        "observed_at": "2026-07-20T00:00:00Z",
+        "observer_source": "user:test-owner",
+        "requirement_ids": list(contract["requirement_ids"]),
+        "acceptance_ids": list(contract["acceptance_ids"]),
+        "evidence_refs": ["evidence:v4-m2-transcript"],
+        "normalized_result": {
+            "surface": "cli",
+            "method_evidence": {
+                "kind": "cli",
+                "command_ref": resolved_entrypoint,
+                "exit_code": 0,
+                "stdout_ref": "evidence:v4-m2-stdout",
+                "stderr_ref": None,
+            },
+            "assertions": [
+                {
+                    "id": "OBS-001",
+                    "status": "passed",
+                    "actual": "The core action completed and printed the declared result.",
+                }
+            ],
+            "stable_output": [
+                {"name": "exit_code", "value": "0"},
+                {"name": "result", "value": "CORE_READY"},
+            ],
+            "contracts": {
+                "public_api": [{"ref": "cli:observe-core-slice", "digest": "f" * 64}],
+                "schemas": [],
+                "dependencies": [],
+            },
+        },
+        "real_components": ["The core action and output are executable."],
+        "temporary_components": ["The regression uses test fixture data."],
+        "material_changes": ["The core result is directly observable."],
+        "reversible_assumptions": ["The output follows the existing CLI convention."],
+        "known_limitations": ["Production release is outside this task."],
+        "redaction": {"status": "not_required", "notes": []},
+    }
+
+
+def v4_checkpoint_request(record: dict, *, decision_id: str = "HD-001") -> dict:
+    return {
+        "id": decision_id,
+        "kind": "product_checkpoint",
+        "affected_scope": ["current_slice", "user_flow"],
+        "latest_decision_point": (
+            "before_review"
+            if record["delivery_contract"]["checkpoint"]["mode"] == "required"
+            else "before_dependency"
+        ),
+        "current_delivery_independent": False,
+        "question": "Does this observed result match the current product direction?",
+        "observation_receipt": v4_observation_receipt(record),
     }
 
 

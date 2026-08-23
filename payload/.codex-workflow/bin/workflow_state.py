@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CAS-protected state transitions and two-phase closeout for Workflow V3."""
+"""CAS-protected V3 state plus Phase A V4 decision and evidence transitions."""
 
 from __future__ import annotations
 
@@ -11,15 +11,24 @@ import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from workflow_common import (
     WorkflowDataError,
+    WorkflowJSONResourceError,
+    allowed_path,
     canonical_delivery,
     block_backlog_for_requirements,
     closeout_state_fingerprint,
+    contract_fingerprint,
+    contract_fingerprint_from_material,
+    contract_fingerprint_material,
+    decision_fingerprint,
+    decision_state_fingerprint,
+    derive_v4_decision_blocking,
     fault_injection,
     git,
     is_ancestor,
@@ -27,19 +36,35 @@ from workflow_common import (
     local_bootstrap_policy_gate,
     prepare_developer_evidence,
     prepare_review_evidence,
+    observation_receipt_fingerprint,
     read_embedded_json,
     read_requirements_brief,
     requirements_baseline,
     rev_parse,
     requirements_impact,
     requirements_impact_path,
+    require_v4_action,
+    reset_v4_snapshot_evidence,
     replace_embedded_json,
     snapshot_id,
     sync_workflow_status,
+    task_record_schema_name,
     unlock_ready_dependencies,
     update_backlog_status,
     utc_now,
     validate_developer_evidence,
+    validate_v4_architecture_delivery,
+    validate_v4_contract_identity,
+    validate_v4_current_observation_continuations,
+    validate_v4_decision_references,
+    validate_v4_external_source,
+    validate_v4_live_architecture_baseline,
+    validate_v4_live_dependencies,
+    validate_v4_live_focus_relationship,
+    validate_v4_live_requirements_baseline,
+    validate_v4_observation_receipt,
+    v4_dependency_snapshot,
+    v4_continuation_path_class,
     validate_workflow_schema,
     workflow_status_snapshot,
 )
@@ -77,7 +102,7 @@ def _require_coordinator_worktree(paths: WorkflowPaths, action: str) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Mutate Codex Workflow V3 state.")
+    result = argparse.ArgumentParser(description="Mutate supported Codex Workflow task state.")
     sub = result.add_subparsers(dest="command", required=True)
 
     def record_command(name: str) -> argparse.ArgumentParser:
@@ -104,6 +129,14 @@ def parser() -> argparse.ArgumentParser:
 
     integration = record_command("prepare-integration")
     integration.add_argument("--mode", choices=("local_bootstrap", "remote_pr_ci"), required=True)
+
+    request_decision = record_command("request-decision")
+    request_decision.add_argument("--decision-json", required=True)
+
+    record_decision = record_command("record-decision")
+    record_decision.add_argument("--decision-id", required=True)
+    record_decision.add_argument("--expected-fingerprint", required=True)
+    record_decision.add_argument("--resolution-json", required=True)
 
     def add_integrator_lease_arguments(command: argparse.ArgumentParser) -> None:
         command.add_argument("--integrator-token")
@@ -160,6 +193,51 @@ def record_lock_path(paths: WorkflowPaths, record_path: Path) -> Path:
     return paths.shared_runtime / "locks" / "records" / f"{key}.lock"
 
 
+def _v4_related_record_lock_paths(
+    paths: WorkflowPaths, record_path: Path, record: dict[str, Any]
+) -> list[Path]:
+    """Return a deterministic lock set for a V4 record and its transitive dependencies."""
+
+    lock_paths = {record_lock_path(paths, record_path)}
+    pending: list[dict[str, Any]] = [record]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        current_contract = current.get("delivery_contract") or {}
+        raw_references = current_contract.get("dependency_refs")
+        references = list(raw_references) if isinstance(raw_references, list) else []
+        if current_contract.get("kind") == "supporting":
+            references.append({"task_id": current_contract.get("focus_slice_id")})
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            dependency_id = reference.get("task_id")
+            if not isinstance(dependency_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9._-]+", dependency_id
+            ):
+                continue
+            if dependency_id in visited:
+                continue
+            visited.add(dependency_id)
+            dependency_path = paths.tracked("runs") / f"{dependency_id}.json"
+            lock_paths.add(record_lock_path(paths, dependency_path))
+            if not dependency_path.is_file():
+                continue
+            try:
+                _, dependency = load_record(paths, paths.relative(dependency_path))
+            except (
+                StateError,
+                WorkflowDataError,
+                WorkflowJSONResourceError,
+                WorkflowPathError,
+                OSError,
+            ):
+                continue
+            if dependency.get("version") == 4:
+                pending.append(dependency)
+    return sorted(lock_paths, key=lambda item: item.as_posix())
+
+
 def _print_projection(record_path: Path, before: dict[str, Any], after: dict[str, Any]) -> None:
     print(
         json.dumps(
@@ -186,48 +264,439 @@ def mutate_record(
     mutation: Mutation,
     *,
     sync_status: bool = True,
+    allowed_versions: tuple[int, ...] = (3,),
+    v4_live_gate: bool = True,
 ) -> tuple[Path, dict[str, Any]]:
-    paths.ensure_runtime()
     path, initial = load_record(paths, relative)
-    if initial.get("version") != 3:
-        raise StateError("State transitions only support V3 task records.")
+    if initial.get("version") not in allowed_versions:
+        versions = "/".join(f"V{version}" for version in allowed_versions)
+        raise StateError(f"This state transition only supports {versions} task records.")
     expected = initial.get("generation") if expected_generation is None else expected_generation
     if not isinstance(expected, int):
         raise StateError("Task record generation is invalid.")
-    with AdvisoryLock(record_lock_path(paths, path), timeout=2):
-        _, current = load_record(paths, relative)
+
+    def project(current: dict[str, Any]) -> dict[str, Any] | None:
         if current.get("generation") != expected:
             raise StateError(
                 f"Generation conflict: expected {expected}, found {current.get('generation')}."
             )
         updated = copy.deepcopy(current)
+        if v4_live_gate and current.get("version") == 4:
+            try:
+                validate_v4_live_requirements_baseline(paths, current)
+                validate_v4_live_architecture_baseline(paths, current)
+                validate_v4_contract_identity(current)
+                validate_v4_live_focus_relationship(paths, current)
+                validate_v4_live_dependencies(paths, current)
+            except WorkflowDataError as exc:
+                raise StateError(str(exc)) from exc
         mutation(updated)
         if updated == current:
-            print("STATE_NOOP")
-            return path, current
+            return None
         updated["generation"] = expected + 1
         validate_workflow_schema(
-            paths,
-            "task-record-v3.schema.json",
-            updated,
-            label="Updated task record",
+            paths, task_record_schema_name(updated), updated, label="Updated task record"
         )
-        if apply:
+        return updated
+
+    if not apply:
+        updated = project(initial)
+        if updated is None:
+            print("STATE_NOOP")
+            return path, initial
+        _print_projection(path, initial, updated)
+        return path, updated
+
+    paths.ensure_runtime()
+    for _ in range(3):
+        related_locks = _v4_related_record_lock_paths(paths, path, initial)
+        with ExitStack() as locks:
+            for lock_path in related_locks:
+                locks.enter_context(AdvisoryLock(lock_path, timeout=2))
+            _, current = load_record(paths, relative)
+            refreshed_locks = _v4_related_record_lock_paths(paths, path, current)
+            if refreshed_locks != related_locks:
+                continue
+            updated = project(current)
+            if updated is None:
+                print("STATE_NOOP")
+                return path, current
             atomic_write_json(path, updated)
             reread = json.loads(path.read_text(encoding="utf-8"))
             if reread != updated:
                 raise StateError("Task record reread did not match the requested mutation.")
-            if sync_status and not _is_lane_worktree(paths):
+            if sync_status and updated.get("version") == 3 and not _is_lane_worktree(paths):
                 sync_workflow_status(paths)
             print(f"STATE_APPLIED generation={updated['generation']}")
+            return path, updated
+    raise StateError("Dependency graph changed repeatedly while acquiring its record locks.")
+
+
+def _exact_fields(payload: dict[str, Any], expected: set[str], *, label: str) -> None:
+    missing = sorted(expected - set(payload))
+    unknown = sorted(set(payload) - expected)
+    if missing:
+        raise StateError(f"{label} is missing: " + ", ".join(missing))
+    if unknown:
+        raise StateError(f"{label} has unknown fields: " + ", ".join(unknown))
+
+
+def _external_decision_source(value: Any) -> str:
+    try:
+        return validate_v4_external_source(value, label="Decision resolution source")
+    except WorkflowDataError as exc:
+        raise StateError(str(exc)) from exc
+
+
+def _decision_timestamp(
+    value: Any, *, label: str, allow_future: bool = False
+) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise StateError(f"{label} must be a non-empty ISO-8601 timestamp.")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise StateError(f"{label} must be an ISO-8601 timestamp.") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise StateError(f"{label} must include a timezone.")
+    if not allow_future and parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise StateError(f"{label} must not be in the future.")
+    return parsed
+
+
+def _v4_decision_request(record: dict[str, Any], supplied: dict[str, Any]) -> dict[str, Any]:
+    common = {
+        "id", "kind", "affected_scope", "latest_decision_point",
+        "current_delivery_independent", "question",
+    }
+    kind = supplied.get("kind")
+    if kind == "product_checkpoint":
+        _exact_fields(
+            supplied,
+            common | {"observation_receipt"},
+            label="Product checkpoint request",
+        )
+        receipt = copy.deepcopy(supplied["observation_receipt"])
+        observation_identity = validate_v4_observation_receipt(record, receipt)
+        verification = record.get("verification") or {}
+        decision = {
+            **{field: copy.deepcopy(supplied[field]) for field in common},
+            "status": "open",
+            "blocking": False,
+            "binding": {
+                "snapshot_id": verification.get("snapshot_id"),
+                "delivery_commit": verification.get("delivery_commit"),
+                "contract_fingerprint": record.get("contract_fingerprint"),
+                "requirements_baseline": copy.deepcopy(
+                    (record.get("source") or {}).get("requirements_baseline")
+                ),
+            },
+            "observation_receipt": receipt,
+            "observation_fingerprint": observation_identity,
+            "decision_fingerprint": "0" * 64,
+            "decision_state_fingerprint": "0" * 64,
+            "resolution": None,
+            "deferrals": [],
+            "contract_material": contract_fingerprint_material(record),
+            "continuations": [],
+        }
+    elif kind in {"product_decision", "architecture_decision", "risk_acceptance"}:
+        context_field = {
+            "product_decision": "product_context",
+            "architecture_decision": "architecture_context",
+            "risk_acceptance": "risk_context",
+        }[kind]
+        _exact_fields(
+            supplied,
+            common | {"options", "recommendation", context_field},
+            label=f"{kind} request",
+        )
+        decision = {
+            **{field: copy.deepcopy(supplied[field]) for field in common},
+            "options": copy.deepcopy(supplied["options"]),
+            "recommendation": copy.deepcopy(supplied["recommendation"]),
+            "requirements_baseline": copy.deepcopy(
+                (record.get("source") or {}).get("requirements_baseline")
+            ),
+            context_field: copy.deepcopy(supplied[context_field]),
+            "status": "open",
+            "blocking": False,
+            "decision_fingerprint": "0" * 64,
+            "decision_state_fingerprint": "0" * 64,
+            "resolution": None,
+            "deferrals": [],
+        }
+        if kind == "architecture_decision":
+            current_baseline = (
+                (record.get("delivery_contract") or {}).get("architecture") or {}
+            ).get("baseline")
+            if decision[context_field].get("baseline") != current_baseline:
+                raise StateError(
+                    "Architecture decision baseline must match the current delivery contract."
+                )
+            current_guardrails = {
+                item.get("id")
+                for item in (
+                    (record.get("delivery_contract") or {}).get("architecture") or {}
+                ).get("guardrails", [])
+                if isinstance(item, dict)
+            }
+            if not set(decision[context_field].get("guardrail_ids", [])).issubset(
+                current_guardrails
+            ):
+                raise StateError(
+                    "Architecture decision guardrail_ids must reference current slice guardrails."
+                )
+        elif kind == "risk_acceptance":
+            expires_at = decision[context_field].get("expires_at")
+            if expires_at is not None and _decision_timestamp(
+                expires_at, label="Risk acceptance expires_at", allow_future=True
+            ) <= datetime.now(timezone.utc):
+                raise StateError("Risk acceptance request has already expired.")
+    else:
+        raise StateError(f"Unsupported V4 decision kind: {kind!r}.")
+    decision["blocking"] = derive_v4_decision_blocking(record, decision)
+    decision["decision_fingerprint"] = decision_fingerprint(decision)
+    decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+    return decision
+
+
+def request_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    supplied = read_json(args.decision_json, name="decision request")
+
+    def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") != 4:
+            raise StateError("request-decision requires a V4 task record.")
+        validate_v4_live_requirements_baseline(paths, record)
+        validate_v4_live_architecture_baseline(paths, record)
+        validate_v4_contract_identity(record)
+        validate_v4_live_dependencies(paths, record)
+        decision = _v4_decision_request(record, supplied)
+        decisions = record.get("decision_log")
+        if not isinstance(decisions, list):
+            raise StateError("V4 decision_log is invalid.")
+        for existing in decisions:
+            if not isinstance(existing, dict):
+                continue
+            if existing.get("id") == decision["id"]:
+                candidate = copy.deepcopy(decision)
+                candidate["blocking"] = existing.get("blocking")
+                candidate["decision_fingerprint"] = decision_fingerprint(candidate)
+                if existing.get("decision_fingerprint") == candidate["decision_fingerprint"]:
+                    return
+                raise StateError(f"Decision ID {decision['id']} already has conflicting request material.")
+            if existing.get("decision_fingerprint") == decision["decision_fingerprint"]:
+                return
+        if decision.get("kind") == "product_checkpoint":
+            current_snapshot = (decision.get("binding") or {}).get("snapshot_id")
+            if any(
+                isinstance(existing, dict)
+                and existing.get("kind") == "product_checkpoint"
+                and (existing.get("binding") or {}).get("snapshot_id")
+                == current_snapshot
+                for existing in decisions
+            ):
+                raise StateError(
+                    "The current snapshot already has a product checkpoint; "
+                    "resolve it before creating a new delivery snapshot."
+                )
+        if (record.get("integration") or {}).get("status") != "not_ready":
+            raise StateError(
+                "New V4 decisions are refused after integration leaves not_ready; abandon and rebuild explicitly."
+            )
+        fault_injection("v4-request-before-append")
+        decisions.append(decision)
+
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(4,),
+    )
+
+
+def _checkpoint_resolution(
+    decision: dict[str, Any], supplied: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    outcome = supplied.get("outcome")
+    if outcome == "deferred":
+        expected = {
+            "outcome", "decided_by", "decided_at", "source", "rationale",
+            "latest_observation_point",
+        }
+        _exact_fields(supplied, expected, label="Checkpoint deferral")
+        _external_decision_source(supplied["source"])
+        _decision_timestamp(supplied["decided_at"], label="Checkpoint deferred_at")
+        return "deferred", {
+            "deferred_by": supplied["decided_by"],
+            "deferred_at": supplied["decided_at"],
+            "source": supplied["source"],
+            "reason": supplied["rationale"],
+            "latest_observation_point": supplied["latest_observation_point"],
+        }
+    expected = {"outcome", "decided_by", "decided_at", "source", "rationale"}
+    _exact_fields(supplied, expected, label="Checkpoint resolution")
+    if outcome not in {"accepted", "changes_requested", "stopped"}:
+        raise StateError("Checkpoint outcome must be accepted, changes_requested, stopped, or deferred.")
+    _external_decision_source(supplied["source"])
+    _decision_timestamp(supplied["decided_at"], label="Checkpoint decided_at")
+    return "resolved", copy.deepcopy(supplied)
+
+
+def _validate_checkpoint_answer_chronology(
+    decision: dict[str, Any], lifecycle: str, resolution: dict[str, Any]
+) -> None:
+    receipt = decision.get("observation_receipt") or {}
+    answer_field = "deferred_at" if lifecycle == "deferred" else "decided_at"
+    answer_at = _decision_timestamp(
+        resolution.get(answer_field), label=f"Checkpoint {answer_field}"
+    )
+    observed_at = _decision_timestamp(
+        receipt.get("observed_at"),
+        label="Checkpoint observation observed_at",
+        allow_future=True,
+    )
+    if answer_at < observed_at:
+        raise StateError("Checkpoint answer cannot precede its observation.")
+    expiries = (
+        (receipt.get("entrypoint") or {}).get("expires_at"),
+        (receipt.get("environment") or {}).get("expires_at"),
+    )
+    for value in expiries:
+        if value is None:
+            continue
+        expiry = _decision_timestamp(
+            value, label="Checkpoint observation expiry", allow_future=True
+        )
+        if answer_at >= expiry:
+            raise StateError("Checkpoint answer must precede its observation expiry.")
+
+
+def _selected_resolution(decision: dict[str, Any], supplied: dict[str, Any]) -> dict[str, Any]:
+    expected = {"selected_option_id", "decided_by", "decided_at", "source", "rationale"}
+    _exact_fields(supplied, expected, label="Decision resolution")
+    _external_decision_source(supplied["source"])
+    _decision_timestamp(supplied["decided_at"], label="Decision decided_at")
+    option_ids = {
+        item.get("id") for item in decision.get("options", []) if isinstance(item, dict)
+    }
+    if supplied.get("selected_option_id") not in option_ids:
+        raise StateError("Decision resolution must select one declared option ID.")
+    return copy.deepcopy(supplied)
+
+
+def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    supplied = read_json(args.resolution_json, name="decision resolution")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.expected_fingerprint):
+        raise StateError("--expected-fingerprint must be a full SHA-256 hex digest.")
+
+    def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") != 4:
+            raise StateError("record-decision requires a V4 task record.")
+        validate_v4_live_requirements_baseline(paths, record)
+        validate_v4_live_architecture_baseline(paths, record)
+        validate_v4_contract_identity(record)
+        validate_v4_live_dependencies(paths, record)
+        decisions = record.get("decision_log")
+        matches = [
+            item for item in decisions or []
+            if isinstance(item, dict) and item.get("id") == args.decision_id
+        ]
+        if len(matches) != 1:
+            raise StateError(f"Decision {args.decision_id} is missing or ambiguous.")
+        decision = matches[0]
+        actual = decision_fingerprint(decision)
+        if (
+            decision.get("decision_fingerprint") != actual
+            or actual != args.expected_fingerprint
+        ):
+            raise StateError("Decision fingerprint changed; the supplied answer is stale.")
+        baseline = (record.get("source") or {}).get("requirements_baseline")
+        integration_status = (record.get("integration") or {}).get("status")
+        if decision.get("kind") == "product_checkpoint":
+            if (decision.get("binding") or {}).get("requirements_baseline") != baseline:
+                raise StateError("Checkpoint Requirements baseline is stale.")
+            lifecycle, resolution = _checkpoint_resolution(decision, supplied)
+            _validate_checkpoint_answer_chronology(decision, lifecycle, resolution)
+            if lifecycle == "deferred":
+                if decision.get("status") != "open":
+                    raise StateError("A resolved checkpoint cannot be deferred or overwritten.")
+                deferrals = decision.setdefault("deferrals", [])
+                if resolution in deferrals:
+                    return
+            elif decision.get("status") == "resolved":
+                if decision.get("resolution") == resolution:
+                    return
+                raise StateError("Conflicting checkpoint answer requires a future supersede flow.")
+            observation_identity = validate_v4_observation_receipt(
+                record, decision.get("observation_receipt")
+            )
+            if observation_identity != decision.get("observation_fingerprint"):
+                raise StateError("Checkpoint observation fingerprint is stale.")
+            if lifecycle == "deferred":
+                if integration_status != "not_ready":
+                    raise StateError(
+                        "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
+                    )
+                deferrals.append(resolution)
+                decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                return
+            if integration_status != "not_ready":
+                raise StateError(
+                    "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
+                )
+            if resolution["outcome"] == "changes_requested" and (
+                record.get("integration") or {}
+            ).get("status") != "not_ready":
+                raise StateError("changes_requested requires integration.status=not_ready.")
+            decision["status"] = "resolved"
+            decision["resolution"] = resolution
+            decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+            if resolution["outcome"] == "changes_requested":
+                fault_injection("v4-reset-after-decision")
+                reset_v4_snapshot_evidence(record)
         else:
-            _print_projection(path, current, updated)
-        return path, updated
+            if decision.get("requirements_baseline") != baseline:
+                raise StateError("Decision Requirements baseline is stale.")
+            resolution = _selected_resolution(decision, supplied)
+            if decision.get("status") == "resolved":
+                if decision.get("resolution") == resolution:
+                    return
+                raise StateError("Conflicting decision answer requires a future supersede flow.")
+            if integration_status != "not_ready":
+                raise StateError(
+                    "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
+                )
+            decision["status"] = "resolved"
+            decision["resolution"] = resolution
+            decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(4,),
+    )
 
 
-def _require_gate(paths: WorkflowPaths, relative: str) -> None:
+def _require_gate(paths: WorkflowPaths, relative: str) -> int:
+    _, record = load_record(paths, relative)
+    generation = record.get("generation")
+    if not isinstance(generation, int):
+        raise StateError("Task record generation is invalid.")
     result = subprocess.run(
-        [sys.executable, str(paths.tracked("bin") / "workflow_check.py"), "gate", relative],
+        [
+            sys.executable,
+            "-B",
+            str(paths.tracked("bin") / "workflow_check.py"),
+            "gate",
+            relative,
+        ],
         cwd=paths.root,
         capture_output=True,
         text=True,
@@ -236,6 +705,24 @@ def _require_gate(paths: WorkflowPaths, relative: str) -> None:
     )
     if result.returncode != 0:
         raise StateError((result.stderr or result.stdout).strip())
+    return generation
+
+
+def _require_v4_integrity(paths: WorkflowPaths, record: dict[str, Any]) -> None:
+    validate_v4_live_requirements_baseline(paths, record)
+    validate_v4_live_architecture_baseline(paths, record)
+    validate_v4_live_focus_relationship(paths, record)
+    validate_v4_live_dependencies(paths, record)
+    validate_v4_decision_references(record)
+    validate_v4_current_observation_continuations(record)
+
+
+def _require_v4_state_action(
+    paths: WorkflowPaths, record: dict[str, Any], action: str
+) -> None:
+    _require_v4_integrity(paths, record)
+    require_v4_action(record, action)
+    validate_v4_contract_identity(record)
 
 
 def _policy(paths: WorkflowPaths) -> dict[str, Any]:
@@ -297,6 +784,13 @@ def _queue_entry_for_record(paths: WorkflowPaths, record: dict[str, Any]) -> tup
     }
     if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in expected.items()):
         raise StateError("Runtime queue entry does not match the task lane token, generation, or priority.")
+    if record.get("version") == 4:
+        try:
+            expected_dependencies = v4_dependency_snapshot(paths, record)
+        except WorkflowDataError as exc:
+            raise StateError(str(exc)) from exc
+        if payload.get("dependency_snapshot", []) != expected_dependencies:
+            raise StateError("Runtime queue entry dependency snapshot is stale.")
     return path, payload
 
 
@@ -341,6 +835,8 @@ def _require_queue_head(paths: WorkflowPaths, record: dict[str, Any]) -> None:
 def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     evidence = read_json(args.evidence_json, name="developer evidence")
     _, current = load_record(paths, args.record)
+    if current.get("version") == 4:
+        _require_v4_state_action(paths, current, "record-developer")
     expected_generation = (
         current.get("generation")
         if args.expected_generation is None
@@ -357,10 +853,15 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     )
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            _require_v4_state_action(paths, record, "record-developer")
         if record.get("phase") not in {"developer", "coordinator", "review"}:
             raise StateError(
                 "Developer evidence can only be recorded from developer/coordinator/review phase."
             )
+        if record.get("version") == 4:
+            validate_v4_architecture_delivery(record, delivery["changed_paths"])
+            reset_v4_snapshot_evidence(record)
         record["developer"] = prepared
         record["review"] = {
             "evidence_contract_version": None,
@@ -373,6 +874,8 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             "claim_assessments": [],
             "summary": None,
         }
+        if record.get("version") == 4:
+            record["review"]["observation_equivalence"] = None
         record["verification"] = {
             "status": "pending",
             "delivery_commit": commit,
@@ -384,13 +887,162 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         record["status"] = "in_progress"
         record["phase"] = "review"
 
-    mutate_record(paths, args.record, expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
+
+
+def _v4_observation_continuation(
+    paths: WorkflowPaths,
+    record: dict[str, Any],
+    review: dict[str, Any],
+    supplied: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(supplied, dict):
+        raise StateError("V4 observation_equivalence must be an object.")
+    expected_fields = {
+        "continuation_version", "source_decision_id", "source_decision_fingerprint",
+        "target_receipt", "target_receipt_fingerprint",
+        "target_observation_fingerprint", "contract_diff",
+        "changed_paths", "path_classes", "replay", "reviewer_receipt",
+    }
+    _exact_fields(supplied, expected_fields, label="Observation equivalence")
+    if supplied.get("continuation_version") != 1:
+        raise StateError("Observation equivalence continuation_version must be 1.")
+    source_matches = [
+        item for item in record.get("decision_log", [])
+        if isinstance(item, dict)
+        and item.get("id") == supplied.get("source_decision_id")
+        and item.get("kind") == "product_checkpoint"
+    ]
+    if len(source_matches) != 1:
+        raise StateError("Observation equivalence source checkpoint is missing or ambiguous.")
+    source = source_matches[0]
+    source_resolution = source.get("resolution") or {}
+    if source.get("status") != "resolved" or source_resolution.get("outcome") != "accepted":
+        raise StateError("Observation equivalence requires a previously accepted checkpoint.")
+    if (
+        source.get("decision_fingerprint") != supplied.get("source_decision_fingerprint")
+        or decision_fingerprint(source) != supplied.get("source_decision_fingerprint")
+    ):
+        raise StateError("Observation equivalence source decision fingerprint is stale.")
+    source_material = source.get("contract_material")
+    if not isinstance(source_material, dict):
+        raise StateError("Source checkpoint lacks captured contract material for equivalence.")
+    source_contract = contract_fingerprint_from_material(source_material)
+    if source_contract != (source.get("binding") or {}).get("contract_fingerprint"):
+        raise StateError("Source checkpoint contract material is stale.")
+    target_material = contract_fingerprint_material(record)
+    target_contract = contract_fingerprint_from_material(target_material)
+    changed_categories = sorted(
+        field
+        for field in target_material
+        if source_material.get(field) != target_material.get(field)
+    )
+    if any(field not in {"planning", "risk"} for field in changed_categories):
+        raise StateError(
+            "Observation continuation contract diff changes product semantics: "
+            + ", ".join(changed_categories)
+        )
+    expected_contract_diff = {
+        "source_fingerprint": source_contract,
+        "target_fingerprint": target_contract,
+        "changed_categories": changed_categories,
+    }
+    if supplied.get("contract_diff") != expected_contract_diff:
+        raise StateError("Observation equivalence contract_diff is not the exact computed diff.")
+    verification = record.get("verification") or {}
+    target_receipt = copy.deepcopy(supplied.get("target_receipt"))
+    target_observation = validate_v4_observation_receipt(record, target_receipt)
+    target_receipt_identity = observation_receipt_fingerprint(target_receipt)
+    if target_receipt_identity != supplied.get("target_receipt_fingerprint"):
+        raise StateError("Observation equivalence target receipt fingerprint is stale.")
+    if target_observation != supplied.get("target_observation_fingerprint"):
+        raise StateError("Observation equivalence target fingerprint is stale.")
+    if target_observation != source.get("observation_fingerprint"):
+        raise StateError("Observation equivalence changed normalized product semantics.")
+    source_commit = (source.get("binding") or {}).get("delivery_commit")
+    target_commit = verification.get("delivery_commit")
+    if not isinstance(source_commit, str) or not isinstance(target_commit, str):
+        raise StateError("Observation equivalence requires exact source and target commits.")
+    delta = canonical_delivery(paths, source_commit, target_commit)
+    changed_paths = delta["changed_paths"]
+    if supplied.get("changed_paths") != changed_paths:
+        raise StateError("Observation equivalence changed_paths do not match the exact delivery delta.")
+    scope_patterns = (record.get("lane") or {}).get("allowed_paths") or []
+    if any(not allowed_path(path, scope_patterns) for path in changed_paths):
+        raise StateError("Observation equivalence changed path is outside the lane allowlist.")
+    path_classes = [
+        {"path": path, "classification": v4_continuation_path_class(path)}
+        for path in changed_paths
+    ]
+    if supplied.get("path_classes") != path_classes:
+        raise StateError("Observation equivalence path_classes are not the exact computed classes.")
+    if supplied.get("replay") != {
+        "recipe_replayed": True,
+        "normalized_result_matches": True,
+    }:
+        raise StateError("Observation equivalence requires an exact successful recipe replay.")
+    reviewer_receipt = supplied.get("reviewer_receipt")
+    if not isinstance(reviewer_receipt, dict):
+        raise StateError("Observation equivalence reviewer_receipt must be an object.")
+    expected_reviewer = {
+        "reviewer_id": review.get("agent_id"),
+        "snapshot_id": verification.get("snapshot_id"),
+        "assessment": "equivalent",
+        "user_behavior": "unchanged",
+        "data_contract": "unchanged",
+        "public_interface": "unchanged",
+        "dependencies": "unchanged",
+        "architecture": "unchanged",
+        "source": reviewer_receipt.get("source"),
+    }
+    if reviewer_receipt != expected_reviewer:
+        raise StateError("Observation equivalence Reviewer receipt is incomplete or mismatched.")
+    _external_decision_source(reviewer_receipt.get("source"))
+    if review.get("status") != "pass":
+        raise StateError("Observation continuation requires a passing independent Review.")
+    continuation = {
+        "continuation_version": 1,
+        "source_decision_id": source["id"],
+        "source_decision_fingerprint": source["decision_fingerprint"],
+        "source_snapshot_id": (source.get("binding") or {}).get("snapshot_id"),
+        "source_observation_fingerprint": source.get("observation_fingerprint"),
+        "target_snapshot_id": verification.get("snapshot_id"),
+        "target_receipt": target_receipt,
+        "target_receipt_fingerprint": target_receipt_identity,
+        "target_observation_fingerprint": target_observation,
+        "contract_diff": expected_contract_diff,
+        "changed_paths": changed_paths,
+        "path_classes": path_classes,
+        "replay": copy.deepcopy(supplied["replay"]),
+        "reviewer_receipt": copy.deepcopy(reviewer_receipt),
+        "recorded_at": utc_now(),
+    }
+    compact = {
+        "continuation_version": 1,
+        "source_decision_id": source["id"],
+        "target_snapshot_id": verification.get("snapshot_id"),
+        "target_observation_fingerprint": target_observation,
+        "target_receipt_fingerprint": target_receipt_identity,
+        "assessment": "equivalent",
+    }
+    return continuation, compact
 
 
 def record_review(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    review = read_json(args.review_json, name="review evidence")
+    review_input = read_json(args.review_json, name="review evidence")
 
     def mutation(record: dict[str, Any]) -> None:
+        review = copy.deepcopy(review_input)
+        equivalence = review.pop("observation_equivalence", None)
+        if record.get("version") == 4:
+            _require_v4_integrity(paths, record)
         if record.get("phase") != "review":
             raise StateError("Review evidence requires task.phase=review.")
         expected = (record.get("verification") or {}).get("snapshot_id")
@@ -410,20 +1062,54 @@ def record_review(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             snapshot_id_value=computed_snapshot,
             delivery=delivery,
         )
-        record["review"] = prepare_review_evidence(
+        prepared_review = prepare_review_evidence(
             paths,
             review,
             claim_fingerprints=claim_fingerprints,
         )
+        if record.get("version") == 4:
+            developer_id = (record.get("developer") or {}).get("agent_id")
+            reviewer_id = prepared_review.get("agent_id")
+            if reviewer_id == developer_id:
+                raise StateError("Developer and Reviewer agent IDs must differ.")
+            validate_v4_live_requirements_baseline(paths, record)
+            if equivalence is not None:
+                continuation, compact = _v4_observation_continuation(
+                    paths, record, prepared_review, equivalence
+                )
+                source = next(
+                    item for item in record["decision_log"]
+                    if item.get("id") == compact["source_decision_id"]
+                )
+                source.setdefault("continuations", []).append(continuation)
+                source["decision_state_fingerprint"] = decision_state_fingerprint(source)
+                prepared_review["observation_equivalence"] = compact
+                record["review"] = prepared_review
+                fault_injection("v4-review-before-continuation")
+            else:
+                prepared_review["observation_equivalence"] = None
+            _require_v4_state_action(paths, record, "record-review")
+        elif equivalence is not None:
+            raise StateError("observation_equivalence is only available for V4 Reviews.")
+        record["review"] = prepared_review
         record["phase"] = "coordinator"
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     acceptance = read_json(args.acceptance_json, name="acceptance evidence")
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            _require_v4_state_action(paths, record, "complete-task")
         if record.get("phase") != "coordinator":
             raise StateError("Task completion requires coordinator phase after independent Review.")
         developer = record.get("developer") or {}
@@ -437,6 +1123,11 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             )
         if review.get("status") != "pass":
             raise StateError("Task completion requires independent Review status pass.")
+        if record.get("version") == 4:
+            developer_id = developer.get("agent_id")
+            reviewer_id = review.get("agent_id")
+            if reviewer_id == developer_id:
+                raise StateError("Developer and Reviewer agent IDs must differ.")
         verification = record.get("verification") or {}
         commit = verification.get("delivery_commit")
         if not isinstance(commit, str):
@@ -453,15 +1144,66 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             snapshot_id_value=computed_snapshot,
             delivery=delivery,
         )
+        review_for_validation = copy.deepcopy(review)
+        if record.get("version") == 4:
+            review_for_validation.pop("observation_equivalence", None)
         prepare_review_evidence(
             paths,
-            review,
+            review_for_validation,
             claim_fingerprints=claim_fingerprints,
         )
         updates = acceptance.get("acceptance")
         retrospective = acceptance.get("process_retrospective")
         if not isinstance(updates, list) or not isinstance(retrospective, dict):
             raise StateError("Acceptance JSON requires acceptance array and process_retrospective object.")
+        if record.get("version") == 4:
+            if retrospective.get("completed") is not True:
+                raise StateError("V4 process retrospective must be completed before task completion.")
+            expected_ids = [
+                item.get("id")
+                for item in record.get("acceptance", [])
+                if isinstance(item, dict)
+            ]
+            if any(not isinstance(item, dict) for item in updates):
+                raise StateError("V4 acceptance evidence entries must be objects.")
+            update_ids = [item.get("id") for item in updates]
+            if (
+                len(update_ids) != len(set(update_ids))
+                or set(update_ids) != set(expected_ids)
+            ):
+                raise StateError(
+                    "V4 acceptance evidence IDs must exactly match task acceptance IDs."
+                )
+            for update in updates:
+                acceptance_id = update.get("id")
+                if update.get("status") != "passed":
+                    raise StateError(
+                        f"Acceptance {acceptance_id} must report status=passed."
+                    )
+                evidence = update.get("evidence")
+                if (
+                    not isinstance(evidence, list)
+                    or not evidence
+                    or any(
+                        not isinstance(item, str) or not item.strip()
+                        for item in evidence
+                    )
+                ):
+                    raise StateError(
+                        f"Acceptance {acceptance_id} must include non-empty evidence."
+                    )
+            next_rule_proposals = acceptance.get(
+                "rule_proposals", record.get("rule_proposals")
+            )
+            if not isinstance(next_rule_proposals, list) or any(
+                not isinstance(proposal, dict)
+                or proposal.get("status")
+                not in {"recorded", "rejected", "deferred", "implemented"}
+                for proposal in next_rule_proposals
+            ):
+                raise StateError(
+                    "Every V4 rule proposal requires a final disposition before task completion."
+                )
         by_id = {item.get("id"): item for item in updates if isinstance(item, dict)}
         for item in record.get("acceptance", []):
             update = by_id.get(item.get("id"))
@@ -477,13 +1219,34 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         record["status"] = "completed"
         record["phase"] = "coordinator"
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def mark_verified(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    _require_gate(paths, args.record)
+    gate_generation = _require_gate(paths, args.record)
+    if (
+        args.expected_generation is not None
+        and args.expected_generation != gate_generation
+    ):
+        raise StateError(
+            "--expected-generation must match the task generation validated by gate."
+        )
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            _require_v4_state_action(paths, record, "gate")
+            if (record.get("integration") or {}).get("status") != "not_ready":
+                raise StateError(
+                    "V4 mark-verified cannot run after integration leaves not_ready; "
+                    "abandon and rebuild explicitly."
+                )
         verification = record.get("verification") or {}
         verification["status"] = "passed"
         record["verification"] = verification
@@ -497,7 +1260,14 @@ def mark_verified(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             "pr_url": None, "ci_checks": [], "evidence": [],
         }
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        gate_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def record_approval(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -507,7 +1277,32 @@ def record_approval(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if missing:
         raise StateError("Human approval is missing: " + ", ".join(missing))
 
+    gate_generation: int | None = None
+    _, initial = load_record(paths, args.record)
+    if initial.get("version") == 4:
+        gate_generation = _require_gate(paths, args.record)
+        if (
+            args.expected_generation is not None
+            and args.expected_generation != gate_generation
+        ):
+            raise StateError(
+                "--expected-generation must match the task generation validated by gate."
+            )
+
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            _require_v4_state_action(paths, record, "prepare-integration")
+            _external_decision_source(approval.get("source"))
+            _decision_timestamp(
+                approval.get("approved_at"), label="Human approval approved_at"
+            )
+            if (
+                record.get("phase") != "integration"
+                or (record.get("verification") or {}).get("status") != "passed"
+            ):
+                raise StateError(
+                    "V4 human approval requires phase=integration and verification.status=passed."
+                )
         verification = record.get("verification") or {}
         expected = {
             "task_id": record.get("task_id"),
@@ -526,20 +1321,44 @@ def record_approval(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         ):
             approvals.append(approval)
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        gate_generation if gate_generation is not None else args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def prepare_integration(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    _require_gate(paths, args.record)
+    gate_generation = _require_gate(paths, args.record)
+    if (
+        args.expected_generation is not None
+        and args.expected_generation != gate_generation
+    ):
+        raise StateError(
+            "--expected-generation must match the task generation validated by gate."
+        )
     policy = _policy(paths)
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            _require_v4_state_action(paths, record, "prepare-integration")
         verification = record.get("verification") or {}
         if verification.get("status") != "passed":
             raise StateError("mark-verified must pass before prepare-integration.")
         integration = record.get("integration") or {}
         if integration.get("status") not in {"not_ready", "pending"}:
             raise StateError("Integration is not in a preparable state.")
+        if (
+            record.get("version") == 4
+            and integration.get("status") == "pending"
+            and integration.get("mode") != args.mode
+        ):
+            raise StateError(
+                "Pending V4 integration cannot change mode; abandon and rebuild explicitly."
+            )
         if args.mode == "local_bootstrap":
             local_bootstrap_policy_gate(
                 policy,
@@ -560,18 +1379,30 @@ def prepare_integration(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 raise StateError("Local bootstrap requires exact snapshot-bound human approval.")
         else:
             target_ref = policy.get("remote_target_ref")
-        integration.update(
-            {
-                "status": "pending",
-                "mode": args.mode,
-                "policy_id": policy["policy_id"],
-                "source_ref": f"refs/heads/{record['lane']['branch']}",
-                "target_ref": target_ref,
-            }
-        )
+        prepared_binding = {
+            "status": "pending",
+            "mode": args.mode,
+            "policy_id": policy["policy_id"],
+            "source_ref": f"refs/heads/{record['lane']['branch']}",
+            "target_ref": target_ref,
+        }
+        if record.get("version") == 4 and integration.get("status") == "pending":
+            if any(integration.get(key) != value for key, value in prepared_binding.items()):
+                raise StateError(
+                    "Pending V4 integration binding changed; abandon and rebuild explicitly."
+                )
+            return
+        integration.update(prepared_binding)
         record["integration"] = integration
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        gate_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def _ensure_clean_for_closeout(paths: WorkflowPaths) -> None:
@@ -599,6 +1430,8 @@ def _prepare_closeout_commit(
 ) -> None:
     paths.ensure_runtime()
     record_path, initial = load_record(paths, relative)
+    if initial.get("version") != 3:
+        raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
     expected = initial.get("generation") if expected_generation is None else expected_generation
     if not isinstance(expected, int):
         raise StateError("Task generation is invalid.")
@@ -697,6 +1530,8 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
     # Keep queue admission and closeout preparation in one runtime critical section.
     with _role_lock_context(paths, "coordinator", "prepare-local-closeout", apply=args.apply):
         _, record = load_record(paths, args.record)
+        if record.get("version") != 3:
+            raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
         if not isinstance(expected_generation, int):
             raise StateError("Task generation is invalid.")
@@ -756,6 +1591,8 @@ def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> N
     ):
         raise StateError("Every required remote CI check must be recorded as success.")
     _, record = load_record(paths, args.record)
+    if record.get("version") != 3:
+        raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
     integration = record.get("integration") or {}
     verification = record.get("verification") or {}
     if integration.get("mode") != "remote_pr_ci" or integration.get("status") not in {"pending", "merged_pending_closeout"}:
@@ -1048,6 +1885,12 @@ def resolve_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) 
         raise StateError("Requirements impact report does not match the current PROJECT/Backlog baseline.")
 
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            # This recovery transition intentionally starts from a stale
+            # Requirements baseline; architecture and identity must still be
+            # current before the baseline is replaced.
+            validate_v4_live_architecture_baseline(paths, record)
+            validate_v4_contract_identity(record)
         source = record.get("source")
         if not isinstance(source, dict) or source.get("type") != "mvp_backlog":
             raise StateError("Requirements impact continuation only supports mvp_backlog tasks.")
@@ -1077,9 +1920,24 @@ def resolve_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) 
             "rationale": decision["rationale"],
             "recorded_at": utc_now(),
         }
-        _reset_after_requirements_continuation(record)
+        if record.get("version") == 4:
+            record["contract_fingerprint"] = contract_fingerprint(record)
+            reset_v4_snapshot_evidence(
+                record,
+                allowed_integration_statuses=("not_ready", "invalidated"),
+            )
+        else:
+            _reset_after_requirements_continuation(record)
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+        v4_live_gate=False,
+    )
 
 
 def _show_text_at(paths: WorkflowPaths, reference: str, relative: str) -> str:
@@ -1323,6 +2181,10 @@ def main() -> None:
             record_approval(paths, args)
         elif command == "prepare-integration":
             prepare_integration(paths, args)
+        elif command == "request-decision":
+            request_decision(paths, args)
+        elif command == "record-decision":
+            record_decision(paths, args)
         elif command == "prepare-local-closeout":
             prepare_local_closeout(paths, args)
         elif command == "prepare-remote-closeout":
@@ -1340,7 +2202,8 @@ def main() -> None:
         elif command == "sync-status":
             sync_status(paths, args)
     except (
-        StateError, PersistentRoleLockError, WorkflowDataError, WorkflowPathError,
+        StateError, PersistentRoleLockError, WorkflowDataError, WorkflowJSONResourceError,
+        WorkflowPathError,
         LockUnavailable, OSError, subprocess.CalledProcessError,
     ) as exc:
         print(f"[workflow-state] ERROR: {exc}", file=sys.stderr)

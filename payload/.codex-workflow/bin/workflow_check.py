@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic read-side gates for Codex Workflow V3."""
+"""Deterministic read-side gates for Workflow V3 and Phase A V4."""
 
 from __future__ import annotations
 
@@ -23,11 +23,13 @@ from workflow_common import (
     WorkflowJSONResourceError,
     WorkflowJSONSyntaxError,
     allowed_path,
+    architecture_baseline_fingerprint,
     backlog_rows,
     canonical_delivery,
     closeout_state_fingerprint,
     current_requirements_baseline,
     current_branch,
+    derive_v4_decision_blocking,
     git,
     is_ancestor,
     is_mutable_control_path,
@@ -43,6 +45,15 @@ from workflow_common import (
     status_paths,
     utc_now,
     validate_developer_evidence,
+    validate_v4_architecture_delivery,
+    validate_v4_contract_identity,
+    validate_v4_current_observation_continuations,
+    validate_v4_decision_references,
+    validate_v4_live_architecture_baseline,
+    validate_v4_live_dependencies,
+    validate_v4_live_focus_relationship,
+    validate_v4_live_requirements_baseline,
+    v4_action_blockers,
     workflow_status_is_current,
 )
 from workflow_lock import lock_probe
@@ -107,7 +118,7 @@ class Checks:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Check Codex Workflow V3 state.")
+    result = argparse.ArgumentParser(description="Check supported Codex Workflow state.")
     result.add_argument(
         "mode",
         choices=(
@@ -385,15 +396,156 @@ def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
         return baseline
     except WorkflowJSONResourceError:
         raise
-    except WorkflowDataError as exc:
+    except (OSError, WorkflowDataError, WorkflowPathError) as exc:
         checks.error(str(exc))
         return None
 
 
-def _validate_record_basics(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, final: bool) -> None:
-    if record.get("version") != 3:
-        checks.error("Task record version must be 3 for V3 commands.")
+def _v4_architecture_gate(
+    paths: WorkflowPaths, record: dict[str, Any], checks: Checks
+) -> None:
+    try:
+        validate_v4_live_architecture_baseline(paths, record)
+    except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
+        checks.error(str(exc))
+
+
+def _v4_decision_reference_gate(record: dict[str, Any], checks: Checks) -> None:
+    try:
+        validate_v4_decision_references(record)
+    except WorkflowDataError as exc:
+        checks.error(str(exc))
+
+
+def _v4_dependency_checkpoint_gate(
+    paths: WorkflowPaths, record: dict[str, Any], checks: Checks
+) -> None:
+    try:
+        validate_v4_live_dependencies(paths, record)
+    except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
+        checks.error(str(exc))
+
+
+def _v4_continuation_delivery_gate(
+    paths: WorkflowPaths, record: dict[str, Any], checks: Checks
+) -> None:
+    try:
+        validate_v4_current_observation_continuations(record)
+    except WorkflowDataError as exc:
+        checks.error(str(exc))
+    current_snapshot = (record.get("verification") or {}).get("snapshot_id")
+    current_commit = (record.get("verification") or {}).get("delivery_commit")
+    if not isinstance(current_snapshot, str) or not isinstance(current_commit, str):
         return
+    for decision in record.get("decision_log", []):
+        if not isinstance(decision, dict) or decision.get("kind") != "product_checkpoint":
+            continue
+        source_commit = (decision.get("binding") or {}).get("delivery_commit")
+        for continuation in decision.get("continuations") or []:
+            if (
+                not isinstance(continuation, dict)
+                or continuation.get("target_snapshot_id") != current_snapshot
+            ):
+                continue
+            if not isinstance(source_commit, str):
+                checks.error("V4 observation continuation source commit is invalid.")
+                continue
+            try:
+                changed_paths = canonical_delivery(paths, source_commit, current_commit)[
+                    "changed_paths"
+                ]
+            except WorkflowDataError as exc:
+                checks.error(str(exc))
+                continue
+            if continuation.get("changed_paths") != changed_paths:
+                checks.error(
+                    "V4 observation continuation changed_paths do not match the exact commit delta."
+                )
+
+
+def _v4_contract_gate(
+    paths: WorkflowPaths,
+    record: dict[str, Any],
+    checks: Checks,
+    *,
+    action: str,
+) -> None:
+    try:
+        validate_v4_live_requirements_baseline(paths, record)
+        validate_v4_live_focus_relationship(paths, record)
+        validate_v4_contract_identity(record)
+    except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
+        checks.error(str(exc))
+        return
+    contract = record.get("delivery_contract") or {}
+    kind = contract.get("kind")
+    task_id = record.get("task_id")
+    if kind == "core_slice" and contract.get("focus_slice_id") != task_id:
+        checks.error("V4 core slice focus_slice_id must equal task_id.")
+    if kind == "supporting" and (
+        contract.get("supports_task_id") != contract.get("focus_slice_id")
+    ):
+        checks.error("V4 supporting task must support its exact focus slice.")
+    for decision in record.get("decision_log", []):
+        if not isinstance(decision, dict):
+            continue
+        if decision.get("kind") == "product_checkpoint":
+            expected_blocking = (
+                (contract.get("checkpoint") or {}).get("mode") == "required"
+            )
+        else:
+            if decision.get("blocking") is False:
+                affected = decision.get("affected_scope")
+                if (
+                    not isinstance(affected, list)
+                    or not affected
+                    or any(
+                        not isinstance(item, str) or not item.startswith("future:")
+                        for item in affected
+                    )
+                    or decision.get("current_delivery_independent") is not True
+                ):
+                    checks.error(
+                        f"V4 non-blocking decision {decision.get('id')} is not future-only and independent."
+                    )
+            try:
+                expected_blocking = derive_v4_decision_blocking(record, decision)
+            except WorkflowDataError as exc:
+                checks.error(str(exc))
+                continue
+        if (
+            decision.get("status") == "open"
+            and decision.get("blocking") is False
+            and expected_blocking is True
+        ):
+            checks.error(
+                f"V4 decision {decision.get('id')} was classified non-blocking past its safe boundary."
+            )
+    _v4_architecture_gate(paths, record, checks)
+    _v4_decision_reference_gate(record, checks)
+    _v4_continuation_delivery_gate(paths, record, checks)
+    _v4_dependency_checkpoint_gate(paths, record, checks)
+    try:
+        for blocker in v4_action_blockers(record, action):
+            checks.error(f"V4 {action} blocked: {blocker}.")
+    except WorkflowDataError as exc:
+        checks.error(str(exc))
+
+
+def _validate_record_basics(
+    paths: WorkflowPaths,
+    record: dict[str, Any],
+    checks: Checks,
+    *,
+    final: bool,
+    action: str | None = None,
+) -> None:
+    version = record.get("version")
+    if version not in {3, 4}:
+        checks.error("Task record version must be 3 or 4 for supported commands.")
+        return
+    if version == 4:
+        _v4_contract_gate(paths, record, checks, action=action or ("gate" if final else "preflight"))
     if not isinstance(record.get("generation"), int) or record.get("generation", -1) < 0:
         checks.error("Task record generation must be a non-negative integer.")
     if record.get("phase") not in {"coordinator", "developer", "review", "integration"}:
@@ -485,7 +637,10 @@ def _validate_record_basics(paths: WorkflowPaths, record: dict[str, Any], checks
                 if pointer_data.get(field) != expected:
                     checks.error(f"Lane pointer {field} does not match task record.")
 
-    if source_type == "mvp_backlog":
+    if version == 4:
+        if not isinstance(source.get("requirements_baseline"), dict):
+            checks.error("Every V4 task source requires source.requirements_baseline.")
+    elif source_type == "mvp_backlog":
         baseline = _baseline(paths, checks)
         source_baseline = source.get("requirements_baseline")
         if not isinstance(source_baseline, dict):
@@ -532,11 +687,22 @@ def _delivery_snapshot(paths: WorkflowPaths, record: dict[str, Any], checks: Che
     for path in delivery["changed_paths"]:
         if not allowed_path(path, patterns):
             checks.error(f"Delivery path is outside the lane allowlist: {path}")
+    if record.get("version") == 4:
+        try:
+            validate_v4_architecture_delivery(record, delivery["changed_paths"])
+        except WorkflowDataError as exc:
+            checks.error(str(exc))
     return delivery
 
 
 def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, final: bool) -> dict[str, Any] | None:
-    _validate_record_basics(paths, record, checks, final=final)
+    _validate_record_basics(
+        paths,
+        record,
+        checks,
+        final=final,
+        action="gate" if final else "preflight",
+    )
     if not final:
         return None
     delivery = _delivery_snapshot(paths, record, checks)
@@ -582,9 +748,12 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
             checks.error(str(exc))
         if claim_fingerprints and review_contract_version == 1:
             try:
+                review_for_validation = dict(review)
+                if record.get("version") == 4:
+                    review_for_validation.pop("observation_equivalence", None)
                 prepare_review_evidence(
                     paths,
-                    review,
+                    review_for_validation,
                     claim_fingerprints=claim_fingerprints,
                 )
             except WorkflowDataError as exc:
@@ -631,8 +800,20 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
         if findings.get("p0") != 0 or findings.get("p1") != 0:
             checks.error("Unresolved P0/P1 findings block the gate.")
         accepted = review.get("accepted_findings")
-        if not isinstance(accepted, list) or len(accepted) < int(findings.get("p2", 0)):
-            checks.error("Every unresolved P2 finding requires explicit acceptance.")
+        if not isinstance(accepted, list):
+            checks.error("Review accepted_findings must be an array.")
+        else:
+            for severity in ("p2", "p3"):
+                accepted_count = sum(
+                    1
+                    for item in accepted
+                    if isinstance(item, dict) and item.get("severity") == severity
+                )
+                if accepted_count != findings.get(severity):
+                    checks.error(
+                        f"Every {severity.upper()} finding requires exactly one explicit "
+                        f"{severity.upper()} acceptance."
+                    )
 
     retrospective = record.get("process_retrospective")
     if not isinstance(retrospective, dict) or retrospective.get("completed") is not True:
@@ -649,6 +830,12 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
 
 def integration_preflight(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) -> None:
     task_gate(paths, record, checks, final=True)
+    if record.get("version") == 4:
+        try:
+            for blocker in v4_action_blockers(record, "prepare-integration"):
+                checks.error(f"V4 prepare-integration blocked: {blocker}.")
+        except WorkflowDataError as exc:
+            checks.error(str(exc))
     verification = record.get("verification") or {}
     integration = record.get("integration") or {}
     if verification.get("status") != "passed":
@@ -684,6 +871,9 @@ def integration_preflight(paths: WorkflowPaths, record: dict[str, Any], checks: 
 
 
 def closeout_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) -> None:
+    if record.get("version") != 3:
+        checks.error("V4 closeout gate is unavailable until the versioned closeout milestone.")
+        return
     integration = record.get("integration")
     if not isinstance(integration, dict):
         checks.error("task.integration must be an object.")

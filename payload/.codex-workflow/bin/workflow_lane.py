@@ -27,9 +27,13 @@ from workflow_common import (
     is_ancestor,
     load_record,
     local_bootstrap_policy_gate,
+    require_v4_action,
+    reset_v4_snapshot_evidence,
     rev_parse,
     utc_now,
     validate_workflow_schema,
+    v4_dependency_snapshot,
+    validate_v4_live_requirements_baseline,
 )
 from workflow_lock import (
     AdvisoryLock,
@@ -64,6 +68,27 @@ REBUILD_BUCKETS = (
 
 class LaneError(ValueError):
     pass
+
+
+def _require_v4_integration_preflight(
+    lane_paths: WorkflowPaths, record_relative_path: str
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(lane_paths.tracked("bin") / "workflow_check.py"),
+            "integration-preflight",
+            record_relative_path,
+        ],
+        cwd=lane_paths.root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise LaneError((result.stderr or result.stdout).strip())
 
 
 def parser() -> argparse.ArgumentParser:
@@ -762,6 +787,16 @@ def _queued_lane_snapshot(paths: WorkflowPaths, queue_path: Path, queue: dict[st
     record_snapshot = _verified_snapshot(record)
     if record_snapshot != queued_snapshot:
         raise LaneError(f"Queue entry does not match its verified task snapshot: {queue_path}")
+    if record.get("version") == 4:
+        try:
+            expected_dependencies = v4_dependency_snapshot(lane_paths, record)
+        except WorkflowDataError as exc:
+            raise LaneError(str(exc)) from exc
+        if queue.get("dependency_snapshot", []) != expected_dependencies:
+            raise LaneError(f"Queue entry dependency snapshot is stale: {queue_path}")
+        _require_v4_integration_preflight(
+            lane_paths, str(registry.get("record", ""))
+        )
     return registry, queued_snapshot
 
 
@@ -880,6 +915,11 @@ def _rebuild_lane(paths: WorkflowPaths) -> tuple[dict[str, Any], dict[str, Any] 
     if not isinstance(queued_at, str) or _parse_time(queued_at) is None:
         raise LaneError(f"Queued lane has an invalid queued_at value in {paths.root}.")
     snapshot = _verified_snapshot(record)
+    if record.get("version") == 4:
+        try:
+            snapshot["dependency_snapshot"] = v4_dependency_snapshot(paths, record)
+        except WorkflowDataError as exc:
+            raise LaneError(str(exc)) from exc
     return payload, {
         "queue_id": queue_id,
         "lane_id": payload["lane_id"],
@@ -1116,6 +1156,8 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             raise LaneError("Only a verified lane can enter the integration queue.")
         lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
         _, queued_record = load_record(lane_paths, payload["record"])
+        if queued_record.get("version") == 4:
+            _require_v4_integration_preflight(lane_paths, payload["record"])
         expected_generation = queued_record.get("generation")
         if not isinstance(expected_generation, int):
             raise LaneError("Queued task record generation is invalid.")
@@ -1147,12 +1189,18 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             "queued_at": utc_now(),
             **snapshot,
         }
+        if queued_record.get("version") == 4:
+            queue_payload["dependency_snapshot"] = v4_dependency_snapshot(
+                lane_paths, queued_record
+            )
         _assert_queue_paths_available(paths, snapshot)
         if not args.apply:
             print(json.dumps({"apply": False, **queue_payload}, ensure_ascii=False, sort_keys=True))
             return
 
         def mutation(record: dict[str, Any]) -> None:
+            if record.get("version") == 4:
+                _require_v4_integration_preflight(lane_paths, payload["record"])
             current_lane = record.get("lane") or {}
             if (
                 record.get("task_id") != payload.get("task_id")
@@ -1171,12 +1219,23 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 )
             if _verified_snapshot(record) != snapshot:
                 raise StateError("Verified task snapshot changed during queue admission.")
+            if record.get("version") == 4:
+                current_dependency_snapshot = v4_dependency_snapshot(lane_paths, record)
+                if current_dependency_snapshot != queue_payload.get("dependency_snapshot"):
+                    raise StateError("V4 dependency snapshot changed during queue admission.")
             integration.update(
                 {"status": "queued", "queue_id": queue_id, "queued_at": queue_payload["queued_at"], "queue_priority": args.priority}
             )
             record["integration"] = integration
 
-        mutate_record(lane_paths, payload["record"], expected_generation, True, mutation)
+        mutate_record(
+            lane_paths,
+            payload["record"],
+            expected_generation,
+            True,
+            mutation,
+            allowed_versions=(3, 4),
+        )
         fault_injection("queue-after-record")
         payload["state"] = "queued"
         atomic_write_json(registry_path, payload)
@@ -1215,10 +1274,31 @@ def _queued_entry_for_refresh(
     }
     if not isinstance(queue, dict) or any(queue.get(field) != value for field, value in expected.items()):
         raise LaneError("Queued lane entry does not match its current claim token, generation, or priority.")
+    if record.get("version") == 4:
+        try:
+            expected_dependencies = v4_dependency_snapshot(paths, record)
+        except WorkflowDataError as exc:
+            raise LaneError(str(exc)) from exc
+        if queue.get("dependency_snapshot", []) != expected_dependencies:
+            raise LaneError("Queued lane dependency snapshot is stale.")
     return path, queue
 
 
+def _require_v4_refreshable(record: dict[str, Any]) -> None:
+    if record.get("version") == 4:
+        integration = record.get("integration")
+        if (
+            not isinstance(integration, dict)
+            or integration.get("status") not in {"not_ready", "invalidated"}
+        ):
+            raise StateError(
+                "V4 refresh-base cannot reopen pending or queued integration; "
+                "use explicit abandon and rebuild the lane."
+            )
+
+
 def _reset_after_base_refresh(record: dict[str, Any], base_ref: str, base_commit: str) -> None:
+    _require_v4_refreshable(record)
     lane = record.get("lane")
     if not isinstance(lane, dict):
         raise StateError("Task record lane is invalid.")
@@ -1239,6 +1319,12 @@ def _reset_after_base_refresh(record: dict[str, Any], base_ref: str, base_commit
     lane["dependency_snapshot"] = dependency_snapshot
     record["lane"] = lane
     record["base_commit"] = base_commit
+    if record.get("version") == 4:
+        reset_v4_snapshot_evidence(
+            record,
+            allowed_integration_statuses=("not_ready", "invalidated"),
+        )
+        return
     record["status"] = "in_progress"
     record["phase"] = "developer"
     record["verification"] = {
@@ -1330,6 +1416,7 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         for field in ("lane_id", "claim_id", "owner_generation", "branch", "base_commit"):
             if lane.get(field) != payload.get(field):
                 raise LaneError(f"Task record lane.{field} does not match the runtime lane.")
+        _require_v4_refreshable(record)
         if (record.get("integration") or {}).get("status") == "integrated":
             raise LaneError("refresh-base cannot rewrite an integrated task.")
         new_base = rev_parse(lane_paths, args.base)
@@ -1384,7 +1471,14 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                     raise StateError("Task integration changed during base refresh.")
             _reset_after_base_refresh(current, args.base, new_base)
 
-        mutate_record(lane_paths, payload["record"], expected_generation, True, mutation)
+        mutate_record(
+            lane_paths,
+            payload["record"],
+            expected_generation,
+            True,
+            mutation,
+            allowed_versions=(3, 4),
+        )
         fault_injection("refresh-base-after-record")
         payload["base_ref"] = args.base
         payload["base_commit"] = new_base
