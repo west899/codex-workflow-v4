@@ -1132,6 +1132,8 @@ def heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     for field in ("lane_id", "claim_id", "owner_id", "owner_generation"):
         if pointer.get(field) != payload.get(field):
             raise LaneError(f"Heartbeat token mismatch for {field}.")
+    _, record = load_record(lane_paths, payload["record"])
+    _require_v4_record_for_lane(lane_paths, record)
     with AdvisoryLock(paths.shared_runtime / "locks" / f"lane-{_safe_id(args.lane)}.lock", timeout=2):
         _, current = _registry(paths, args.lane)
         if current.get("claim_id") != payload.get("claim_id") or current.get("owner_generation") != payload.get("owner_generation"):
@@ -1454,6 +1456,7 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if dirty:
             raise LaneError("refresh-base requires a clean lane worktree after the manual rebase.")
         _, record = load_record(lane_paths, payload["record"])
+        _require_v4_record_for_lane(lane_paths, record)
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
         if not isinstance(expected_generation, int):
             raise LaneError("Task record generation is invalid.")
@@ -1549,6 +1552,9 @@ def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     previous_generation = payload.get("owner_generation")
     if not isinstance(previous_generation, int):
         raise LaneError("Lane owner generation is invalid.")
+    lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
+    _, queued_record = load_record(lane_paths, payload["record"])
+    _require_v4_record_for_lane(lane_paths, queued_record)
     if not args.apply:
         print(json.dumps({"apply": False, "lane_id": args.lane_id, "owner_generation": previous_generation + 1, "owner_id": new_owner}, sort_keys=True))
         return
@@ -2243,6 +2249,7 @@ def _remote_transfer(
     remote, config = _remote_config(paths, args.remote)
     _require_remote_claimed_config(config)
     record_path, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
     current_owner_id = _owner_id(paths, args.owner_id)
     if transfer_kind == "handoff":
