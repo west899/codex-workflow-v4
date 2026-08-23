@@ -289,7 +289,12 @@ def mutate_record(
                 validate_v4_live_dependencies(paths, current)
                 validate_v4_current_observation_continuations(current)
                 validate_v4_contract_identity(current)
-            except WorkflowDataError as exc:
+            except (
+                OSError,
+                WorkflowDataError,
+                WorkflowPathError,
+                WorkflowJSONResourceError,
+            ) as exc:
                 raise StateError(str(exc)) from exc
         mutation(updated)
         if updated == current:

@@ -250,6 +250,66 @@ class WorkflowLaneTests(unittest.TestCase):
             self.assertEqual(released_b.returncode, 0, released_b.stderr)
             self.assertTrue(lane_a_path.is_dir(), "release must preserve the worktree")
 
+    def test_v3_expand_resources_keeps_exact_lane_and_scope_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            base = create_baseline(target)
+            record_path = write_record(
+                target,
+                basic_v3_record(
+                    base,
+                    task_id="MVP-EXPAND-V3",
+                    allowed_paths=["src/expand/**", "tests/expand/**"],
+                    resources=["path:src/expand", "path:tests/expand"],
+                ),
+            )
+            commit_all(target, "authorized V3 expand fixture")
+            lane_path = root / "lane-v3-expand"
+            claimed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    "MVP-EXPAND-V3",
+                    "--base",
+                    "main",
+                    "--record",
+                    record_relative(record_path, target),
+                    "--worktree",
+                    str(lane_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(claimed.returncode, 0, claimed.stderr)
+            lane_id = re.search(r"id=(\S+)", claimed.stdout).group(1)
+            expanded = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "api:expand-extra",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(expanded.returncode, 0, expanded.stderr)
+            relative = record_relative(record_path, target)
+            after = json.loads((lane_path / relative).read_text(encoding="utf-8"))
+            self.assertEqual(after["lane"]["resource_keys"], after["scope"]["resource_keys"])
+            self.assertIn("api:expand-extra", after["scope"]["resource_keys"])
+            self.assertIn("api:expand-extra", after["lane"]["resource_keys"])
+            preflight = run(
+                workflow_command(lane_path, "workflow_check.py", "preflight", relative),
+                cwd=lane_path,
+            )
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
     def test_queue_rejects_overlapping_verified_paths_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

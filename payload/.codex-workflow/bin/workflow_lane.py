@@ -1721,6 +1721,7 @@ def preassign(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 
 def resume_remote(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     record_path, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     lane = record.get("lane") or {}
     mode = lane.get("mode")
     if mode not in {"remote_preassigned", "remote_claimed"}:
@@ -2136,6 +2137,7 @@ def remote_claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     remote, config = _remote_config(paths, args.remote)
     _require_remote_claimed_config(config)
     record_path, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
     owner_id = _owner_id(paths, identity["owner_id"])
     if owner_id != identity["owner_id"]:
@@ -2584,7 +2586,8 @@ def main() -> None:
         elif args.command == "remote-release":
             remote_release(paths, args)
     except (
-        LaneError, PersistentRoleLockError, WorkflowDataError, WorkflowPathError, StateError,
+        LaneError, PersistentRoleLockError, WorkflowDataError, WorkflowJSONResourceError,
+        WorkflowPathError, StateError,
         LockUnavailable, OSError, subprocess.CalledProcessError, ValueError,
     ) as exc:
         print(f"[workflow-lane] ERROR: {exc}", file=sys.stderr)

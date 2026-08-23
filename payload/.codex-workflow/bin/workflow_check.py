@@ -56,7 +56,7 @@ from workflow_common import (
     v4_action_blockers,
     workflow_status_is_current,
 )
-from workflow_lock import lock_probe
+from workflow_lock import canonical_resource_key, lock_probe
 from workflow_paths import (
     WorkflowPathError,
     WorkflowPathOSError,
@@ -536,6 +536,26 @@ def _v4_contract_gate(
     capture(lambda: validate_v4_contract_identity(record))
 
 
+def _canonical_resource_key_set(
+    keys: Any, *, skip_invalid: bool
+) -> set[str] | None:
+    if not isinstance(keys, list):
+        return None
+    canonical: set[str] = set()
+    for key in keys:
+        if not isinstance(key, str):
+            if skip_invalid:
+                continue
+            return None
+        try:
+            canonical.add(canonical_resource_key(key))
+        except ValueError:
+            if skip_invalid:
+                continue
+            return None
+    return canonical
+
+
 def _validate_record_basics(
     paths: WorkflowPaths,
     record: dict[str, Any],
@@ -621,8 +641,11 @@ def _validate_record_basics(
     if lane.get("allowed_paths") != allowed_paths:
         checks.error("Lane scope must exactly match task scope paths and resources.")
     elif record.get("version") == 4:
-        lane_keys = lane.get("resource_keys")
-        if not isinstance(lane_keys, list) or any(key not in lane_keys for key in resource_keys):
+        lane_keys = _canonical_resource_key_set(
+            lane.get("resource_keys"), skip_invalid=True
+        )
+        scope_keys = _canonical_resource_key_set(resource_keys, skip_invalid=False)
+        if lane_keys is None or scope_keys is None or not scope_keys.issubset(lane_keys):
             checks.error("Lane resource keys must include every task scope resource.")
     elif lane.get("resource_keys") != resource_keys:
         checks.error("Lane scope must exactly match task scope paths and resources.")

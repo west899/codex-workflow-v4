@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import copy
 import json
+import os
 import tempfile
 import unittest
 import uuid
@@ -5181,23 +5182,90 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 root, target, record_path, name="lane-brief"
             )
             brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
-            brief.unlink()
-            brief.mkdir()
-            blocked = run(
-                workflow_command(
-                    target,
-                    "workflow_lane.py",
-                    "expand-resources",
-                    lane_id,
-                    "--add",
-                    "path:ops",
-                    "--apply",
-                ),
-                cwd=target,
-            )
+            original = brief.read_bytes()
+            try:
+                os.chmod(brief, 0)
+                blocked = run(
+                    workflow_command(
+                        target,
+                        "workflow_lane.py",
+                        "expand-resources",
+                        lane_id,
+                        "--add",
+                        "path:ops",
+                        "--apply",
+                    ),
+                    cwd=target,
+                )
+            finally:
+                os.chmod(brief, 0o644)
+                brief.write_bytes(original)
             self.assertNotEqual(blocked.returncode, 0)
             self.assertIn("[workflow-lane] ERROR:", blocked.stderr)
             self.assertNotIn("Traceback (most recent call last)", blocked.stderr)
+            self.assertTrue(
+                any(
+                    marker in blocked.stderr
+                    for marker in (
+                        "Permission denied",
+                        "Errno 13",
+                        "not readable",
+                        "Unable to read",
+                        "live Requirements",
+                        "Requirements Brief",
+                    )
+                ),
+                blocked.stderr,
+            )
+
+    def test_v4_preflight_rejects_dropped_scope_resource_and_accepts_canonical_extras(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record_path = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-KEYS-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            commit_all(target, "authorized V4 resource-key fixture")
+            lane_path, _lane_id = self._claim_authorized_v4(
+                root, target, record_path, name="lane-keys"
+            )
+            relative = record_relative(record_path, target)
+            lane_record = lane_path / relative
+            current = json.loads(lane_record.read_text(encoding="utf-8"))
+            scope_keys = list(current["scope"]["resource_keys"])
+            self.assertGreaterEqual(len(scope_keys), 2)
+            dropped = copy.deepcopy(current)
+            dropped["lane"]["resource_keys"] = scope_keys[1:]
+            self._write_json(lane_record, dropped)
+            blocked = run(
+                workflow_command(lane_path, "workflow_check.py", "preflight", relative),
+                cwd=lane_path,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn(
+                "Lane resource keys must include every task scope resource",
+                blocked.stderr,
+            )
+
+            canonical = copy.deepcopy(current)
+            canonical["lane"]["resource_keys"] = [
+                key.upper() for key in scope_keys
+            ] + ["PATH:OPS"]
+            self._write_json(lane_record, canonical)
+            accepted = run(
+                workflow_command(lane_path, "workflow_check.py", "preflight", relative),
+                cwd=lane_path,
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
 
 if __name__ == "__main__":
