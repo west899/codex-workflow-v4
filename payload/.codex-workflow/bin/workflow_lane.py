@@ -542,6 +542,27 @@ def _require_v4_record_for_lane(paths: WorkflowPaths, record: dict[str, Any]) ->
         raise LaneError(str(exc)) from exc
 
 
+def _load_and_require_v4_lane_record(payload: dict[str, Any]) -> tuple[WorkflowPaths, dict[str, Any]]:
+    worktree = Path(str(payload.get("worktree", "")))
+    if not worktree.is_dir():
+        raise LaneError("Lane worktree does not exist.")
+    record_relative = payload.get("record")
+    if not isinstance(record_relative, str) or not record_relative:
+        raise LaneError("Lane registry record path is invalid.")
+    try:
+        lane_paths = WorkflowPaths.discover(worktree)
+        _, record = load_record(lane_paths, record_relative)
+    except (
+        OSError,
+        WorkflowDataError,
+        WorkflowPathError,
+        WorkflowJSONResourceError,
+    ) as exc:
+        raise LaneError(str(exc)) from exc
+    _require_v4_record_for_lane(lane_paths, record)
+    return lane_paths, record
+
+
 def _assign_record(paths: WorkflowPaths, record_relative: str, payload: dict[str, Any], *, mode: str) -> None:
     def mutation(record: dict[str, Any]) -> None:
         if record.get("task_id") != payload["task_id"]:
@@ -895,6 +916,7 @@ def _rebuild_lane(paths: WorkflowPaths) -> tuple[dict[str, Any], dict[str, Any] 
     if not isinstance(pointer.get("owner_generation"), int) or pointer["owner_generation"] < 1:
         raise LaneError(f"Lane pointer owner_generation is invalid in {paths.root}.")
     record_path, record = load_record(paths, pointer["record"])
+    _require_v4_record_for_lane(paths, record)
     lane = record.get("lane") or {}
     if lane.get("mode") != "local_worktree":
         return None
@@ -1091,6 +1113,22 @@ def list_lanes(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             rows.append({"lane_id": registry_path.stem, "effective_status": "broken"})
             continue
         payload = dict(payload)
+        worktree = Path(str(payload.get("worktree", "")))
+        record_relative = payload.get("record")
+        if worktree.is_dir() and isinstance(record_relative, str) and record_relative:
+            try:
+                lane_paths = WorkflowPaths.discover(worktree)
+                _, record = load_record(lane_paths, record_relative)
+            except (
+                OSError,
+                WorkflowDataError,
+                WorkflowPathError,
+                WorkflowJSONResourceError,
+            ):
+                record = None
+                lane_paths = None
+            else:
+                _require_v4_record_for_lane(lane_paths, record)
         payload["effective_status"] = _effective_status(payload)
         rows.append(payload)
     if args.as_json:
@@ -1120,10 +1158,9 @@ def _registry(paths: WorkflowPaths, lane_id: str) -> tuple[Path, dict[str, Any]]
 def heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     paths.ensure_runtime()
     registry_path, payload = _registry(paths, args.lane)
+    lane_paths, _record = _load_and_require_v4_lane_record(payload)
     if _effective_status(payload) == "stale":
         raise LaneError("Heartbeat refuses a stale lane; use recover --takeover after confirming ownership.")
-    worktree = Path(payload["worktree"])
-    lane_paths = WorkflowPaths.discover(worktree)
     pointer_path = lane_paths.lane_runtime / "lane.json"
     try:
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
@@ -1132,8 +1169,6 @@ def heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     for field in ("lane_id", "claim_id", "owner_id", "owner_generation"):
         if pointer.get(field) != payload.get(field):
             raise LaneError(f"Heartbeat token mismatch for {field}.")
-    _, record = load_record(lane_paths, payload["record"])
-    _require_v4_record_for_lane(lane_paths, record)
     with AdvisoryLock(paths.shared_runtime / "locks" / f"lane-{_safe_id(args.lane)}.lock", timeout=2):
         _, current = _registry(paths, args.lane)
         if current.get("claim_id") != payload.get("claim_id") or current.get("owner_generation") != payload.get("owner_generation"):
@@ -1199,10 +1234,9 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     with _coordinator_lock(paths, "queue", apply=args.apply):
         registry_path, payload = _registry(paths, args.lane_id)
+        lane_paths, queued_record = _load_and_require_v4_lane_record(payload)
         if _effective_status(payload) != "verified":
             raise LaneError("Only a verified lane can enter the integration queue.")
-        lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
-        _, queued_record = load_record(lane_paths, payload["record"])
         if queued_record.get("version") == 4:
             _require_v4_integration_preflight(lane_paths, payload["record"])
         expected_generation = queued_record.get("generation")
@@ -1444,19 +1478,14 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         registry_path, payload = _registry(paths, args.lane_id)
         if payload.get("mode") != "local_worktree":
             raise LaneError("refresh-base only supports local_worktree lanes.")
+        lane_paths, record = _load_and_require_v4_lane_record(payload)
         if _effective_status(payload) == "stale":
             raise LaneError("refresh-base refuses a stale lane; recover --takeover first.")
-        worktree = Path(str(payload.get("worktree", "")))
-        if not worktree.is_dir():
-            raise LaneError("refresh-base requires the lane worktree to exist.")
-        lane_paths = WorkflowPaths.discover(worktree)
         if current_branch(lane_paths) != payload.get("branch"):
             raise LaneError("refresh-base must run against the lane's checked-out branch.")
         _, dirty = _dirty_digest(lane_paths)
         if dirty:
             raise LaneError("refresh-base requires a clean lane worktree after the manual rebase.")
-        _, record = load_record(lane_paths, payload["record"])
-        _require_v4_record_for_lane(lane_paths, record)
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
         if not isinstance(expected_generation, int):
             raise LaneError("Task record generation is invalid.")
@@ -1542,19 +1571,17 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 
 def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     registry_path, payload = _registry(paths, args.lane_id)
+    lane_paths, queued_record = _load_and_require_v4_lane_record(payload)
     if not args.takeover:
         print(json.dumps({"lane_id": args.lane_id, "effective_status": _effective_status(payload), "next": "use --takeover --apply only after stale ownership is confirmed"}, ensure_ascii=False, sort_keys=True))
         return
     expires = _parse_time(payload.get("expires_at"))
     if expires is not None and expires >= datetime.now(timezone.utc):
         raise LaneError("Takeover is refused while the current heartbeat lease is live.")
-    new_owner = _owner_id(paths, args.owner_id)
     previous_generation = payload.get("owner_generation")
     if not isinstance(previous_generation, int):
         raise LaneError("Lane owner generation is invalid.")
-    lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
-    _, queued_record = load_record(lane_paths, payload["record"])
-    _require_v4_record_for_lane(lane_paths, queued_record)
+    new_owner = _owner_id(paths, args.owner_id)
     if not args.apply:
         print(json.dumps({"apply": False, "lane_id": args.lane_id, "owner_generation": previous_generation + 1, "owner_id": new_owner}, sort_keys=True))
         return
@@ -1637,9 +1664,11 @@ def release_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             confirmed = json.loads(journal.read_text(encoding="utf-8")).get("confirmed") is True
         except (OSError, json.JSONDecodeError):
             confirmed = False
+    worktree = Path(payload["worktree"])
+    if worktree.is_dir() and not args.abandon:
+        _load_and_require_v4_lane_record(payload)
     if not confirmed and not args.abandon:
         raise LaneError("Release requires confirmed closeout; use --abandon only for explicit non-integrated abandonment.")
-    worktree = Path(payload["worktree"])
     if worktree.is_dir():
         lane_paths = WorkflowPaths.discover(worktree)
         digest, dirty = _dirty_digest(lane_paths)

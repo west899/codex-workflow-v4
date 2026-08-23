@@ -4786,6 +4786,22 @@ class V4WorkflowM2Tests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _assert_live_brief_lane_error(
+        self,
+        result,
+        *,
+        absent_stderr: tuple[str, ...] = (),
+        absent_stdout: tuple[str, ...] = ('"apply": false',),
+    ) -> None:
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("[workflow-lane] ERROR:", result.stderr)
+        self.assertIn("live Requirements Brief differs", result.stderr)
+        self.assertNotIn("Traceback (most recent call last)", result.stderr)
+        for item in absent_stderr:
+            self.assertNotIn(item, result.stderr)
+        for item in absent_stdout:
+            self.assertNotIn(item, result.stdout)
+
     def _write_forged_checkpoint_continuation(self, record_path: Path) -> None:
         record = json.loads(record_path.read_text(encoding="utf-8"))
         checkpoint = next(
@@ -5049,7 +5065,44 @@ class V4WorkflowM2Tests(unittest.TestCase):
             brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
             original_brief = brief.read_bytes()
             self._revise_requirements(brief)
+            registry_path = (
+                target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_id}.json"
+            )
+            owner_path = target / ".git/codex-workflow-v3/owner-id"
+            lane_record = lane_path / record_relative(recover_record, target)
+            registry_before = registry_path.read_bytes()
+            owner_before = owner_path.read_bytes()
+            record_before = lane_record.read_bytes()
+            drifted_status = run(
+                workflow_command(target, "workflow_lane.py", "recover", lane_id),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                drifted_status,
+                absent_stdout=('"apply": false', "effective_status"),
+            )
             self._expire_lane(target, lane_id)
+            registry_expired = registry_path.read_bytes()
+            mismatched = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "recover",
+                    lane_id,
+                    "--takeover",
+                    "--owner-id",
+                    str(uuid.uuid4()),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                mismatched,
+                absent_stderr=(
+                    "differs from this runtime's controlled owner ID",
+                    "Takeover is refused while the current heartbeat lease is live",
+                ),
+            )
             drifted_dry = run(
                 workflow_command(
                     target,
@@ -5060,10 +5113,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 ),
                 cwd=target,
             )
-            self.assertNotEqual(drifted_dry.returncode, 0)
-            self.assertIn("live Requirements Brief differs", drifted_dry.stderr)
-            self.assertNotIn("Traceback (most recent call last)", drifted_dry.stderr)
-            self.assertNotIn('"apply": false', drifted_dry.stdout)
+            self._assert_live_brief_lane_error(drifted_dry)
             drifted = run(
                 workflow_command(
                     target,
@@ -5075,9 +5125,11 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 ),
                 cwd=target,
             )
-            self.assertNotEqual(drifted.returncode, 0)
-            self.assertIn("live Requirements Brief differs", drifted.stderr)
-            self.assertNotIn("Traceback (most recent call last)", drifted.stderr)
+            self._assert_live_brief_lane_error(drifted)
+            self.assertEqual(registry_path.read_bytes(), registry_expired)
+            self.assertEqual(owner_path.read_bytes(), owner_before)
+            self.assertEqual(lane_record.read_bytes(), record_before)
+            self.assertNotEqual(registry_expired, registry_before)
             brief.write_bytes(original_brief)
 
             evidence = self._write_json(
@@ -5324,14 +5376,102 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 ),
                 cwd=target,
             )
-            self.assertNotEqual(blocked_heartbeat.returncode, 0)
-            self.assertIn("[workflow-lane] ERROR:", blocked_heartbeat.stderr)
-            self.assertIn("live Requirements Brief differs", blocked_heartbeat.stderr)
-            self.assertNotIn(
-                "Traceback (most recent call last)", blocked_heartbeat.stderr
+            self._assert_live_brief_lane_error(
+                blocked_heartbeat,
+                absent_stderr=("Heartbeat refuses a stale lane",),
             )
             self.assertEqual(registry_path.read_bytes(), registry_before)
             self.assertFalse(heartbeat_path.exists())
+
+            blocked_list = run(
+                workflow_command(target, "workflow_lane.py", "list", "--json"),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                blocked_list,
+                absent_stdout=('"apply": false', "effective_status"),
+            )
+            blocked_rebuild = run(
+                workflow_command(target, "workflow_lane.py", "rebuild"),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                blocked_rebuild,
+                absent_stdout=('"apply": false', "owners_marked_stale"),
+            )
+            blocked_queue = run(
+                workflow_command(target, "workflow_lane.py", "queue", lane_id),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                blocked_queue,
+                absent_stderr=("Only a verified lane can enter the integration queue",),
+            )
+            blocked_release = run(
+                workflow_command(target, "workflow_lane.py", "release", lane_id),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                blocked_release,
+                absent_stderr=(
+                    "Release requires confirmed closeout",
+                    "dirty lane worktree",
+                ),
+            )
+            blocked_dirty_refresh = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "refresh-base",
+                    lane_id,
+                    "--base",
+                    "main",
+                ),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                blocked_dirty_refresh,
+                absent_stderr=(
+                    "requires a clean lane worktree",
+                    "requires a newer base commit",
+                    "recover --takeover first",
+                ),
+            )
+
+            self._expire_lane(target, lane_id)
+            stale_heartbeat = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "heartbeat",
+                    "--lane",
+                    lane_id,
+                ),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                stale_heartbeat,
+                absent_stderr=("Heartbeat refuses a stale lane",),
+            )
+            stale_refresh = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "refresh-base",
+                    lane_id,
+                    "--base",
+                    "main",
+                ),
+                cwd=target,
+            )
+            self._assert_live_brief_lane_error(
+                stale_refresh,
+                absent_stderr=(
+                    "recover --takeover first",
+                    "requires a clean lane worktree",
+                    "requires a newer base commit",
+                ),
+            )
 
             commit_all(lane_path, "commit drifted live brief on lane")
             lane_record = lane_path / record_relative(record_path, target)
@@ -5352,20 +5492,26 @@ class V4WorkflowM2Tests(unittest.TestCase):
                         workflow_command(*command),
                         cwd=target,
                     )
-                    self.assertNotEqual(blocked_refresh.returncode, 0)
-                    self.assertIn("[workflow-lane] ERROR:", blocked_refresh.stderr)
-                    self.assertIn(
-                        "live Requirements Brief differs", blocked_refresh.stderr
+                    self._assert_live_brief_lane_error(
+                        blocked_refresh,
+                        absent_stderr=("requires a newer base commit",),
                     )
-                    self.assertNotIn(
-                        "requires a newer base commit", blocked_refresh.stderr
-                    )
-                    self.assertNotIn(
-                        "Traceback (most recent call last)", blocked_refresh.stderr
-                    )
-                    self.assertNotIn('"apply": false', blocked_refresh.stdout)
                     self.assertEqual(lane_record.read_bytes(), record_before)
-                    self.assertEqual(registry_path.read_bytes(), registry_before)
+            abandoned = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "release",
+                    lane_id,
+                    "--abandon",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(abandoned.returncode, 0, abandoned.stderr)
+            self.assertFalse(registry_path.exists())
+            preserved = json.loads(lane_record.read_text(encoding="utf-8"))
+            self.assertNotEqual(preserved["status"], "completed")
 
     def test_remote_lane_commands_reject_live_requirements_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5386,6 +5532,8 @@ class V4WorkflowM2Tests(unittest.TestCase):
             relative = record_relative(record_path, target)
             brief = target / ".codex-workflow/governance/requirements/REQ-001.md"
             self._revise_requirements(brief)
+            owner_path = target / ".git/codex-workflow-v3/owner-id"
+            self.assertFalse(owner_path.exists())
             owner = str(uuid.uuid4())
             resumed = run(
                 workflow_command(
@@ -5399,9 +5547,8 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 ),
                 cwd=target,
             )
-            self.assertNotEqual(resumed.returncode, 0)
-            self.assertIn("live Requirements Brief differs", resumed.stderr)
-            self.assertNotIn("Traceback (most recent call last)", resumed.stderr)
+            self._assert_live_brief_lane_error(resumed)
+            self.assertFalse(owner_path.exists())
 
             layout_path = target / ".codex-workflow/layout.json"
             layout = json.loads(layout_path.read_text(encoding="utf-8"))
@@ -5449,22 +5596,14 @@ class V4WorkflowM2Tests(unittest.TestCase):
                         if apply:
                             argv.append("--apply")
                         blocked = run(workflow_command(*argv), cwd=target)
-                        self.assertNotEqual(blocked.returncode, 0)
-                        self.assertIn("[workflow-lane] ERROR:", blocked.stderr)
-                        self.assertIn(
-                            "live Requirements Brief differs", blocked.stderr
+                        self._assert_live_brief_lane_error(
+                            blocked,
+                            absent_stderr=(
+                                "Task record lane mode must be remote_claimed",
+                                "Remote transfer requires a V3 task record",
+                            ),
                         )
-                        self.assertNotIn(
-                            "Traceback (most recent call last)", blocked.stderr
-                        )
-                        self.assertNotIn(
-                            "Task record lane mode must be remote_claimed",
-                            blocked.stderr,
-                        )
-                        self.assertNotIn(
-                            "Remote transfer requires a V3 task record",
-                            blocked.stderr,
-                        )
+                        self.assertFalse(owner_path.exists())
 
 
 if __name__ == "__main__":
