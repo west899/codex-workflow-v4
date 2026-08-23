@@ -4854,6 +4854,19 @@ class V4WorkflowM2Tests(unittest.TestCase):
             brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
             original_brief = brief.read_bytes()
             self._revise_requirements(brief)
+            drifted_dry = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "path:extra",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(drifted_dry.returncode, 0)
+            self.assertIn("live Requirements Brief differs", drifted_dry.stderr)
             drifted = run(
                 workflow_command(
                     target,
@@ -5204,17 +5217,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             self.assertIn("[workflow-lane] ERROR:", blocked.stderr)
             self.assertNotIn("Traceback (most recent call last)", blocked.stderr)
             self.assertTrue(
-                any(
-                    marker in blocked.stderr
-                    for marker in (
-                        "Permission denied",
-                        "Errno 13",
-                        "not readable",
-                        "Unable to read",
-                        "live Requirements",
-                        "Requirements Brief",
-                    )
-                ),
+                "Permission denied" in blocked.stderr or "Errno 13" in blocked.stderr,
                 blocked.stderr,
             )
 
@@ -5266,6 +5269,69 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 cwd=lane_path,
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+    def test_remote_lane_commands_reject_live_requirements_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record_path = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-REMOTE-LIVE-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            relative = record_relative(record_path, target)
+            brief = target / ".codex-workflow/governance/requirements/REQ-001.md"
+            self._revise_requirements(brief)
+            owner = str(uuid.uuid4())
+            resumed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "resume-remote",
+                    relative,
+                    "--owner-id",
+                    owner,
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(resumed.returncode, 0)
+            self.assertIn("live Requirements Brief differs", resumed.stderr)
+
+            layout_path = target / ".codex-workflow/layout.json"
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            layout["remote"].update(
+                {
+                    "mode": "remote_claimed",
+                    "atomic_claims": True,
+                    "remote_name": "origin",
+                }
+            )
+            layout_path.write_text(
+                json.dumps(layout, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            for command in ("remote-claim", "remote-heartbeat", "remote-release"):
+                with self.subTest(command=command):
+                    blocked = run(
+                        workflow_command(
+                            target,
+                            "workflow_lane.py",
+                            command,
+                            relative,
+                            "--apply",
+                        ),
+                        cwd=target,
+                    )
+                    self.assertNotEqual(blocked.returncode, 0)
+                    self.assertIn("live Requirements Brief differs", blocked.stderr)
 
 
 if __name__ == "__main__":

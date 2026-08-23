@@ -1160,12 +1160,12 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             for requested in additions:
                 if _resource_conflict(str(existing.get("resource_key")), requested):
                     raise LaneError(f"Resource conflict with lane {existing.get('lane_id')}: {requested}")
-        if not args.apply:
-            print(json.dumps({"apply": False, "lane_id": args.lane_id, "resource_keys": new_resources}, ensure_ascii=False, sort_keys=True))
-            return
         lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
         _, current_record = load_record(lane_paths, payload["record"])
         _require_v4_record_for_lane(lane_paths, current_record)
+        if not args.apply:
+            print(json.dumps({"apply": False, "lane_id": args.lane_id, "resource_keys": new_resources}, ensure_ascii=False, sort_keys=True))
+            return
 
         def mutation(record: dict[str, Any]) -> None:
             lane = record.get("lane") or {}
@@ -2174,6 +2174,7 @@ def remote_heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     remote, config = _remote_config(paths, args.remote)
     _require_remote_claimed_config(config)
     _, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
     owner_id = _owner_id(paths, identity["owner_id"])
     if owner_id != identity["owner_id"]:
@@ -2459,6 +2460,7 @@ def remote_release(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     remote, config = _remote_config(paths, args.remote)
     _require_remote_claimed_config(config)
     record_path, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     if (record.get("integration") or {}).get("status") != "integrated":
         raise LaneError("Remote claim release requires integrated tracked state.")
     closeout = _remote_closeout_proof(paths, remote, record_path, record)
