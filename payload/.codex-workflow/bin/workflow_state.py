@@ -285,9 +285,10 @@ def mutate_record(
             try:
                 validate_v4_live_requirements_baseline(paths, current)
                 validate_v4_live_architecture_baseline(paths, current)
-                validate_v4_contract_identity(current)
                 validate_v4_live_focus_relationship(paths, current)
                 validate_v4_live_dependencies(paths, current)
+                validate_v4_current_observation_continuations(current)
+                validate_v4_contract_identity(current)
             except WorkflowDataError as exc:
                 raise StateError(str(exc)) from exc
         mutation(updated)
@@ -470,8 +471,9 @@ def request_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             raise StateError("request-decision requires a V4 task record.")
         validate_v4_live_requirements_baseline(paths, record)
         validate_v4_live_architecture_baseline(paths, record)
-        validate_v4_contract_identity(record)
         validate_v4_live_dependencies(paths, record)
+        validate_v4_current_observation_continuations(record)
+        validate_v4_contract_identity(record)
         decision = _v4_decision_request(record, supplied)
         decisions = record.get("decision_log")
         if not isinstance(decisions, list):
@@ -598,8 +600,9 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             raise StateError("record-decision requires a V4 task record.")
         validate_v4_live_requirements_baseline(paths, record)
         validate_v4_live_architecture_baseline(paths, record)
-        validate_v4_contract_identity(record)
         validate_v4_live_dependencies(paths, record)
+        validate_v4_current_observation_continuations(record)
+        validate_v4_contract_identity(record)
         decisions = record.get("decision_log")
         matches = [
             item for item in decisions or []

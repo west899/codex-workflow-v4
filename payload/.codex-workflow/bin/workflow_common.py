@@ -1460,18 +1460,9 @@ def validate_v4_current_observation_continuations(record: dict[str, Any]) -> Non
     for decision in record.get("decision_log") or []:
         if not isinstance(decision, dict) or decision.get("kind") != "product_checkpoint":
             continue
-        continuations = decision.get("continuations") or []
-        if not isinstance(continuations, list):
-            raise WorkflowDataError("V4 checkpoint continuations must be an array.")
-        for continuation in continuations:
-            if not isinstance(continuation, dict):
-                raise WorkflowDataError("V4 observation continuation must be an object.")
-            if continuation.get("target_snapshot_id") != current_snapshot:
-                continue
-            if not _v4_continuation_is_current(record, decision, continuation):
-                raise WorkflowDataError(
-                    "V4 observation continuation bound to the current snapshot is stale or tampered."
-                )
+        if _require_decision_current_snapshot_continuations(
+            record, decision, current_snapshot
+        ):
             matched_current = True
     compact = (record.get("review") or {}).get("observation_equivalence")
     if compact is None:
@@ -1800,6 +1791,30 @@ def _v4_continuation_is_current(
     return True
 
 
+def _require_decision_current_snapshot_continuations(
+    record: dict[str, Any],
+    decision: dict[str, Any],
+    current_snapshot: str,
+) -> bool:
+    """Return True when a current continuation exists; raise if one is tampered."""
+
+    matched = False
+    continuations = decision.get("continuations") or []
+    if not isinstance(continuations, list):
+        raise WorkflowDataError("V4 checkpoint continuations must be an array.")
+    for continuation in continuations:
+        if not isinstance(continuation, dict):
+            raise WorkflowDataError("V4 observation continuation must be an object.")
+        if continuation.get("target_snapshot_id") != current_snapshot:
+            continue
+        if not _v4_continuation_is_current(record, decision, continuation):
+            raise WorkflowDataError(
+                "V4 observation continuation bound to the current snapshot is stale or tampered."
+            )
+        matched = True
+    return matched
+
+
 def _v4_checkpoint_is_current(record: dict[str, Any], decision: dict[str, Any]) -> bool:
     verification = record.get("verification") or {}
     current_snapshot = verification.get("snapshot_id")
@@ -1808,6 +1823,12 @@ def _v4_checkpoint_is_current(record: dict[str, Any], decision: dict[str, Any]) 
     resolution = decision.get("resolution") or {}
     if decision.get("status") != "resolved" or resolution.get("outcome") != "accepted":
         return False
+    if isinstance(current_snapshot, str):
+        has_current_continuation = _require_decision_current_snapshot_continuations(
+            record, decision, current_snapshot
+        )
+    else:
+        has_current_continuation = False
     binding = decision.get("binding") or {}
     if (
         binding.get("snapshot_id") == current_snapshot
@@ -1823,12 +1844,7 @@ def _v4_checkpoint_is_current(record: dict[str, Any], decision: dict[str, Any]) 
         except WorkflowDataError:
             return False
         return actual == decision.get("observation_fingerprint")
-    for continuation in reversed(decision.get("continuations") or []):
-        if not isinstance(continuation, dict):
-            continue
-        if _v4_continuation_is_current(record, decision, continuation):
-            return True
-    return False
+    return has_current_continuation
 
 
 def v4_action_blockers(record: dict[str, Any], action: str) -> list[str]:
@@ -3710,6 +3726,7 @@ def validate_v4_live_dependencies(
         validate_v4_live_requirements_baseline(paths, dependency)
         validate_v4_live_architecture_baseline(paths, dependency)
         validate_v4_live_focus_relationship(paths, dependency)
+        validate_v4_current_observation_continuations(dependency)
         blockers = v4_action_blockers(dependency, "dependency")
         if blockers:
             raise WorkflowDataError(

@@ -4336,6 +4336,26 @@ class V4WorkflowM2Tests(unittest.TestCase):
                         cwd=target,
                     )
                     self.assertNotEqual(tampered.returncode, 0)
+                    self.assertIn("stale or tampered", tampered.stderr)
+                    request_path = self._write_json(
+                        root / f"tampered-{name}.json",
+                        self._generic_request(f"HD-TAMPER-{name.upper()}"),
+                    )
+                    blocked_request = run(
+                        workflow_command(
+                            target,
+                            "workflow_state.py",
+                            "request-decision",
+                            relative,
+                            "--decision-json",
+                            str(request_path),
+                            "--apply",
+                        ),
+                        cwd=target,
+                    )
+                    self.assertNotEqual(blocked_request.returncode, 0)
+                    self.assertIn("stale or tampered", blocked_request.stderr)
+                    self._write_json(record_path, valid_final)
 
     def test_exploratory_prepare_integration_is_always_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4463,5 +4483,263 @@ class V4WorkflowM2Tests(unittest.TestCase):
             self.assertNotEqual(preserved["status"], "completed")
             self.assertEqual(preserved["integration"]["status"], "queued")
             self.assertEqual(preserved["integration"]["queue_id"], queue_id)
+
+    def _authorized_unclaimed_v4(
+        self,
+        target: Path,
+        *,
+        task_id: str,
+        requirements_fingerprint: str,
+        architecture_fingerprint: str,
+        base: str,
+    ) -> Path:
+        record = basic_v4_record(
+            base,
+            task_id=task_id,
+            requirements_baseline={
+                "brief_id": "REQ-001",
+                "revision": 1,
+                "approval_fingerprint": requirements_fingerprint,
+            },
+            architecture_fingerprint=architecture_fingerprint,
+            checkpoint_mode="not_required",
+        )
+        record["status"] = "authorized"
+        record["phase"] = "coordinator"
+        record["lane"].update(
+            {
+                "lane_id": None,
+                "mode": "single",
+                "branch": None,
+                "base_ref": None,
+                "base_commit": None,
+                "claim_id": None,
+                "owner_generation": 0,
+                "assignment": None,
+            }
+        )
+        record["contract_fingerprint"] = contract_fingerprint(record)
+        return write_record(target, record)
+
+    def _forged_current_continuation(self, record: dict) -> dict:
+        decision = record["decision_log"][0]
+        snapshot = record["verification"]["snapshot_id"]
+        return {
+            "continuation_version": 1,
+            "source_decision_id": decision["id"],
+            "source_decision_fingerprint": decision["decision_fingerprint"],
+            "source_snapshot_id": snapshot,
+            "source_observation_fingerprint": decision["observation_fingerprint"],
+            "target_snapshot_id": snapshot,
+            "target_receipt": copy.deepcopy(decision["observation_receipt"]),
+            "target_receipt_fingerprint": "0" * 64,
+            "target_observation_fingerprint": decision["observation_fingerprint"],
+            "contract_diff": {
+                "source_fingerprint": record["contract_fingerprint"],
+                "target_fingerprint": record["contract_fingerprint"],
+                "changed_categories": [],
+            },
+            "changed_paths": ["src/feature.txt"],
+            "path_classes": [
+                {
+                    "path": "src/feature.txt",
+                    "classification": "internal_implementation",
+                }
+            ],
+            "replay": {
+                "recipe_replayed": True,
+                "normalized_result_matches": True,
+            },
+            "reviewer_receipt": {
+                "reviewer_id": "forged-reviewer",
+                "snapshot_id": snapshot,
+                "assessment": "equivalent",
+                "user_behavior": "unchanged",
+                "data_contract": "unchanged",
+                "public_interface": "unchanged",
+                "dependencies": "unchanged",
+                "architecture": "unchanged",
+                "source": "external-receipt:forged",
+            },
+            "recorded_at": "2026-07-20T03:00:00Z",
+        }
+
+    def test_official_lane_claim_assigns_v4_and_rejects_live_requirements_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            first = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-CLAIM-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            second = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-CLAIM-002",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            commit_all(target, "authorized unclaimed V4 records")
+            lane_path = root / "lane-v4-claim"
+            claimed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    "MVP-CLAIM-001",
+                    "--base",
+                    "main",
+                    "--record",
+                    record_relative(first, target),
+                    "--worktree",
+                    str(lane_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(claimed.returncode, 0, claimed.stderr)
+            assigned = json.loads((lane_path / record_relative(first, target)).read_text(encoding="utf-8"))
+            self.assertEqual(assigned["status"], "in_progress")
+            self.assertEqual(assigned["lane"]["mode"], "local_worktree")
+            self.assertIsNotNone(assigned["lane"]["claim_id"])
+
+            brief = target / ".codex-workflow/governance/requirements/REQ-001.md"
+            self._revise_requirements(brief)
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    "MVP-CLAIM-002",
+                    "--base",
+                    "main",
+                    "--record",
+                    record_relative(second, target),
+                    "--worktree",
+                    str(root / "lane-v4-stale"),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("live Requirements Brief differs", blocked.stderr)
+            self.assertFalse((root / "lane-v4-stale").exists())
+
+    def test_official_preassign_accepts_v4_and_rejects_continuation_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record_path = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-PREASSIGN-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            owner = "00000000-0000-4000-8000-0000000000aa"
+            preassigned = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "preassign",
+                    record_relative(record_path, target),
+                    "--owner-id",
+                    owner,
+                    "--base",
+                    "main",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(preassigned.returncode, 0, preassigned.stderr)
+            assigned = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(assigned["lane"]["mode"], "remote_preassigned")
+            self.assertEqual(assigned["lane"]["assignment"]["assigned_owner_id"], owner)
+
+            continued_root = Path(directory) / "continued"
+            continued_target, continued_path, _ = self._prepare_delivery(continued_root)
+            decision = self._request_checkpoint(continued_target, continued_path, continued_root)
+            self._record_checkpoint(
+                continued_target, continued_path, continued_root, decision, "accepted"
+            )
+            current = json.loads(continued_path.read_text(encoding="utf-8"))
+            current["decision_log"][0]["continuations"] = [
+                self._forged_current_continuation(current)
+            ]
+            current["decision_log"][0]["decision_state_fingerprint"] = (
+                decision_state_fingerprint(current["decision_log"][0])
+            )
+            self._write_json(continued_path, current)
+            blocked = run(
+                workflow_command(
+                    continued_target,
+                    "workflow_lane.py",
+                    "preassign",
+                    record_relative(continued_path, continued_target),
+                    "--owner-id",
+                    owner,
+                    "--base",
+                    "main",
+                    "--apply",
+                ),
+                cwd=continued_target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("stale or tampered", blocked.stderr)
+
+    def test_dependency_preflight_rejects_producer_continuation_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, record_path, _ = self._prepare_delivery(root)
+            decision = self._request_checkpoint(target, record_path, root)
+            self._record_checkpoint(target, record_path, root, decision, "accepted")
+            source = json.loads(record_path.read_text(encoding="utf-8"))
+            source["decision_log"][0]["continuations"] = [
+                self._forged_current_continuation(source)
+            ]
+            source["decision_log"][0]["decision_state_fingerprint"] = (
+                decision_state_fingerprint(source["decision_log"][0])
+            )
+            self._write_json(record_path, source)
+            dependent = copy.deepcopy(source)
+            dependent["task_id"] = "MVP-DEP-CONSUMER"
+            dependent["delivery_contract"]["focus_slice_id"] = dependent["task_id"]
+            dependent["delivery_contract"]["dependency_refs"] = [
+                {
+                    "task_id": source["task_id"],
+                    "closeout_ref": f"task:{source['task_id']}",
+                    "closeout_fingerprint": "3" * 64,
+                }
+            ]
+            dependent["contract_fingerprint"] = contract_fingerprint(dependent)
+            dependent["decision_log"] = []
+            dependent["review"]["observation_equivalence"] = None
+            dependent_path = write_record(target, dependent)
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_check.py",
+                    "preflight",
+                    record_relative(dependent_path, target),
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("stale or tampered", blocked.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

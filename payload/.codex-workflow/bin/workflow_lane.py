@@ -33,6 +33,11 @@ from workflow_common import (
     utc_now,
     validate_workflow_schema,
     v4_dependency_snapshot,
+    validate_v4_contract_identity,
+    validate_v4_current_observation_continuations,
+    validate_v4_live_architecture_baseline,
+    validate_v4_live_dependencies,
+    validate_v4_live_focus_relationship,
     validate_v4_live_requirements_baseline,
 )
 from workflow_lock import (
@@ -517,6 +522,20 @@ def _write_runtime_claims(paths: WorkflowPaths, payload: dict[str, Any], lane_pa
     atomic_write_json(lane_paths.lane_runtime / "lane.json", pointer)
 
 
+def _require_v4_record_for_lane(paths: WorkflowPaths, record: dict[str, Any]) -> None:
+    if record.get("version") != 4:
+        return
+    try:
+        validate_v4_live_requirements_baseline(paths, record)
+        validate_v4_live_architecture_baseline(paths, record)
+        validate_v4_live_focus_relationship(paths, record)
+        validate_v4_live_dependencies(paths, record)
+        validate_v4_current_observation_continuations(record)
+        validate_v4_contract_identity(record)
+    except WorkflowDataError as exc:
+        raise LaneError(str(exc)) from exc
+
+
 def _assign_record(paths: WorkflowPaths, record_relative: str, payload: dict[str, Any], *, mode: str) -> None:
     def mutation(record: dict[str, Any]) -> None:
         if record.get("task_id") != payload["task_id"]:
@@ -552,7 +571,15 @@ def _assign_record(paths: WorkflowPaths, record_relative: str, payload: dict[str
     # The lane pointer is created only after this mutation.  Suppress the
     # shared STATUS write here so an isolated branch never carries a status
     # snapshot that would conflict with coordinator closeout on rebase.
-    mutate_record(paths, record_relative, None, True, mutation, sync_status=False)
+    mutate_record(
+        paths,
+        record_relative,
+        None,
+        True,
+        mutation,
+        sync_status=False,
+        allowed_versions=(3, 4),
+    )
 
 
 def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
@@ -562,6 +589,7 @@ def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     _, record = load_record(paths, record_relative)
     if record.get("task_id") != args.task_id:
         raise LaneError("Task record does not match requested task ID.")
+    _require_v4_record_for_lane(paths, record)
     allowed, resources = _record_scope(record)
     owner_id = _owner_id(paths, args.owner_id)
     suffix = uuid.uuid4().hex[:8]
@@ -631,6 +659,7 @@ def adopt(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         raise LaneError(f"Dirty adopt requires --confirm-diff-sha256 {digest}.")
     record_relative = args.record or _default_record(paths, args.task_id)
     _, record = load_record(paths, record_relative)
+    _require_v4_record_for_lane(paths, record)
     allowed, resources = _record_scope(record)
     owner_id = _owner_id(paths, args.owner_id)
     suffix = uuid.uuid4().hex[:8]
@@ -1129,6 +1158,8 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             print(json.dumps({"apply": False, "lane_id": args.lane_id, "resource_keys": new_resources}, ensure_ascii=False, sort_keys=True))
             return
         lane_paths = WorkflowPaths.discover(Path(payload["worktree"]))
+        _, current_record = load_record(lane_paths, payload["record"])
+        _require_v4_record_for_lane(lane_paths, current_record)
 
         def mutation(record: dict[str, Any]) -> None:
             lane = record.get("lane") or {}
@@ -1138,7 +1169,14 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             record["lane"] = lane
             record["scope"]["resource_keys"] = new_resources
 
-        mutate_record(lane_paths, payload["record"], args.expected_generation, True, mutation)
+        mutate_record(
+            lane_paths,
+            payload["record"],
+            args.expected_generation,
+            True,
+            mutation,
+            allowed_versions=(3, 4),
+        )
         payload["resource_keys"] = new_resources
         atomic_write_json(registry_path, payload)
         atomic_write_json(paths.shared_runtime / "claims" / f"{_safe_id(payload['task_id'])}.json", payload)
@@ -1518,6 +1556,7 @@ def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         current["state"] = "claimed"
         lane_paths = WorkflowPaths.discover(Path(current["worktree"]))
         _, queued_record = load_record(lane_paths, current["record"])
+        _require_v4_record_for_lane(lane_paths, queued_record)
         queued_integration = queued_record.get("integration") or {}
         queue_path: Path | None = None
         updated_queue: dict[str, Any] | None = None
@@ -1561,7 +1600,14 @@ def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             }
             record["lane"] = lane
 
-        mutate_record(lane_paths, current["record"], None, True, mutation)
+        mutate_record(
+            lane_paths,
+            current["record"],
+            None,
+            True,
+            mutation,
+            allowed_versions=(3, 4),
+        )
         _write_runtime_claims(paths, current, lane_paths)
         atomic_write_json(registry_path, current)
         if queue_path is not None and updated_queue is not None:
@@ -1634,6 +1680,7 @@ def release_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 def preassign(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     owner = str(uuid.UUID(args.owner_id))
     _, record = load_record(paths, args.record)
+    _require_v4_record_for_lane(paths, record)
     task_id = str(record.get("task_id"))
     base_commit = rev_parse(paths, args.base)
     claim_id = str(uuid.uuid4())
@@ -1654,7 +1701,14 @@ def preassign(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         item["status"] = "authorized"
         item["phase"] = "coordinator"
 
-    mutate_record(paths, args.record, None, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        None,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
     print(f"REMOTE_PREASSIGNED branch={branch} owner_id={owner}; commit and push explicitly")
 
 

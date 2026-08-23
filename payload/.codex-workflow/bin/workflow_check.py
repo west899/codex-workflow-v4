@@ -470,13 +470,16 @@ def _v4_contract_gate(
     *,
     action: str,
 ) -> None:
-    try:
-        validate_v4_live_requirements_baseline(paths, record)
-        validate_v4_live_focus_relationship(paths, record)
-        validate_v4_contract_identity(record)
-    except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
-        checks.error(str(exc))
-        return
+    def capture(callback: Any) -> None:
+        try:
+            callback()
+        except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
+            checks.error(str(exc))
+
+    capture(lambda: validate_v4_live_requirements_baseline(paths, record))
+    capture(lambda: validate_v4_live_focus_relationship(paths, record))
+    capture(lambda: validate_v4_live_architecture_baseline(paths, record))
+    capture(lambda: validate_v4_live_dependencies(paths, record))
     contract = record.get("delivery_contract") or {}
     kind = contract.get("kind")
     task_id = record.get("task_id")
@@ -530,6 +533,7 @@ def _v4_contract_gate(
             checks.error(f"V4 {action} blocked: {blocker}.")
     except WorkflowDataError as exc:
         checks.error(str(exc))
+    capture(lambda: validate_v4_contract_identity(record))
 
 
 def _validate_record_basics(
