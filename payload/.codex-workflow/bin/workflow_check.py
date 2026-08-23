@@ -618,7 +618,13 @@ def _validate_record_basics(
         checks.error("task.lane.base_commit must equal task.base_commit.")
     if not isinstance(lane.get("owner_generation"), int) or lane.get("owner_generation", 0) < 1:
         checks.error("task.lane.owner_generation must be >= 1.")
-    if lane.get("allowed_paths") != allowed_paths or lane.get("resource_keys") != resource_keys:
+    if lane.get("allowed_paths") != allowed_paths:
+        checks.error("Lane scope must exactly match task scope paths and resources.")
+    elif record.get("version") == 4:
+        lane_keys = lane.get("resource_keys")
+        if not isinstance(lane_keys, list) or any(key not in lane_keys for key in resource_keys):
+            checks.error("Lane resource keys must include every task scope resource.")
+    elif lane.get("resource_keys") != resource_keys:
         checks.error("Lane scope must exactly match task scope paths and resources.")
     assignment = lane.get("assignment")
     if not isinstance(assignment, dict):

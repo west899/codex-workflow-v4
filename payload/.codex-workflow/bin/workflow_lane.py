@@ -20,6 +20,7 @@ from typing import Any
 
 from workflow_common import (
     WorkflowDataError,
+    WorkflowJSONResourceError,
     closeout_state_fingerprint,
     current_branch,
     fault_injection,
@@ -532,7 +533,12 @@ def _require_v4_record_for_lane(paths: WorkflowPaths, record: dict[str, Any]) ->
         validate_v4_live_dependencies(paths, record)
         validate_v4_current_observation_continuations(record)
         validate_v4_contract_identity(record)
-    except WorkflowDataError as exc:
+    except (
+        OSError,
+        WorkflowDataError,
+        WorkflowPathError,
+        WorkflowJSONResourceError,
+    ) as exc:
         raise LaneError(str(exc)) from exc
 
 
@@ -1167,7 +1173,8 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 raise StateError("Task record lane token/generation mismatch.")
             lane["resource_keys"] = new_resources
             record["lane"] = lane
-            record["scope"]["resource_keys"] = new_resources
+            if record.get("version") != 4:
+                record["scope"]["resource_keys"] = new_resources
 
         mutate_record(
             lane_paths,

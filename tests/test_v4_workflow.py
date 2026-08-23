@@ -4492,6 +4492,9 @@ class V4WorkflowM2Tests(unittest.TestCase):
         requirements_fingerprint: str,
         architecture_fingerprint: str,
         base: str,
+        checkpoint_mode: str = "not_required",
+        allowed_paths: list[str] | None = None,
+        resources: list[str] | None = None,
     ) -> Path:
         record = basic_v4_record(
             base,
@@ -4502,7 +4505,9 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 "approval_fingerprint": requirements_fingerprint,
             },
             architecture_fingerprint=architecture_fingerprint,
-            checkpoint_mode="not_required",
+            checkpoint_mode=checkpoint_mode,
+            allowed_paths=allowed_paths,
+            resources=resources,
         )
         record["status"] = "authorized"
         record["phase"] = "coordinator"
@@ -4522,7 +4527,11 @@ class V4WorkflowM2Tests(unittest.TestCase):
         return write_record(target, record)
 
     def _forged_current_continuation(self, record: dict) -> dict:
-        decision = record["decision_log"][0]
+        decision = next(
+            item
+            for item in record["decision_log"]
+            if item.get("kind") == "product_checkpoint"
+        )
         snapshot = record["verification"]["snapshot_id"]
         return {
             "continuation_version": 1,
@@ -4739,6 +4748,456 @@ class V4WorkflowM2Tests(unittest.TestCase):
             )
             self.assertNotEqual(blocked.returncode, 0)
             self.assertIn("stale or tampered", blocked.stderr)
+
+    def _claim_authorized_v4(
+        self, root: Path, target: Path, record_path: Path, *, name: str
+    ) -> tuple[Path, str]:
+        lane_path = root / name
+        task_id = json.loads(record_path.read_text(encoding="utf-8"))["task_id"]
+        claimed = run(
+            workflow_command(
+                target,
+                "workflow_lane.py",
+                "claim",
+                task_id,
+                "--base",
+                "main",
+                "--record",
+                record_relative(record_path, target),
+                "--worktree",
+                str(lane_path),
+                "--apply",
+            ),
+            cwd=target,
+        )
+        self.assertEqual(claimed.returncode, 0, claimed.stderr)
+        lane_id = claimed.stdout.split("id=", 1)[1].split()[0]
+        return lane_path, lane_id
+
+    def _expire_lane(self, target: Path, lane_id: str) -> None:
+        path = (
+            target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_id}.json"
+        )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["expires_at"] = "2000-01-01T00:00:00Z"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_forged_checkpoint_continuation(self, record_path: Path) -> None:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        checkpoint = next(
+            item
+            for item in record["decision_log"]
+            if item.get("kind") == "product_checkpoint"
+        )
+        checkpoint["continuations"] = [self._forged_current_continuation(record)]
+        checkpoint["decision_state_fingerprint"] = decision_state_fingerprint(
+            checkpoint
+        )
+        self._write_json(record_path, record)
+
+    def test_v4_expand_preserves_contract_identity_and_rejects_bypass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record_path = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-EXPAND-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+                checkpoint_mode="required",
+            )
+            (target / "src").mkdir(parents=True, exist_ok=True)
+            (target / "src/feature.txt").write_text("observable v4 delivery\n", encoding="utf-8")
+            commit_all(target, "authorized V4 expand fixture")
+            lane_path, lane_id = self._claim_authorized_v4(
+                root, target, record_path, name="lane-expand"
+            )
+            lane_record = lane_path / record_relative(record_path, target)
+            expanded = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "path:ops",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(expanded.returncode, 0, expanded.stderr)
+            after = json.loads(lane_record.read_text(encoding="utf-8"))
+            self.assertEqual(after["contract_fingerprint"], contract_fingerprint(after))
+            self.assertNotIn("path:ops", after["scope"]["resource_keys"])
+            self.assertIn("path:ops", after["lane"]["resource_keys"])
+            preflight = run(
+                workflow_command(
+                    lane_path,
+                    "workflow_check.py",
+                    "preflight",
+                    record_relative(record_path, target),
+                ),
+                cwd=lane_path,
+            )
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
+            brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
+            original_brief = brief.read_bytes()
+            self._revise_requirements(brief)
+            drifted = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "path:extra",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(drifted.returncode, 0)
+            self.assertIn("live Requirements Brief differs", drifted.stderr)
+            brief.write_bytes(original_brief)
+
+            evidence = self._write_json(
+                root / "expand-developer.json", developer_evidence_v1("v4-developer")
+            )
+            feature = lane_path / "src/feature.txt"
+            feature.parent.mkdir(parents=True, exist_ok=True)
+            feature.write_text("observable v4 delivery\n", encoding="utf-8")
+            delivery = commit_all(lane_path, "lane delivery")
+            sealed = run(
+                workflow_command(
+                    lane_path,
+                    "workflow_state.py",
+                    "record-developer",
+                    record_relative(record_path, target),
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery,
+                    "--apply",
+                ),
+                cwd=lane_path,
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            checkpoint = self._request_checkpoint(lane_path, lane_record, root)
+            self._record_checkpoint(lane_path, lane_record, root, checkpoint, "accepted")
+            self._write_forged_checkpoint_continuation(lane_record)
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "path:forged",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("stale or tampered", blocked.stderr)
+
+    def test_v4_adopt_and_recover_reject_live_and_continuation_bypass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            first = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-ADOPT-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+                allowed_paths=["src/adopt1/**", "tests/adopt1/**"],
+                resources=["path:adopt1", "path:adopt1-tests"],
+            )
+            second = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-ADOPT-002",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+                allowed_paths=["src/adopt2/**", "tests/adopt2/**"],
+                resources=["path:adopt2", "path:adopt2-tests"],
+            )
+            recover_record = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-RECOVER-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+                checkpoint_mode="required",
+            )
+            commit_all(target, "authorized V4 adopt/recover fixtures")
+            adopt_ok = root / "adopt-ok"
+            git(target, "worktree", "add", "-b", "codex/adopt/ok", str(adopt_ok), "main")
+            adopted = run(
+                workflow_command(
+                    adopt_ok,
+                    "workflow_lane.py",
+                    "adopt",
+                    "MVP-ADOPT-001",
+                    "--record",
+                    record_relative(first, target),
+                    "--apply",
+                ),
+                cwd=adopt_ok,
+            )
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+            adopted_record = json.loads(
+                (adopt_ok / record_relative(first, target)).read_text(encoding="utf-8")
+            )
+            self.assertEqual(adopted_record["lane"]["mode"], "local_worktree")
+
+            adopt_stale = root / "adopt-stale"
+            git(target, "worktree", "add", "-b", "codex/adopt/stale", str(adopt_stale), "main")
+            self._revise_requirements(
+                adopt_stale / ".codex-workflow/governance/requirements/REQ-001.md"
+            )
+            dirty = run(
+                workflow_command(
+                    adopt_stale,
+                    "workflow_lane.py",
+                    "adopt",
+                    "MVP-ADOPT-002",
+                    "--record",
+                    record_relative(second, target),
+                    "--apply",
+                ),
+                cwd=adopt_stale,
+            )
+            self.assertNotEqual(dirty.returncode, 0)
+            self.assertIn("dirty diff token is", dirty.stderr)
+            token = dirty.stderr.split("dirty diff token is ", 1)[1].strip().rstrip(".")
+            blocked_adopt = run(
+                workflow_command(
+                    adopt_stale,
+                    "workflow_lane.py",
+                    "adopt",
+                    "MVP-ADOPT-002",
+                    "--record",
+                    record_relative(second, target),
+                    "--adopt-existing-changes",
+                    "--confirm-diff-sha256",
+                    token,
+                    "--apply",
+                ),
+                cwd=adopt_stale,
+            )
+            self.assertNotEqual(blocked_adopt.returncode, 0)
+            self.assertIn("live Requirements Brief differs", blocked_adopt.stderr)
+            git_dir = Path(
+                git(adopt_stale, "rev-parse", "--git-dir").stdout.strip()
+            )
+            if not git_dir.is_absolute():
+                git_dir = adopt_stale / git_dir
+            self.assertFalse((git_dir / "codex-workflow-v3" / "lane.json").exists())
+
+            lane_path, lane_id = self._claim_authorized_v4(
+                root, target, recover_record, name="lane-recover"
+            )
+            self._expire_lane(target, lane_id)
+            recovered = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "recover",
+                    lane_id,
+                    "--takeover",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            recovered_record = json.loads(
+                (lane_path / record_relative(recover_record, target)).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(recovered_record["lane"]["owner_generation"], 2)
+
+            brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
+            original_brief = brief.read_bytes()
+            self._revise_requirements(brief)
+            self._expire_lane(target, lane_id)
+            drifted = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "recover",
+                    lane_id,
+                    "--takeover",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(drifted.returncode, 0)
+            self.assertIn("live Requirements Brief differs", drifted.stderr)
+            brief.write_bytes(original_brief)
+
+            evidence = self._write_json(
+                root / "recover-developer.json", developer_evidence_v1("v4-developer")
+            )
+            feature = lane_path / "src/feature.txt"
+            feature.parent.mkdir(parents=True, exist_ok=True)
+            feature.write_text("observable v4 delivery\n", encoding="utf-8")
+            delivery = commit_all(lane_path, "recover lane delivery")
+            sealed = run(
+                workflow_command(
+                    lane_path,
+                    "workflow_state.py",
+                    "record-developer",
+                    record_relative(recover_record, target),
+                    "--evidence-json",
+                    str(evidence),
+                    "--delivery-commit",
+                    delivery,
+                    "--apply",
+                ),
+                cwd=lane_path,
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            checkpoint = self._request_checkpoint(
+                lane_path, lane_path / record_relative(recover_record, target), root
+            )
+            self._record_checkpoint(
+                lane_path,
+                lane_path / record_relative(recover_record, target),
+                root,
+                checkpoint,
+                "accepted",
+            )
+            self._write_forged_checkpoint_continuation(
+                lane_path / record_relative(recover_record, target)
+            )
+            self._expire_lane(target, lane_id)
+            blocked_recover = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "recover",
+                    lane_id,
+                    "--takeover",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked_recover.returncode, 0)
+            self.assertIn("stale or tampered", blocked_recover.stderr)
+
+    def test_record_decision_rejects_tampered_current_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, record_path, _ = self._prepare_delivery(root)
+            relative = record_relative(record_path, target)
+            request_path = self._write_json(
+                root / "answer-me.json", self._generic_request("HD-RECORD-001")
+            )
+            requested = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "request-decision",
+                    relative,
+                    "--decision-json",
+                    str(request_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(requested.returncode, 0, requested.stderr)
+            current = json.loads(record_path.read_text(encoding="utf-8"))
+            answer = next(
+                item for item in current["decision_log"] if item["id"] == "HD-RECORD-001"
+            )
+            checkpoint = self._request_checkpoint(target, record_path, root)
+            self._record_checkpoint(target, record_path, root, checkpoint, "accepted")
+            self._write_forged_checkpoint_continuation(record_path)
+            resolution_path = self._write_json(
+                root / "answer-me-resolution.json",
+                {
+                    "selected_option_id": "A",
+                    "decided_by": "test-owner",
+                    "decided_at": "2026-07-20T03:00:00Z",
+                    "source": "external-receipt:record-decision-tamper",
+                    "rationale": "This answer must be blocked by the tampered continuation.",
+                },
+            )
+            before = record_path.read_bytes()
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-decision",
+                    relative,
+                    "--decision-id",
+                    answer["id"],
+                    "--expected-fingerprint",
+                    answer["decision_fingerprint"],
+                    "--resolution-json",
+                    str(resolution_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("stale or tampered", blocked.stderr)
+            self.assertEqual(record_path.read_bytes(), before)
+
+    def test_lane_command_rejects_unreadable_live_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            installed = install_project(target, parallel_mode="local_worktree")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record_path = self._authorized_unclaimed_v4(
+                target,
+                task_id="MVP-BRIEF-001",
+                requirements_fingerprint=requirements_fingerprint,
+                architecture_fingerprint=architecture_fingerprint,
+                base=base,
+            )
+            commit_all(target, "authorized V4 unreadable brief fixture")
+            lane_path, lane_id = self._claim_authorized_v4(
+                root, target, record_path, name="lane-brief"
+            )
+            brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
+            brief.unlink()
+            brief.mkdir()
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "expand-resources",
+                    lane_id,
+                    "--add",
+                    "path:ops",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("[workflow-lane] ERROR:", blocked.stderr)
+            self.assertNotIn("Traceback (most recent call last)", blocked.stderr)
 
 
 if __name__ == "__main__":
