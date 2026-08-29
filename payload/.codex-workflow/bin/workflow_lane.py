@@ -29,6 +29,7 @@ from workflow_common import (
     load_record,
     local_bootstrap_policy_gate,
     require_v4_action,
+    task_record_schema_name,
     reset_v4_snapshot_evidence,
     rev_parse,
     utc_now,
@@ -2037,7 +2038,7 @@ def _task_record_commit(
 ) -> str:
     validate_workflow_schema(
         paths,
-        "task-record-v3.schema.json",
+        task_record_schema_name(record),
         record,
         label="Remote transfer task record",
     )
@@ -2328,7 +2329,7 @@ def _remote_transfer(
     )
     validate_workflow_schema(
         paths,
-        "task-record-v3.schema.json",
+        task_record_schema_name(updated),
         updated,
         label="Remote transfer task record",
     )
@@ -2452,7 +2453,7 @@ def _remote_closeout_proof(
         raise LaneError("Remote target task record root must be an object.")
     validate_workflow_schema(
         paths,
-        "task-record-v3.schema.json",
+        task_record_schema_name(target_record),
         target_record,
         label="Remote target task record",
     )

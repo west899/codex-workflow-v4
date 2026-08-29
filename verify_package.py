@@ -84,6 +84,7 @@ REQUIRED = {
     "tests/test_v4_lifecycle.py",
     "V4_PHASEA_PLAN.md",
     "V4_PHASE0_PILOT.md",
+    "V4_PHASEA_CORE_SLICE.md",
 }
 FORBIDDEN_FILES = {
     "payload/PROJECT.md",

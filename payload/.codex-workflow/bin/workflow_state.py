@@ -1660,7 +1660,7 @@ def _show_json_at(paths: WorkflowPaths, reference: str, relative: str) -> dict[s
         raise StateError("Target task record must be an object.")
     validate_workflow_schema(
         paths,
-        "task-record-v3.schema.json",
+        task_record_schema_name(payload),
         payload,
         label="Target task record",
     )

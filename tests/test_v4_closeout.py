@@ -26,6 +26,7 @@ from workflow_common import (  # noqa: E402
     closeout_fingerprint_algorithm,
     closeout_state_fingerprint,
     stamp_closeout_fingerprint_version,
+    task_record_schema_name,
 )
 
 
@@ -145,6 +146,12 @@ class V4CloseoutGateTests(unittest.TestCase):
             )
             self.assertNotEqual(blocked.returncode, 0)
             self.assertIn("closeout_fingerprint_version=4", blocked.stderr)
+
+    def test_target_record_schema_follows_record_version(self) -> None:
+        self.assertEqual(task_record_schema_name({"version": 3}), "task-record-v3.schema.json")
+        self.assertEqual(task_record_schema_name({"version": 4}), "task-record-v4.schema.json")
+        with self.assertRaises(WorkflowDataError):
+            task_record_schema_name({"version": 2})
 
 
 if __name__ == "__main__":
