@@ -4652,9 +4652,23 @@ def _v4_checkpoint_direction(record: dict[str, Any]) -> tuple[str, dict[str, Any
         if current:
             return "accepted", latest
         return "awaiting_human", latest
-    if outcome in {"changes_requested", "stopped"}:
-        return str(outcome), latest
+    if outcome == "changes_requested":
+        if _v4_checkpoint_bound_to_current_snapshot(record, latest):
+            return "changes_requested", latest
+        return "awaiting_human", latest
+    if outcome == "stopped":
+        return "stopped", latest
     return "awaiting_human", latest
+
+
+def _v4_checkpoint_bound_to_current_snapshot(
+    record: dict[str, Any], decision: dict[str, Any]
+) -> bool:
+    current_snapshot = (record.get("verification") or {}).get("snapshot_id")
+    if not isinstance(current_snapshot, str) or not current_snapshot:
+        return False
+    binding = decision.get("binding") if isinstance(decision.get("binding"), dict) else {}
+    return binding.get("snapshot_id") == current_snapshot
 
 
 def _v4_continuation_note(
@@ -4695,18 +4709,6 @@ def _v4_next_action(record: dict[str, Any], summary_parts: dict[str, Any]) -> di
             "decision_id": decision_id,
             "text": f"等待人类决定 {decision_id}。不要批准、不要改状态、不要集成。",
         }
-    if direction == "changes_requested":
-        return {
-            "kind": "return_developer",
-            "decision_id": None,
-            "text": "当前 snapshot 被 changes_requested，回到 Developer。不要报告 verified 或 done。",
-        }
-    if direction == "stopped":
-        return {
-            "kind": "stopped",
-            "decision_id": None,
-            "text": "当前切片已 stopped。不要报告 verified、done 或继续集成。",
-        }
     snapshot_value = (record.get("verification") or {}).get("snapshot_id")
     mode = ((record.get("delivery_contract") or {}).get("checkpoint") or {}).get("mode")
     if isinstance(snapshot_value, str) and mode == "required" and direction in {"awaiting_human", "deferred"}:
@@ -4723,6 +4725,18 @@ def _v4_next_action(record: dict[str, Any], summary_parts: dict[str, Any]) -> di
                 f"先按 {surface_label} 入口观察当前结果，{decide_text}。"
                 "不要批准、不要改状态、不要集成。"
             ),
+        }
+    if direction == "changes_requested":
+        return {
+            "kind": "return_developer",
+            "decision_id": None,
+            "text": "当前 snapshot 被 changes_requested，回到 Developer。不要报告 verified 或 done。",
+        }
+    if direction == "stopped":
+        return {
+            "kind": "stopped",
+            "decision_id": None,
+            "text": "当前切片已 stopped。不要报告 verified、done 或继续集成。",
         }
     return {"kind": "lifecycle", "decision_id": None, "text": None}
 

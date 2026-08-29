@@ -98,12 +98,14 @@ def _v4_card(
             }
         )
     if direction == "changes_requested":
+        snapshot_id = record["verification"].get("snapshot_id")
         record["decision_log"].append(
             {
                 "id": "HD-CP",
                 "kind": "product_checkpoint",
                 "status": "resolved",
                 "resolution": {"outcome": "changes_requested"},
+                "binding": {"snapshot_id": snapshot_id} if snapshot_id else {},
             }
         )
     return record
@@ -173,6 +175,28 @@ class V4ProductSummaryTests(unittest.TestCase):
         self.assertEqual(action["kind"], "return_developer")
         self.assertIn("回到 Developer", action["text"])
         self.assertIn("不要报告 verified 或 done", action["text"])
+
+    def test_stale_changes_requested_does_not_override_missing_current_observation(self) -> None:
+        record = _v4_card(method="cli", entrypoint="project-script:new")
+        record["verification"]["snapshot_id"] = "new-snap"
+        record["decision_log"] = [
+            {
+                "id": "HD-CP",
+                "kind": "product_checkpoint",
+                "status": "resolved",
+                "resolution": {"outcome": "changes_requested"},
+                "binding": {"snapshot_id": "old-snap"},
+            }
+        ]
+        summary = derive_v4_product_summary(record)
+        self.assertEqual(summary["product_direction"], "awaiting_human")
+        self.assertTrue(summary["observation"]["missing_current_receipt"])
+        action = v4_stop_hook_next_action(record)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action["kind"], "observe")
+        self.assertIn("先按 CLI 入口观察当前结果", action["text"])
+        self.assertNotIn("回到 Developer", action["text"])
 
     def test_sensitive_display_text_is_omitted(self) -> None:
         record = _v4_card(
