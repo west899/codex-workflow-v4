@@ -1045,6 +1045,64 @@ def _v4_contains_sensitive_assignment(value: str) -> bool:
     )
 
 
+def _v4_display_url_is_signed_or_sensitive(value: str) -> bool:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    for key, _ in parse_qsl(parsed.query, keep_blank_values=True):
+        key_lower = key.lower()
+        if (
+            _v4_sensitive_name(key)
+            or key_lower in _V4_SIGNED_QUERY_KEYS
+            or key_lower.startswith("x-amz-")
+        ):
+            return True
+    return False
+
+
+def v4_text_contains_sensitive_evidence(value: str) -> bool:
+    """True when display text would leak token, cookie, PII, or a signed URL."""
+
+    if not isinstance(value, str):
+        return False
+    if any(ord(character) < 32 and character not in "\t" for character in value):
+        return True
+    if (
+        _V4_JWT.search(value)
+        or _V4_EMAIL.search(value)
+        or _V4_PHONE.search(value)
+        or _V4_SECRET_TEXT.search(value)
+        or _V4_TOKEN_PREFIX.search(value)
+        or _v4_contains_sensitive_assignment(value)
+        or _v4_display_url_is_signed_or_sensitive(value)
+    ):
+        return True
+    return False
+
+
+_V4_REDACTED_DISPLAY = "[omitted]"
+_V4_HUMAN_SURFACE_LABELS = {
+    "browser": "UI preview",
+    "api": "API",
+    "cli": "CLI",
+    "data": "data proof",
+    "background": "background",
+    "capability": "capability",
+}
+
+
+def redact_v4_human_value(value: Any) -> Any:
+    """Replace sensitive display strings with a controlled omission marker."""
+
+    if isinstance(value, str):
+        return _V4_REDACTED_DISPLAY if v4_text_contains_sensitive_evidence(value) else value
+    if isinstance(value, list):
+        return [redact_v4_human_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_v4_human_value(item) for key, item in value.items()}
+    return value
+
+
 def _validate_v4_redacted_receipt(receipt: dict[str, Any]) -> None:
     normalized_result = _v4_object(
         _v4_required(receipt, "normalized_result", label="Observation receipt"),
@@ -1073,18 +1131,10 @@ def _validate_v4_redacted_receipt(receipt: dict[str, Any]) -> None:
             or _v4_contains_sensitive_assignment(value)
         ):
             raise WorkflowDataError(f"Observation receipt contains sensitive evidence at {path}.")
-        parsed = urlsplit(value)
-        if parsed.scheme in {"http", "https"}:
-            for key, _ in parse_qsl(parsed.query, keep_blank_values=True):
-                key_lower = key.lower()
-                if (
-                    _v4_sensitive_name(key)
-                    or key_lower in _V4_SIGNED_QUERY_KEYS
-                    or key_lower.startswith("x-amz-")
-                ):
-                    raise WorkflowDataError(
-                        f"Observation receipt contains a signed or sensitive URL at {path}."
-                    )
+        if _v4_display_url_is_signed_or_sensitive(value):
+            raise WorkflowDataError(
+                f"Observation receipt contains a signed or sensitive URL at {path}."
+            )
     redaction = _v4_object(
         _v4_required(receipt, "redaction", label="Observation receipt"),
         label="Observation receipt redaction",
@@ -4424,6 +4474,493 @@ def requirements_impact_path(paths: WorkflowPaths, brief_id: str, revision: int)
     return paths.tracked("requirements_impacts") / f"{brief_id}-r{revision}.json"
 
 
+def _v4_is_v4_record(record: dict[str, Any]) -> bool:
+    return isinstance(record, dict) and record.get("version") == 4
+
+
+def _v4_acceptance_result(record: dict[str, Any]) -> str:
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    wanted = contract.get("acceptance_ids") if isinstance(contract.get("acceptance_ids"), list) else []
+    by_id = {
+        item.get("id"): item
+        for item in record.get("acceptance") or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    for acceptance_id in wanted:
+        if not isinstance(acceptance_id, str):
+            continue
+        item = by_id.get(acceptance_id)
+        criterion = item.get("criterion") if isinstance(item, dict) else None
+        if isinstance(criterion, str) and criterion.strip():
+            return criterion.strip()
+    request = record.get("request")
+    if isinstance(request, str) and request.strip():
+        return request.strip()
+    return "Current focus slice has no observable acceptance text."
+
+
+def _v4_receipt_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    current_snapshot = (record.get("verification") or {}).get("snapshot_id")
+    if not isinstance(current_snapshot, str) or not current_snapshot:
+        return None
+    matched = None
+    for decision in record.get("decision_log") or []:
+        if not isinstance(decision, dict) or decision.get("kind") != "product_checkpoint":
+            continue
+        receipt = decision.get("observation_receipt")
+        if not isinstance(receipt, dict):
+            continue
+        if receipt.get("snapshot_id") == current_snapshot:
+            matched = receipt
+    return matched
+
+
+def _v4_observation_view(record: dict[str, Any]) -> dict[str, Any]:
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    recipe = contract.get("observation") if isinstance(contract.get("observation"), dict) else {}
+    current_snapshot = (record.get("verification") or {}).get("snapshot_id")
+    has_snapshot = isinstance(current_snapshot, str) and bool(current_snapshot)
+    receipt = _v4_receipt_from_record(record)
+    recipe_method = recipe.get("method") if isinstance(recipe.get("method"), str) else None
+    entrypoint = recipe.get("entrypoint_ref")
+    steps = recipe.get("steps") if isinstance(recipe.get("steps"), list) else []
+    health = "unknown"
+    real: list[str] = []
+    temporary = (
+        list(contract.get("known_placeholders") or [])
+        if isinstance(contract.get("known_placeholders"), list)
+        else []
+    )
+    material: list[str] = []
+    assumptions: list[str] = []
+    if isinstance(receipt, dict):
+        entry = receipt.get("entrypoint") if isinstance(receipt.get("entrypoint"), dict) else {}
+        if isinstance(entry.get("reference"), str):
+            entrypoint = entry.get("reference")
+        if isinstance(entry.get("status"), str):
+            health = entry.get("status")
+        for field, bucket in (
+            ("real_components", real),
+            ("temporary_components", temporary),
+            ("material_changes", material),
+            ("reversible_assumptions", assumptions),
+        ):
+            values = receipt.get(field)
+            if isinstance(values, list):
+                bucket.extend(item for item in values if isinstance(item, str) and item.strip())
+        result = receipt.get("normalized_result") if isinstance(receipt.get("normalized_result"), dict) else {}
+        for assertion in result.get("assertions") or []:
+            if isinstance(assertion, dict) and assertion.get("status") == "passed":
+                actual = assertion.get("actual")
+                if isinstance(actual, str) and actual.strip():
+                    real.append(actual.strip())
+                    break
+    elif has_snapshot:
+        health = "no_current_receipt"
+    changed_paths = (record.get("verification") or {}).get("changed_paths")
+    if isinstance(changed_paths, list) and not material:
+        classes: list[str] = []
+        for path in changed_paths:
+            if not isinstance(path, str):
+                continue
+            try:
+                classes.append(v4_continuation_path_class(path))
+            except WorkflowDataError:
+                classes.append("product_or_architecture")
+        unique: list[str] = []
+        for item in classes:
+            if item not in unique:
+                unique.append(item)
+        if unique:
+            material = [f"Delivery path class: {item}" for item in unique]
+    surface = recipe_method if recipe_method else "cli"
+    return {
+        "surface": surface,
+        "surface_label": _V4_HUMAN_SURFACE_LABELS.get(surface, surface),
+        "entrypoint_ref": entrypoint if isinstance(entrypoint, str) else None,
+        "steps": [item for item in steps if isinstance(item, str) and item.strip()][:5],
+        "health": health,
+        "from_receipt": isinstance(receipt, dict),
+        "missing_current_receipt": has_snapshot and not isinstance(receipt, dict),
+        "real": real,
+        "temporary": [item for item in temporary if isinstance(item, str) and item.strip()],
+        "material_changes": material,
+        "reversible_assumptions": assumptions,
+    }
+
+
+def _v4_blocking_open_decisions(record: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for decision in record.get("decision_log") or []:
+        if not isinstance(decision, dict) or decision.get("status") != "open":
+            continue
+        decision_id = decision.get("id")
+        if not isinstance(decision_id, str) or not decision_id:
+            continue
+        try:
+            blocking = derive_v4_decision_blocking(record, decision)
+        except WorkflowDataError:
+            blocking = True
+        if not blocking:
+            continue
+        options: list[dict[str, str]] = []
+        for option in decision.get("options") or []:
+            if not isinstance(option, dict):
+                continue
+            option_id = option.get("id")
+            label = option.get("label")
+            if isinstance(option_id, str) and isinstance(label, str):
+                options.append({"id": option_id, "label": label})
+            if len(options) >= 3:
+                break
+        items.append(
+            {
+                "id": decision_id,
+                "kind": decision.get("kind"),
+                "question": decision.get("question") if isinstance(decision.get("question"), str) else None,
+                "options": options,
+                "latest_decision_point": decision.get("latest_decision_point"),
+            }
+        )
+    return items
+
+
+def _v4_checkpoint_direction(record: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    checkpoint_policy = contract.get("checkpoint") if isinstance(contract.get("checkpoint"), dict) else {}
+    mode = checkpoint_policy.get("mode")
+    if mode == "not_required":
+        return "not_required", None
+    latest = None
+    for decision in record.get("decision_log") or []:
+        if isinstance(decision, dict) and decision.get("kind") == "product_checkpoint":
+            latest = decision
+    if latest is None:
+        awaiting = mode in {"required", "show_before_dependency"}
+        return ("awaiting_human" if awaiting else "not_required"), None
+    if latest.get("status") == "open":
+        deferrals = latest.get("deferrals") or []
+        if isinstance(deferrals, list) and deferrals:
+            return "deferred", latest
+        return "awaiting_human", latest
+    outcome = (latest.get("resolution") or {}).get("outcome") if isinstance(latest.get("resolution"), dict) else None
+    if outcome == "accepted":
+        try:
+            current = _v4_checkpoint_is_current(record, latest)
+        except WorkflowDataError:
+            current = False
+        if current:
+            return "accepted", latest
+        return "awaiting_human", latest
+    if outcome in {"changes_requested", "stopped"}:
+        return str(outcome), latest
+    return "awaiting_human", latest
+
+
+def _v4_continuation_note(
+    record: dict[str, Any], checkpoint: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(checkpoint, dict):
+        return None
+    current_snapshot = (record.get("verification") or {}).get("snapshot_id")
+    if not isinstance(current_snapshot, str):
+        return None
+    binding = checkpoint.get("binding") if isinstance(checkpoint.get("binding"), dict) else {}
+    if binding.get("snapshot_id") == current_snapshot:
+        return None
+    for continuation in checkpoint.get("continuations") or []:
+        if not isinstance(continuation, dict):
+            continue
+        if continuation.get("target_snapshot_id") != current_snapshot:
+            continue
+        try:
+            current = _v4_continuation_is_current(record, checkpoint, continuation)
+        except (WorkflowDataError, TypeError, KeyError):
+            return None
+        if current:
+            return {"source_decision_id": checkpoint.get("id"), "equivalent": True}
+        return None
+    return None
+
+
+def _v4_next_action(record: dict[str, Any], summary_parts: dict[str, Any]) -> dict[str, Any]:
+    blocking = summary_parts["blocking_decisions"]
+    direction = summary_parts["product_direction"]
+    observation = summary_parts["observation"]
+    surface_label = observation.get("surface_label") or "observation"
+    if blocking:
+        decision_id = blocking[0]["id"]
+        return {
+            "kind": "wait_decision",
+            "decision_id": decision_id,
+            "text": f"等待人类决定 {decision_id}。不要批准、不要改状态、不要集成。",
+        }
+    if direction == "changes_requested":
+        return {
+            "kind": "return_developer",
+            "decision_id": None,
+            "text": "当前 snapshot 被 changes_requested，回到 Developer。不要报告 verified 或 done。",
+        }
+    if direction == "stopped":
+        return {
+            "kind": "stopped",
+            "decision_id": None,
+            "text": "当前切片已 stopped。不要报告 verified、done 或继续集成。",
+        }
+    snapshot_value = (record.get("verification") or {}).get("snapshot_id")
+    mode = ((record.get("delivery_contract") or {}).get("checkpoint") or {}).get("mode")
+    if isinstance(snapshot_value, str) and mode == "required" and direction in {"awaiting_human", "deferred"}:
+        checkpoint = summary_parts.get("checkpoint")
+        decision_id = checkpoint.get("id") if isinstance(checkpoint, dict) else None
+        if isinstance(decision_id, str) and decision_id:
+            decide_text = f"再决定 {decision_id} 的产品方向"
+        else:
+            decide_text = "再决定产品方向"
+        return {
+            "kind": "observe",
+            "decision_id": decision_id if isinstance(decision_id, str) else None,
+            "text": (
+                f"先按 {surface_label} 入口观察当前结果，{decide_text}。"
+                "不要批准、不要改状态、不要集成。"
+            ),
+        }
+    return {"kind": "lifecycle", "decision_id": None, "text": None}
+
+
+def derive_v4_product_summary(record: dict[str, Any]) -> dict[str, Any]:
+    """Pure product card for STATUS/Stop Hook. V3 records have no product card."""
+
+    technical = {
+        "status": record.get("status") if isinstance(record, dict) else None,
+        "phase": record.get("phase") if isinstance(record, dict) else None,
+        "verification": (
+            (record.get("verification") or {}).get("status")
+            if isinstance(record, dict) and isinstance(record.get("verification"), dict)
+            else None
+        ),
+        "integration": (
+            (record.get("integration") or {}).get("status")
+            if isinstance(record, dict) and isinstance(record.get("integration"), dict)
+            else None
+        ),
+    }
+    empty_action = {"kind": "lifecycle", "decision_id": None, "text": None}
+    if not _v4_is_v4_record(record):
+        return redact_v4_human_value(
+            {
+                "has_product_card": False,
+                "reason": "v3_technical_only",
+                "core_result": None,
+                "focus_slice_id": None,
+                "kind": None,
+                "supports_task_id": None,
+                "supporting_cannot_claim_core_complete": False,
+                "observation": None,
+                "real_vs_temporary": None,
+                "material_changes": [],
+                "product_direction": None,
+                "blocking_decisions": [],
+                "architecture": None,
+                "continuation": None,
+                "next_action": empty_action,
+                "technical": technical,
+            }
+        )
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    kind = contract.get("kind")
+    focus = contract.get("focus_slice_id")
+    supports = contract.get("supports_task_id")
+    supporting = kind == "supporting" or (
+        isinstance(supports, str) and supports and supports != record.get("task_id")
+    )
+    observation = _v4_observation_view(record)
+    direction, checkpoint = _v4_checkpoint_direction(record)
+    blocking = _v4_blocking_open_decisions(record)
+    architecture = contract.get("architecture") if isinstance(contract.get("architecture"), dict) else {}
+    guardrails = architecture.get("guardrails") if isinstance(architecture.get("guardrails"), list) else []
+    guardrail_ids = [
+        item.get("id")
+        for item in guardrails
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    execution_mode = contract.get("execution_mode")
+    if execution_mode not in {"formal", "exploratory"}:
+        execution_mode = None
+    if supporting:
+        focus_text = focus if isinstance(focus, str) else "unknown-focus"
+        core_result = (
+            f"本任务是 supporting，服务于 {focus_text}；supporting 完成不等于核心已完成。"
+        )
+    elif observation["from_receipt"] and observation["real"]:
+        core_result = observation["real"][0]
+    else:
+        core_result = _v4_acceptance_result(record)
+    next_action = _v4_next_action(
+        record,
+        {
+            "blocking_decisions": blocking,
+            "product_direction": direction,
+            "observation": observation,
+            "checkpoint": checkpoint,
+        },
+    )
+    return redact_v4_human_value(
+        {
+            "has_product_card": True,
+            "core_result": core_result,
+            "focus_slice_id": focus if isinstance(focus, str) else None,
+            "kind": kind if isinstance(kind, str) else None,
+            "supports_task_id": supports if isinstance(supports, str) else None,
+            "supporting_cannot_claim_core_complete": supporting,
+            "observation": {
+                "surface": observation["surface"],
+                "surface_label": observation["surface_label"],
+                "entrypoint_ref": observation["entrypoint_ref"],
+                "steps": observation["steps"],
+                "health": observation["health"],
+                "from_receipt": observation["from_receipt"],
+                "missing_current_receipt": observation["missing_current_receipt"],
+            },
+            "real_vs_temporary": {
+                "real": observation["real"],
+                "temporary": observation["temporary"],
+                "execution_mode": execution_mode,
+            },
+            "material_changes": observation["material_changes"],
+            "reversible_assumptions": observation["reversible_assumptions"],
+            "product_direction": direction,
+            "blocking_decisions": blocking,
+            "architecture": {
+                "declared_impact": architecture.get("declared_impact"),
+                "guardrail_ids": guardrail_ids,
+                "guardrail_count": len(guardrail_ids),
+                "live_status": "not_checked",
+            },
+            "continuation": _v4_continuation_note(record, checkpoint),
+            "next_action": next_action,
+            "technical": technical,
+        }
+    )
+
+
+def _v4_architecture_live_status(paths: WorkflowPaths, record: dict[str, Any]) -> str:
+    """Read-only live baseline/guardrail check. Never apply or mutate state."""
+
+    try:
+        _validate_v4_architecture_in_worktree(paths, record)
+        return "verified"
+    except (WorkflowDataError, WorkflowPathError, OSError) as exc:
+        if "stale" in str(exc).lower():
+            return "stale"
+        return "unverified"
+
+
+def v4_stop_hook_next_action(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Return one product next action, or None to keep V3 lifecycle messaging."""
+
+    summary = derive_v4_product_summary(record)
+    action = summary.get("next_action") if isinstance(summary, dict) else None
+    if not isinstance(action, dict) or action.get("kind") == "lifecycle":
+        return None
+    text = action.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return {
+        "kind": action.get("kind"),
+        "decision_id": action.get("decision_id"),
+        "text": text.strip(),
+    }
+
+
+def _product_card_lines(task_id: str, summary: dict[str, Any]) -> list[str]:
+    if not summary.get("has_product_card"):
+        technical = summary.get("technical") or {}
+        return [
+            f"- 任务 `{task_id}` 无 V4 产品卡片，仅技术状态："
+            f"{technical.get('status')}/{technical.get('phase')}。"
+        ]
+    observation = summary.get("observation") or {}
+    real_tmp = summary.get("real_vs_temporary") or {}
+    blocking = summary.get("blocking_decisions") or []
+    architecture = summary.get("architecture") or {}
+    continuation = summary.get("continuation")
+    direction = summary.get("product_direction")
+    direction_text = str(direction)
+    if isinstance(continuation, dict) and continuation.get("equivalent"):
+        direction_text = (
+            f"{direction}（方向沿用自 {continuation.get('source_decision_id')}，"
+            "当前 snapshot 由等价检查覆盖，人类未重新观察该 snapshot）"
+        )
+    focus = summary.get("focus_slice_id") or task_id
+    kind = summary.get("kind") or "core_slice"
+    if summary.get("supporting_cannot_claim_core_complete"):
+        focus_line = f"{focus} / supporting（不等于核心完成）"
+    else:
+        focus_line = f"{focus} / {kind}"
+    entry = observation.get("entrypoint_ref") or "none"
+    steps = observation.get("steps") or []
+    step_text = " → ".join(str(item) for item in steps) if steps else "none"
+    real = [str(item) for item in (real_tmp.get("real") or [])]
+    temporary = [str(item) for item in (real_tmp.get("temporary") or [])]
+    material = [str(item) for item in (summary.get("material_changes") or [])]
+    assumptions = [str(item) for item in (summary.get("reversible_assumptions") or [])]
+    execution_mode = real_tmp.get("execution_mode")
+    if execution_mode == "exploratory":
+        mode_text = "；执行模式：exploratory（非正式产品进度）"
+    elif execution_mode == "formal":
+        mode_text = "；执行模式：formal"
+    else:
+        mode_text = ""
+    receipt_note = ""
+    if observation.get("missing_current_receipt"):
+        receipt_note = "；当前 snapshot 尚无观察收据"
+    if blocking:
+        cards = []
+        for item in blocking:
+            option_text = ", ".join(
+                f"{opt.get('id')}:{opt.get('label')}"
+                for opt in item.get("options") or []
+                if isinstance(opt, dict)
+            )
+            extra = f"（{option_text}）" if option_text else ""
+            cards.append(f"{item.get('id')}{extra}")
+        blocking_text = "；".join(cards)
+    else:
+        blocking_text = "none"
+    guardrail_ids = [
+        str(item) for item in (architecture.get("guardrail_ids") or []) if item
+    ]
+    impact = architecture.get("declared_impact") or "unknown"
+    live = architecture.get("live_status")
+    if live not in {"verified", "unverified", "stale", "not_checked"}:
+        live = "not_checked"
+    guardrail_text = f"{impact}；live={live}"
+    if guardrail_ids:
+        guardrail_text += f"；guardrails {', '.join(guardrail_ids)}"
+    next_action = (summary.get("next_action") or {}).get("text")
+    lines = [
+        f"- 当前核心结果：{summary.get('core_result') or _V4_REDACTED_DISPLAY}",
+        f"- 当前焦点：{focus_line}",
+        (
+            f"- 可观察入口：{observation.get('surface_label')} `{entry}`"
+            f"（health: {observation.get('health')}{receipt_note}）"
+        ),
+        f"- 观察步骤：{step_text}",
+        (
+            f"- 真实与临时：真实：{'; '.join(real) or 'none'}；"
+            f"临时：{'; '.join(temporary) or 'none'}{mode_text}"
+        ),
+        f"- 本次实质变化：{'; '.join(material) or 'none'}",
+        f"- AI 护栏内假设：{'; '.join(assumptions) or 'none'}",
+        f"- 产品方向：{direction_text}",
+        f"- 待决定：{blocking_text}",
+        f"- 架构基线与护栏：{guardrail_text}",
+    ]
+    if isinstance(next_action, str) and next_action.strip():
+        lines.append(f"- 下一动作：{next_action.strip()}")
+    return lines
+
+
 def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
     baseline = requirements_baseline(paths)
     if all(value is None for value in baseline.values()):
@@ -4474,7 +5011,13 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
             "verification": verification.get("status"),
             "integration": integration.get("status"),
             "requirements_impact": impact.get("decision") if impact else None,
+            "product": derive_v4_product_summary(record),
         }
+        product = entry["product"]
+        if isinstance(product, dict) and product.get("has_product_card"):
+            architecture = dict(product.get("architecture") or {})
+            architecture["live_status"] = _v4_architecture_live_status(paths, record)
+            entry["product"] = {**product, "architecture": architecture}
         if runtime_lane_id is not None:
             entry["runtime_lane_id"] = runtime_lane_id
         # A registered lane is the live copy of its task record; the current
@@ -4560,19 +5103,64 @@ def render_workflow_status(snapshot: dict[str, Any]) -> str:
     contract = snapshot["requirements_contract"]
     counts = snapshot["backlog_counts"]
     impacts = snapshot["requirements_impacts"]
+    task_records = snapshot["task_records"]
+    product_cards: list[str] = []
+    core_cards: list[str] = []
+    other_cards: list[str] = []
+    for entry in task_records:
+        summary = entry.get("product") if isinstance(entry.get("product"), dict) else {}
+        card = _product_card_lines(str(entry.get("task_id")), summary)
+        if summary.get("has_product_card") and not summary.get("supporting_cannot_claim_core_complete"):
+            core_cards.extend(card)
+            core_cards.append("")
+        else:
+            other_cards.extend(card)
+            other_cards.append("")
+    if core_cards or any(
+        isinstance(entry.get("product"), dict) and entry["product"].get("has_product_card")
+        for entry in task_records
+    ):
+        product_cards = ["当前存在 V4 产品卡片。", ""]
+        product_cards.extend(core_cards)
+        product_cards.extend(other_cards)
+    elif other_cards:
+        product_cards = ["当前没有 V4 产品卡片。以下为技术状态。", ""]
+        product_cards.extend(other_cards)
+    else:
+        product_cards = ["当前没有 V4 产品卡片。以下为技术状态。"]
+    while product_cards and product_cards[-1] == "":
+        product_cards.pop()
     lines = [
         "# Workflow 状态快照",
         "",
         "> 此文件由工作流脚本生成；机器可读状态以 JSON 区块为准，不手工编辑。",
         "",
-        f"> 更新时间：{snapshot['generated_at']}｜状态指纹：`{snapshot['status_fingerprint']}`",
+        f"> 更新时间：{snapshot['generated_at']}",
         "",
-        "## 当前摘要",
+        "## 产品状态",
         "",
+        *product_cards,
+        "",
+        "## 技术交付",
+        "",
+        "<details>",
+        "<summary>Requirements、Backlog、task status/phase/verification/integration</summary>",
+        "",
+        f"- 状态指纹：`{snapshot['status_fingerprint']}`",
         f"- Requirements：`{baseline.get('brief_id')}` revision `{baseline.get('revision')}`。",
         f"- Requirements contract：{contract.get('status')}。",
         "- Backlog：" + "，".join(f"{key}={counts[key]}" for key in ("draft", "blocked", "ready", "done", "removed")) + "。",
-        f"- Task records：{len(snapshot['task_records'])}；Requirements impact reports：{len(impacts)}。",
+        f"- Task records：{len(task_records)}；Requirements impact reports：{len(impacts)}。",
+        *[
+            (
+                f"- `{entry.get('task_id')}`：status={entry.get('status')}；"
+                f"phase={entry.get('phase')}；verification={entry.get('verification')}；"
+                f"integration={entry.get('integration')}"
+            )
+            for entry in task_records
+        ],
+        "",
+        "</details>",
         "",
         f"<!-- {STATUS_MARKER}_START -->",
         json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2),

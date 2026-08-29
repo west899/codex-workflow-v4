@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lane-local Codex Stop hook for Workflow V3."""
+"""Lane-local Codex Stop hook for Workflow V3/V4."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from workflow_common import WorkflowDataError, load_record
+from workflow_common import WorkflowDataError, load_record, v4_stop_hook_next_action
 from workflow_paths import WorkflowPathError, WorkflowPaths
 
 
@@ -74,6 +74,11 @@ def main() -> None:
         if identity.get(field) != expected:
             block_once(event, f"Lane pointer {field} does not match the tracked task record.")
             return
+
+    product_action = v4_stop_hook_next_action(record)
+    if product_action is not None:
+        warn(product_action["text"])
+        return
 
     status = record.get("status")
     verification = record.get("verification") or {}
