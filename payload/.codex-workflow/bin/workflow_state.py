@@ -23,6 +23,7 @@ from workflow_common import (
     canonical_delivery,
     block_backlog_for_requirements,
     closeout_state_fingerprint,
+    stamp_closeout_fingerprint_version,
     contract_fingerprint,
     contract_fingerprint_from_material,
     contract_fingerprint_material,
@@ -1438,8 +1439,12 @@ def _prepare_closeout_commit(
 ) -> None:
     paths.ensure_runtime()
     record_path, initial = load_record(paths, relative)
-    if initial.get("version") != 3:
-        raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
+    if initial.get("version") == 2:
+        raise StateError("V2 records are read-only history and cannot close out.")
+    if initial.get("version") not in {3, 4}:
+        raise StateError(
+            f"Unsupported task record version for closeout: {initial.get('version')!r}."
+        )
     expected = initial.get("generation") if expected_generation is None else expected_generation
     if not isinstance(expected, int):
         raise StateError("Task generation is invalid.")
@@ -1474,11 +1479,15 @@ def _prepare_closeout_commit(
                 integration=str(evidence.get("result_commit") or "integrated"),
             )
             backlog, unlocked = unlock_ready_dependencies(backlog)
-            fingerprint = closeout_state_fingerprint(updated, backlog)
+            try:
+                stamp_closeout_fingerprint_version(updated)
+                fingerprint = closeout_state_fingerprint(updated, backlog)
+            except WorkflowDataError as exc:
+                raise StateError(str(exc)) from exc
             updated["integration"]["closeout_state_fingerprint"] = fingerprint
             validate_workflow_schema(
                 paths,
-                "task-record-v3.schema.json",
+                task_record_schema_name(updated),
                 updated,
                 label="Updated task record",
             )
@@ -1538,8 +1547,12 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
     # Keep queue admission and closeout preparation in one runtime critical section.
     with _role_lock_context(paths, "coordinator", "prepare-local-closeout", apply=args.apply):
         _, record = load_record(paths, args.record)
-        if record.get("version") != 3:
-            raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
+        if record.get("version") == 2:
+            raise StateError("V2 records are read-only history and cannot close out.")
+        if record.get("version") not in {3, 4}:
+            raise StateError(
+                f"Unsupported task record version for closeout: {record.get('version')!r}."
+            )
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
         if not isinstance(expected_generation, int):
             raise StateError("Task generation is invalid.")
@@ -1599,8 +1612,12 @@ def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> N
     ):
         raise StateError("Every required remote CI check must be recorded as success.")
     _, record = load_record(paths, args.record)
-    if record.get("version") != 3:
-        raise StateError("V4 closeout is unavailable until the versioned closeout milestone.")
+    if record.get("version") == 2:
+        raise StateError("V2 records are read-only history and cannot close out.")
+    if record.get("version") not in {3, 4}:
+        raise StateError(
+            f"Unsupported task record version for closeout: {record.get('version')!r}."
+        )
     integration = record.get("integration") or {}
     verification = record.get("verification") or {}
     if integration.get("mode") != "remote_pr_ci" or integration.get("status") not in {"pending", "merged_pending_closeout"}:

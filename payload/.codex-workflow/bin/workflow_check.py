@@ -904,8 +904,12 @@ def integration_preflight(paths: WorkflowPaths, record: dict[str, Any], checks: 
 
 
 def closeout_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) -> None:
-    if record.get("version") != 3:
-        checks.error("V4 closeout gate is unavailable until the versioned closeout milestone.")
+    version = record.get("version")
+    if version == 2:
+        checks.error("V2 records are read-only history and cannot close out.")
+        return
+    if version not in {3, 4}:
+        checks.error(f"Unsupported task record version for closeout: {version!r}.")
         return
     integration = record.get("integration")
     if not isinstance(integration, dict):
@@ -915,6 +919,9 @@ def closeout_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks) 
         checks.error("Closeout gate requires merged_pending_closeout or integrated state.")
     for field in ("target_ref", "result_commit", "closeout_state_fingerprint"):
         checks.require_text(integration.get(field), f"task.integration.{field}")
+    if version == 4 and integration.get("closeout_state_fingerprint"):
+        if integration.get("closeout_fingerprint_version") != 4:
+            checks.error("V4 closeout requires closeout_fingerprint_version=4.")
     target_ref = integration.get("target_ref")
     result_commit = integration.get("result_commit")
     closeout_commit = integration.get("closeout_commit")

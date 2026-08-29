@@ -92,6 +92,8 @@ V4_DECISION_STATE_FINGERPRINT_ALGORITHM = "codex-decision-state-v1"
 V4_OBSERVATION_FINGERPRINT_ALGORITHM = "codex-observation-v1"
 V4_OBSERVATION_RECEIPT_FINGERPRINT_ALGORITHM = "codex-observation-receipt-v1"
 V4_ARCHITECTURE_FINGERPRINT_VERSION = 1
+V3_CLOSEOUT_FINGERPRINT_VERSION = 3
+V4_CLOSEOUT_FINGERPRINT_VERSION = 4
 
 # This matrix is the M1 contract for later reset/checker work. Empty tuples
 # identify lifecycle-only changes that preserve all three semantic identities.
@@ -2059,6 +2061,7 @@ def _empty_v4_integration() -> dict[str, Any]:
         "queue_priority": None,
         "closeout_commit": None,
         "closeout_state_fingerprint": None,
+        "closeout_fingerprint_version": None,
         "pr_url": None,
         "ci_checks": [],
         "evidence": [],
@@ -4451,21 +4454,121 @@ def unlock_ready_dependencies(text: str) -> tuple[str, list[str]]:
     return text, unlocked
 
 
-def closeout_state_fingerprint(record: dict[str, Any], backlog_text: str) -> str:
+_CLOSEOUT_INTEGRATION_KEYS = (
+    "status", "mode", "policy_id", "source_ref", "target_ref",
+    "target_parent", "pr_head_commit", "result_commit", "merge_strategy",
+    "queue_id", "closeout_commit", "pr_url", "ci_checks", "evidence",
+)
+
+
+def closeout_fingerprint_algorithm(record: dict[str, Any]) -> int:
+    """Select the sealed closeout algorithm. Pending fingerprints keep their version."""
+
+    version = record.get("version")
+    stored = (record.get("integration") or {}).get("closeout_fingerprint_version")
+    if version == 2:
+        raise WorkflowDataError("V2 records are read-only history and cannot close out.")
+    if version == 3:
+        if stored not in {None, V3_CLOSEOUT_FINGERPRINT_VERSION}:
+            raise WorkflowDataError("V3 closeout cannot use a non-V3 fingerprint version.")
+        return V3_CLOSEOUT_FINGERPRINT_VERSION
+    if version == 4:
+        if stored is None:
+            return V4_CLOSEOUT_FINGERPRINT_VERSION
+        if stored == V4_CLOSEOUT_FINGERPRINT_VERSION:
+            return V4_CLOSEOUT_FINGERPRINT_VERSION
+        raise WorkflowDataError(
+            f"Unsupported V4 closeout fingerprint version: {stored!r}."
+        )
+    raise WorkflowDataError(f"Unsupported task record version for closeout: {version!r}.")
+
+
+def stamp_closeout_fingerprint_version(record: dict[str, Any]) -> None:
+    integration = record.get("integration")
+    if not isinstance(integration, dict):
+        raise WorkflowDataError("Closeout fingerprint version requires task.integration.")
+    version = record.get("version")
+    if version == 3:
+        integration.pop("closeout_fingerprint_version", None)
+        return
+    if version == 4:
+        integration["closeout_fingerprint_version"] = V4_CLOSEOUT_FINGERPRINT_VERSION
+        return
+    raise WorkflowDataError(f"Unsupported task record version for closeout: {version!r}.")
+
+
+def _v3_closeout_state_material(record: dict[str, Any], backlog_text: str) -> dict[str, Any]:
     integration = record.get("integration") or {}
-    state = {
+    return {
         "task_id": record.get("task_id"),
-        "integration": {
-            key: integration.get(key)
-            for key in (
-                "status", "mode", "policy_id", "source_ref", "target_ref",
-                "target_parent", "pr_head_commit", "result_commit", "merge_strategy",
-                "queue_id", "closeout_commit", "pr_url", "ci_checks", "evidence",
-            )
-        },
+        "integration": {key: integration.get(key) for key in _CLOSEOUT_INTEGRATION_KEYS},
         "backlog": normalize_markdown(backlog_text),
     }
-    return sha256_json(state)
+
+
+def _v4_effective_closeout_decisions(record: dict[str, Any]) -> list[dict[str, Any]]:
+    decisions = record.get("decision_log")
+    if not isinstance(decisions, list):
+        raise WorkflowDataError("V4 closeout requires decision_log to be an array.")
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, decision in enumerate(decisions):
+        if not isinstance(decision, dict):
+            raise WorkflowDataError(f"V4 closeout decision_log[{index}] must be an object.")
+        decision_id = decision.get("id")
+        fingerprint = decision.get("decision_fingerprint")
+        state_fingerprint = decision.get("decision_state_fingerprint")
+        if not isinstance(decision_id, str) or not decision_id or decision_id in seen:
+            raise WorkflowDataError("V4 closeout decision IDs must be unique text.")
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise WorkflowDataError(
+                f"V4 closeout decision {decision_id} fingerprint is missing."
+            )
+        if not isinstance(state_fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", state_fingerprint
+        ):
+            raise WorkflowDataError(
+                f"V4 closeout decision {decision_id} state fingerprint is missing."
+            )
+        seen.add(decision_id)
+        items.append(
+            {
+                "id": decision_id,
+                "kind": decision.get("kind"),
+                "status": decision.get("status"),
+                "decision_fingerprint": fingerprint,
+                "decision_state_fingerprint": state_fingerprint,
+            }
+        )
+    return sorted(items, key=lambda item: item["id"])
+
+
+def _v4_closeout_state_material(record: dict[str, Any], backlog_text: str) -> dict[str, Any]:
+    contract_identity = record.get("contract_fingerprint")
+    if not isinstance(contract_identity, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", contract_identity
+    ):
+        raise WorkflowDataError("V4 closeout requires a valid contract_fingerprint.")
+    integration = record.get("integration") or {}
+    return {
+        "closeout_fingerprint_version": V4_CLOSEOUT_FINGERPRINT_VERSION,
+        "task_id": record.get("task_id"),
+        "contract_fingerprint": contract_identity,
+        "effective_decisions": _v4_effective_closeout_decisions(record),
+        "integration": {key: integration.get(key) for key in _CLOSEOUT_INTEGRATION_KEYS},
+        "backlog": normalize_markdown(backlog_text),
+    }
+
+
+def closeout_state_fingerprint(record: dict[str, Any], backlog_text: str) -> str:
+    algorithm = closeout_fingerprint_algorithm(record)
+    if algorithm == V3_CLOSEOUT_FINGERPRINT_VERSION:
+        return sha256_json(_v3_closeout_state_material(record, backlog_text))
+    if algorithm == V4_CLOSEOUT_FINGERPRINT_VERSION:
+        return sha256_json(_v4_closeout_state_material(record, backlog_text))
+    raise WorkflowDataError(
+        f"Unsupported closeout fingerprint version: {algorithm!r}."
+    )
 
 
 def requirements_impact_path(paths: WorkflowPaths, brief_id: str, revision: int) -> Path:

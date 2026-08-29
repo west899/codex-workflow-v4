@@ -1335,6 +1335,7 @@
         "queue_priority": {"type": ["integer", "null"]},
         "closeout_commit": {"type": ["string", "null"]},
         "closeout_state_fingerprint": {"type": ["string", "null"]},
+        "closeout_fingerprint_version": {"type": ["integer", "null"], "enum": [null, 4]},
         "pr_url": {"type": ["string", "null"]},
         "ci_checks": {
           "type": "array",
