@@ -39,6 +39,8 @@ class InstallTests(unittest.TestCase):
             serialized = json.dumps(hooks)
             self.assertIn(".codex-workflow/bin/workflow_check.py", serialized)
             self.assertNotIn("/scripts/workflow_check.py", serialized)
+            status = (target / ".codex-workflow/state/STATUS.md").read_text(encoding="utf-8")
+            self.assertLess(status.index("## 产品状态"), status.index("CODEX_WORKFLOW_STATUS_JSON_START"))
 
     def test_reinstall_is_content_idempotent_and_preserves_project_governance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

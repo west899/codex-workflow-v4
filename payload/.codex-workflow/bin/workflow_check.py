@@ -1310,7 +1310,11 @@ def _doctor_action(
             "Review and trust the project Hooks, then start or resume a new Codex session and "
             "run doctor again in that session."
         )
-    return "No corrective action is required; continue with the existing V3 workflow."
+    return (
+        "No corrective action is required. Start new work as a V4 focus core slice; "
+        "keep any in-progress V3 task on the V3 closeout path. "
+        "Run workflow_check.py status to see the product summary."
+    )
 
 
 def doctor(paths: WorkflowPaths) -> int:

@@ -2,7 +2,20 @@
 
 > 此文件由工作流脚本生成；机器可读状态以 JSON 区块为准，不手工编辑。
 
-> 更新时间：{{INSTALL_DATE}}｜状态指纹：`2ca4dc0a7e39a862c0805f172b5d9622c2eb2e1ca6eabe465827db5880a18e76`
+> 更新时间：{{INSTALL_DATE}}
+
+## 产品状态
+
+当前没有 V4 产品卡片。以下为技术状态。
+
+## 技术交付
+
+<details>
+<summary>Requirements、Backlog、task status/phase/verification/integration</summary>
+
+- 状态指纹：`2ca4dc0a7e39a862c0805f172b5d9622c2eb2e1ca6eabe465827db5880a18e76`
+
+</details>
 
 <!-- CODEX_WORKFLOW_STATUS_JSON_START -->
 {

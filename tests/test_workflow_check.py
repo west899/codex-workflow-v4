@@ -173,6 +173,9 @@ class WorkflowCheckTests(unittest.TestCase):
         self.assertIn(str(self.target.resolve()), result.stdout)
         self.assertIn("does not prove a current or unique session identity", result.stdout)
         self.assertNotIn("current session is trusted", result.stdout.lower())
+        self.assertIn("Start new work as a V4 focus core slice", result.stdout)
+        self.assertIn("workflow_check.py status", result.stdout)
+        self.assertNotIn("existing V3 workflow", result.stdout)
 
     def test_doctor_package_drift_fails_before_lower_priority_problems(self) -> None:
         managed = self.target / ".codex-workflow/bin/workflow_state.py"
