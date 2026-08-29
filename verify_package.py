@@ -41,6 +41,7 @@ REQUIRED = {
     "payload/.codex-workflow/bin/workflow_lane.py",
     "payload/.codex-workflow/bin/codex_stop_hook.py",
     "payload/.codex-workflow/schemas/task-record-v3.schema.json",
+    "payload/.codex-workflow/schemas/task-record-v4.schema.json",
     "payload/.codex-workflow/schemas/developer-evidence-v1.schema.json",
     "payload/.codex-workflow/schemas/review-evidence-v1.schema.json",
     "payload/.codex-workflow/schemas/requirements-v1.schema.json",
@@ -53,6 +54,8 @@ REQUIRED = {
     "payload/.agents/skills/implement-project-task/agents/openai.yaml",
     "payload/.agents/skills/review-project-change/agents/openai.yaml",
     "payload/.agents/skills/orchestrate-project-task/references/task-record-template.json",
+    "payload/.agents/skills/orchestrate-project-task/references/task-record-v4-core-template.json",
+    "payload/.agents/skills/orchestrate-project-task/references/task-record-v4-supporting-template.json",
     "payload/.agents/skills/orchestrate-project-task/references/requirements-brief-template.md",
     "payload/.agents/skills/orchestrate-project-task/references/rule-proposal-template.json",
     "payload/.agents/skills/orchestrate-project-task/references/mvp-backlog-template.md",
@@ -74,6 +77,13 @@ REQUIRED = {
     "tests/test_remote_release.py",
     "tests/test_stop_hook.py",
     "tests/test_end_to_end.py",
+    "tests/test_v4_contract.py",
+    "tests/test_v4_workflow.py",
+    "tests/test_v4_status.py",
+    "tests/test_v4_closeout.py",
+    "tests/test_v4_lifecycle.py",
+    "V4_PHASEA_PLAN.md",
+    "V4_PHASE0_PILOT.md",
 }
 FORBIDDEN_FILES = {
     "payload/PROJECT.md",
@@ -116,6 +126,10 @@ def main() -> None:
     for field in ("layout_version", "protocol_version", "workflow_schema_version"):
         if layout.get(field) != 3:
             raise SystemExit(f"layout.json requires {field}=3")
+    if layout.get("task_record_versions") != [3, 4]:
+        raise SystemExit("layout.json must declare task_record_versions [3, 4].")
+    if layout.get("default_new_task_version") != 4:
+        raise SystemExit("layout.json default_new_task_version must be 4.")
     if layout.get("paths", {}).get("bin") != ".codex-workflow/bin":
         raise SystemExit("layout.json bin path is not the final V3 location.")
 

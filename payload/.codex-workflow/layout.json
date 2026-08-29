@@ -3,6 +3,8 @@
   "layout_version": 3,
   "protocol_version": 3,
   "workflow_schema_version": 3,
+  "task_record_versions": [3, 4],
+  "default_new_task_version": 4,
   "requirements_gate_mode": "required",
   "paths": {
     "workflow_root": ".codex-workflow",

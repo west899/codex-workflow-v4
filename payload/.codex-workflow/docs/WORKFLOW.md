@@ -22,7 +22,9 @@ py -3 .codex-workflow/bin/workflow_state.py sync-status --apply
 
 ## 3. 建立 task contract
 
-从仓库 Skill 的 task-record template 创建 `.codex-workflow/state/runs/<task-id>.json`。Coordinator 填写来源、需求基线、请求、范围、非目标、allowed paths、resource keys、验收、风险、授权和 exact base commit。task record 的后续写入只经 state/lane 命令；不要手改 JSON 来跳过 generation 或角色边界。
+新任务使用 V4 core/supporting 模板创建 `.codex-workflow/state/runs/<task-id>.json`。Coordinator 先和人类确认 `focus_slice_id`、观察入口、真实/临时部分和架构基线，再填写来源、需求基线、请求、范围、非目标、allowed paths、resource keys、验收、风险、`delivery_contract`、授权和 exact base commit。已在进行中的 V3 record 继续走 V3 closeout，不要改写其 pending fingerprint。task record 的后续写入只经 state/lane 命令；不要手改 JSON 来跳过 generation 或角色边界。
+
+`checkpoint.mode=required` 时，独立 Review 前必须有当前 snapshot 的 observation receipt 和人类产品方向确认。使用 `request-decision` / `record-decision`，不要新增另一套 checkpoint 命令。`workflow_lane.py` 不承载产品语义。STATUS 和 Stop Hook 只派生下一动作，不批准、不改状态。
 
 ```text
 py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs/MVP-001.json
@@ -30,7 +32,7 @@ py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs
 
 ### 3.1 JSON Schema 结构门禁
 
-六份随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` 在所有 V3 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
+随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` / `task-record-v4.schema.json` 在对应版本 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
 
 校验器仅支持这六份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
 

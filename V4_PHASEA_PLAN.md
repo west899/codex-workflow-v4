@@ -11,12 +11,12 @@
 | Normative fingerprint | `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
 | 计划状态 | `executing` |
-| 实施授权 | `PA009_authorized_after_pa008_pass` / 用户于 2026-08-29 授权启动 PA-009；PA-008 密封快照 `53656e2b7c831543bdd4b711e77abbcc8385985e` Review PASS |
+| 实施授权 | `phase_a_authorized_complete` / 用户于 2026-08-29 授权完成 Phase A（PA-010–012），中间自行审查和修复 |
 | 目标分支 | `v4` |
 | Phase 0 基线 | `69c52ad09576a181f18dbe8b8735a8a638a3d27c` / `phase0_passed` |
 | 设计输入 | `改进建议.md` 第 14–19 节、第 23–24 节 |
-| 当前允许动作 | 实现并独立审阅 PA-009 V3/V4 双读与版本化 closeout |
-| 当前禁止动作 | 开始 PA-010–PA-012；安装升级、Skills/文档大同步或真实 V4 产品闭环 closeout |
+| 当前允许动作 | 完成 Phase A：PA-010 安装/升级并轨、PA-011 单一默认路径文档、PA-012 回归与 V4 生命周期证据 |
+| 当前禁止动作 | 开始 Phase B/C；新增 decision kind、主状态机或第二套 checkpoint 命令 |
 
 规范指纹校验命令：
 

@@ -1,6 +1,8 @@
-# Codex Workflow V3 可移植包
+# Codex Workflow V4 可移植包
 
-Codex Workflow V3 是一个安装到现有 Git 项目的协作控制面，重点解决四件事：工作流文件与项目文件边界不清、`verified` 后没有可靠收尾、Backlog 前需求理解不足，以及同一机器/不同机器无法安全多线推进。
+Codex Workflow V4 在 V3 交付安全外环上增加产品反馈内环：新任务默认 `task-record-v4`，先做出可观察的 focus core slice，人类通过 STATUS / 决策卡片确认方向后再进入独立 Review 和集成。已有 V3 任务继续按 V3 closeout，升级不猜 focus、不自动批准架构基线。
+
+V3 外环仍然解决：工作流文件与项目文件边界、`verified` 后可靠收尾、Backlog 前需求校准，以及同一机器/不同机器的安全多线推进。
 
 V3 优先支持同机多线：每个 task 独占一个 claim、branch、Git linked worktree 和写入者；多个 Developer lane 可并行，目标分支、Backlog、PLAN 和永久治理始终由唯一 Coordinator/Integrator 串行写。跨机器先使用预分配，后续可选 Git atomic refs 自主抢占。
 

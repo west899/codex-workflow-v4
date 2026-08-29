@@ -17,8 +17,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 
-PACKAGE_VERSION = "3.0.0"
+PACKAGE_VERSION = "4.0.0"
 PROTOCOL_VERSION = 3
+SUPPORTED_TASK_RECORD_VERSIONS = [3, 4]
+DEFAULT_NEW_TASK_RECORD_VERSION = 4
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PAYLOAD_ROOT = PACKAGE_ROOT / "payload"
 HOOKS_PATH = Path(".codex/hooks.json")
@@ -45,7 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("target", nargs="?", default=".")
     parser.add_argument("--project-name")
     parser.add_argument("--parallel-mode", choices=("single", "local_worktree"), default="single")
-    parser.add_argument("--plan-upgrade", action="store_true", help="Read-only V2-to-V3 migration plan.")
+    parser.add_argument(
+        "--plan-upgrade",
+        action="store_true",
+        help="Zero-write plan: V2-to-V3 migration and V3-to-V4 capability inventory.",
+    )
     parser.add_argument("--adopt-v2", action="store_true", help="Explicitly adopt legacy V2 files when no V2 manifest exists.")
     parser.add_argument("--agents-merge-file", help="Human-approved project-only rules extracted from a modified V2 AGENTS.md.")
     parser.add_argument("--force-package", action="store_true", help="Back up and replace only conflicting package-owned files.")
@@ -135,6 +141,127 @@ def v3_entries(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if not isinstance(files, dict):
         raise InstallError("V3 manifest files must be an object.")
     return {posix(key): value for key, value in files.items() if isinstance(key, str) and isinstance(value, dict)}
+
+
+def _architecture_baseline_inventory(target_root: Path) -> dict[str, Any]:
+    path = target_root / ".codex-workflow/governance/DECISIONS.md"
+    inventory = {
+        "present": False,
+        "status": None,
+        "approved": False,
+        "guessed_focus": False,
+    }
+    if not path.is_file():
+        return inventory
+    text = path.read_text(encoding="utf-8")
+    start = "<!-- CODEX_ARCHITECTURE_BASELINE_START -->"
+    end = "<!-- CODEX_ARCHITECTURE_BASELINE_END -->"
+    if start not in text or end not in text:
+        return inventory
+    raw = text.split(start, 1)[1].split(end, 1)[0]
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        inventory["present"] = True
+        inventory["status"] = "invalid"
+        return inventory
+    if not isinstance(payload, dict):
+        inventory["present"] = True
+        inventory["status"] = "invalid"
+        return inventory
+    inventory["present"] = True
+    inventory["status"] = payload.get("status")
+    approval = payload.get("approval") if isinstance(payload.get("approval"), dict) else {}
+    inventory["approved"] = payload.get("status") == "approved" and bool(
+        approval.get("approved_fingerprint")
+    )
+    return inventory
+
+
+def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
+    """Read-only V4 upgrade inventory. Never invents focus or approves a baseline."""
+
+    inventory: dict[str, Any] = {
+        "v2_record_ids": [],
+        "v3_record_ids": [],
+        "v4_record_ids": [],
+        "unsupported_record_ids": [],
+        "live_lane_ids": [],
+        "queued_lane_ids": [],
+        "pending_closeout_task_ids": [],
+        "architecture_baseline": {
+            "present": False,
+            "status": None,
+            "approved": False,
+            "guessed_focus": False,
+        },
+        "observation_entrypoints": [],
+        "notes": [
+            "Upgrade does not generate or approve a project architecture baseline.",
+            "Upgrade does not guess the current focus core slice.",
+            "Existing V3 tasks keep V3 closeout semantics; new tasks should use task-record-v4.",
+        ],
+    }
+    if not target_root.exists():
+        return inventory
+    runs = target_root / ".codex-workflow/state/runs"
+    if runs.is_dir():
+        for path in sorted(runs.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                inventory["unsupported_record_ids"].append(path.name)
+                continue
+            if not isinstance(record, dict):
+                inventory["unsupported_record_ids"].append(path.stem)
+                continue
+            task_id = record.get("task_id") if isinstance(record.get("task_id"), str) else path.stem
+            version = record.get("version")
+            if version == 2:
+                inventory["v2_record_ids"].append(task_id)
+            elif version == 3:
+                inventory["v3_record_ids"].append(task_id)
+            elif version == 4:
+                inventory["v4_record_ids"].append(task_id)
+                contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+                observation = contract.get("observation") if isinstance(contract.get("observation"), dict) else {}
+                entry = observation.get("entrypoint_ref")
+                if isinstance(entry, str) and entry.strip():
+                    inventory["observation_entrypoints"].append(
+                        {"task_id": task_id, "entrypoint_ref": entry}
+                    )
+            else:
+                inventory["unsupported_record_ids"].append(task_id)
+            integration = record.get("integration") if isinstance(record.get("integration"), dict) else {}
+            if integration.get("status") in {"pending", "queued", "merged_pending_closeout"}:
+                inventory["pending_closeout_task_ids"].append(task_id)
+    inventory["architecture_baseline"] = _architecture_baseline_inventory(target_root)
+    try:
+        common = git_common_dir(target_root)
+    except (OSError, subprocess.CalledProcessError, InstallError):
+        return inventory
+    runtime = common / "codex-workflow-v3"
+    lanes = runtime / "registry" / "lanes"
+    if lanes.is_dir():
+        for path in sorted(lanes.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            lane_id = payload.get("lane_id") if isinstance(payload, dict) else None
+            if isinstance(lane_id, str) and lane_id:
+                inventory["live_lane_ids"].append(lane_id)
+    queue = runtime / "queue"
+    if queue.is_dir():
+        for path in sorted(queue.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            lane_id = payload.get("lane_id") if isinstance(payload, dict) else None
+            if isinstance(lane_id, str) and lane_id:
+                inventory["queued_lane_ids"].append(lane_id)
+    return inventory
 
 
 def extract_block(text: str, start: str, end: str) -> str:
@@ -534,6 +661,9 @@ def main() -> None:
     plan = {
         "package": "codex-workflow-v3",
         "version": PACKAGE_VERSION,
+        "protocol_version": PROTOCOL_VERSION,
+        "supported_task_record_versions": list(SUPPORTED_TASK_RECORD_VERSIONS),
+        "default_new_task_record_version": DEFAULT_NEW_TASK_RECORD_VERSION,
         "target": str(target_root),
         "migration": "v2_to_v3" if legacy else "new_or_v3_upgrade",
         "modified_v2_agents": modified_v2_agents,
@@ -541,6 +671,7 @@ def main() -> None:
         "legacy_deletes": [posix(path) for path in legacy_deletes],
         "package_conflicts": sorted(conflicts),
         "parallel_mode": args.parallel_mode,
+        "v4_inventory": collect_upgrade_inventory(target_root),
     }
     if args.plan_upgrade:
         print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
@@ -622,6 +753,8 @@ def main() -> None:
             "package": "codex-workflow-v3",
             "version": PACKAGE_VERSION,
             "protocol_version": PROTOCOL_VERSION,
+            "supported_task_record_versions": list(SUPPORTED_TASK_RECORD_VERSIONS),
+            "default_new_task_record_version": DEFAULT_NEW_TASK_RECORD_VERSION,
             "files": {key: manifest_files[key] for key in sorted(manifest_files)},
         }
         manifest_data = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -641,8 +774,9 @@ def main() -> None:
     journal["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     journal["manifest_sha256"] = sha256((target_root / V3_MANIFEST).read_bytes())
     atomic_write(journal_path, (json.dumps(journal, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    print(f"Codex Workflow V3 installed in: {target_root}")
+    print(f"Codex Workflow V4 installed in: {target_root}")
     print(f"Package version: {PACKAGE_VERSION}")
+    print("New tasks use task-record-v4; existing V3 tasks keep V3 closeout semantics.")
     if backup_root.exists():
         print(f"Backups written under Git common-dir runtime: {backup_root}")
     print("Review and trust the updated project Hooks; start a new Codex session and verify the runtime heartbeat.")

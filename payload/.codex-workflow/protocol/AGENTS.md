@@ -22,7 +22,8 @@ py -3 .codex-workflow/bin/workflow_check.py manual
 - 已批准 Brief revision/fingerprint 变化或被新 Brief 替代时，先运行 `requirements-impact` 并审查 Git 历史差异、Backlog 动作和 live local lane；再由 Coordinator 用精确 fingerprint 执行 `apply-requirements-impact`。未开始受影响项保持 blocked，已完成项保留历史，活动 task 一律停止在 `human_decision_required`，不得自动续跑。
 - 只有人类对具体 `analysis_id` 写出 `decision: continue`、批准来源和理由后，活动 lane 才能在新基线 rebase 后用 `resolve-requirements-impact` 更新合同；该操作会清空旧证据，必须重新 Developer/Review/gate。停止或重写 task 不执行 resolve，按恢复/abandon 流程处理。
 - incident、maintenance 和明确 user directive 可以不建立完整版本 Brief，但仍必须有当前任务的范围、非目标、验收、风险和实现授权。
-- `requirements-v1`、`task-record-v3`（含 `lane-v1` 引用）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/evidence/claim 的对应读取或写入、V3 状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
+- `requirements-v1`、`task-record-v3`、`task-record-v4`（均含 `lane-v1` 引用）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 是强制 JSON Schema 结构门禁：Brief/record/evidence/claim 的对应读取或写入、状态写入、远端 claim 提交和远端 closeout 证明前均须通过；失败必须零写入。校验器遇到未支持的 schema 关键字同样 fail closed，不能手改 JSON 绕过。
+- 新任务默认 `task-record-v4`。已有 V3 record 按 V3 收尾，不得用 V4 算法重算其 pending closeout。不得把 V3 任务口头升级为 V4。
 
 ## 3. 四类状态不能混称
 

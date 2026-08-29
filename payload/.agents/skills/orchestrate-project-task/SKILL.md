@@ -1,9 +1,11 @@
 ---
 name: orchestrate-project-task
-description: Coordinate Codex Workflow V3 from requirements calibration through isolated local or remote lanes, independent review, deterministic verification, serial integration, and two-phase closeout. Use for non-trivial feature, bug, refactor, migration, or release-scope work. Invoke explicitly via $orchestrate-project-task.
+description: Coordinate Codex Workflow V4 from requirements calibration through a focus core slice, human product decisions, isolated lanes, independent review, verification, serial integration, and two-phase closeout. Use for non-trivial feature, bug, refactor, migration, or release-scope work. Invoke explicitly via $orchestrate-project-task.
 ---
 
-# Orchestrate Project Task — V3
+# Orchestrate Project Task — V4
+
+New work uses `task-record-v4`. Keep existing V3 records on the V3 closeout path. Do not invent a second checkpoint command or product state machine. `workflow_lane.py` never carries product semantics.
 
 Own scope, state and integration; do not impersonate Developer or Reviewer.
 
@@ -34,15 +36,24 @@ When an approved Brief changes revision/fingerprint or is replaced by a new Brie
 
 An active task in the report is stopped, not implicitly approved to continue. After the Coordinator commits the impact files and the lane is manually rebased (use `refresh-base` when its base changed), obtain a human JSON decision bound to the report `analysis_id` with `decision: continue`, approver/time/source and a rationale that the task contract remains valid. Only then run `resolve-requirements-impact <record> --analysis-id <id> --decision-json <file> --apply`. It binds the new baseline and invalidates all old delivery/review/acceptance/approval/integration evidence, so delegate the full Developer → Reviewer → gate chain again. For stop or rewrite, leave the task blocked and follow lane recovery/abandon rather than resolve.
 
-## 3. Create and authorize one task contract
+## 3. Create and authorize one V4 task contract
 
-Select a durable `ready` Backlog item or record a typed exception. Create `state/runs/<task-id>.json` from [task-record-template.json](references/task-record-template.json). Fill source and requirements baseline, raw request, scope in/out, allowed paths, conservative resource keys, acceptance criteria, risk flags, planning depth, exact base commit and implementation authorization.
+Select a durable `ready` Backlog item or record a typed exception. For new work create `state/runs/<task-id>.json` from [task-record-v4-core-template.json](references/task-record-v4-core-template.json) (supporting work from [task-record-v4-supporting-template.json](references/task-record-v4-supporting-template.json)). Historical V3 tasks already in progress keep [task-record-template.json](references/task-record-template.json) until V3 closeout.
+
+Before authorization, confirm with the human:
+
+- the current `focus_slice_id` and that supporting work only serves that focus;
+- the observation recipe (UI / API / CLI / data) and what is real vs temporary;
+- any blocking product or architecture decision card (2–3 existing options, no invented options);
+- the project architecture baseline is approved; do not generate or approve a baseline yourself.
+
+Fill source and requirements baseline, raw request, scope in/out, allowed paths, conservative resource keys, acceptance criteria, risk flags, planning depth, exact base commit, `delivery_contract`, and implementation authorization.
 
 - Small: short verifiable steps in the record.
 - Medium: ordered record steps and a PLAN summary.
 - Large/high-risk: ExecPlan under `state/plans/`; get user approval for scope or irreversible choices.
 
-Run preflight before delegation. `requirements-v1`、`task-record-v3`（含 `lane-v1`）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 都是强制结构门禁：Brief/record/evidence/claim 在对应读写边界会 fail closed 校验，错误时修复源数据或受管 schema/实现并补测试，绝不通过手改 JSON 绕开。All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
+Run preflight before delegation. `requirements-v1`、`task-record-v3`、`task-record-v4`（含 `lane-v1`）、`developer-evidence-v1`、`review-evidence-v1` 和 `remote-claim-v1` 都是强制结构门禁：Brief/record/evidence/claim 在对应读写边界会 fail closed 校验，错误时修复源数据或受管 schema/实现并补测试，绝不通过手改 JSON 绕开。All later JSON writes use state/lane commands and generation CAS; never hand-edit the record to manufacture a state.
 
 ## 4. Choose single or isolated lane
 
@@ -62,6 +73,8 @@ For different machines, prefer `remote_preassigned`: Coordinator writes random o
 ## 5. Delegate Developer and Reviewer
 
 Spawn the project `developer` in the assigned worktree with the raw request, record, requirements/acceptance IDs, constraints and ExecPlan. Require `$implement-project-task`. It must create one clean delivery commit, then use `record-developer` with Evidence Contract v1 commands, finite scopes, command-bound claims, and a handoff containing only `claim_ids`, `remaining_risks` and `review_focus`; the workflow generates each sealed `evidence_fingerprint`.
+
+For a V4 task with `checkpoint.mode=required`, do not start independent Review until the current snapshot has a matching observation receipt and a human product-direction decision. Show STATUS / the decision card, not raw JSON. `changes_requested` returns the lane to Developer; a new snapshot needs a new observation.
 
 Spawn a different project `reviewer` against that same worktree, delivery commit and snapshot. Give Developer evidence as untrusted input. Reviewer uses `$review-project-change`, remains read-only, reconstructs the acceptance checklist independently, and records one `confirmed/narrowed/rejected/unverified` assessment for every exact `evidence_fingerprint`. Coordinator records its report using `record-review`; `pass` is allowed only when every claim is `confirmed`.
 

@@ -253,9 +253,9 @@ python .codex-workflow\bin\workflow_check.py doctor
 
 | 证据 | 封存值 |
 | --- | --- |
-| Pilot task record | `/Users/xy/codex-workflow-v4-doc001-gate-pilot-183c69b/.codex-workflow/state/runs/MVP-DOC-001.json`；status `completed`；verification `passed`；Review `pass`；integration `integrated`；generation `16` |
+| Pilot task record | `redacted://pilot-worktree/.codex-workflow/state/runs/MVP-DOC-001.json`；status `completed`；verification `passed`；Review `pass`；integration `integrated`；generation `16` |
 | Pilot closeout | commit `9e1642b42142ddf8533894ba291e86d737319de1`；bundle SHA-256 `6748928484ced15e87e194387c93b4e339b6985710f1ae64f444c045451157f1` |
-| Persistence manifest | `/Users/xy/codex-workflow-v4-evidence/MVP-DOC-001/MVP-DOC-001-persistence-manifest.json`；SHA-256 `2f9bd4690dc98d904e9f94152053fd9398d25ca95b5bc18bf0c54a40b9d03f3c` |
+| Persistence manifest | `redacted://pilot-evidence/MVP-DOC-001-persistence-manifest.json`；SHA-256 `2f9bd4690dc98d904e9f94152053fd9398d25ca95b5bc18bf0c54a40b9d03f3c` |
 | Formal integration | `v4` result commit `2388d2231e7ac69240fc550848883545cd4d4352`；sealed product match `true`；evidence SHA-256 `dcb5dec5fb0e8a59152c7910ff5f05f33c78391c1e4eab7eb5fc90c9b891bcb6` |
 | P3 scope correction | `MVP-DOC-001-evidence-scope-correction-addendum.json`；SHA-256 `d3db67bddd9eaaf6c974d99690e7a9f129d159b2f8e9a01de0b7544889a45442`；历史证据保持不变 |
 | Global verification | 正式 `v4` 在 Python 3.9.6、3.12.13 和 3.13.14 各通过 `86/86` package tests |

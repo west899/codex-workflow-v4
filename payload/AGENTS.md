@@ -1,4 +1,4 @@
-# AGENTS：Codex Workflow V3 入口
+# AGENTS：Codex Workflow V4 入口
 
 <!-- BEGIN CODEX WORKFLOW ENTRY -->
 开始任何项目工作前，依次读取：

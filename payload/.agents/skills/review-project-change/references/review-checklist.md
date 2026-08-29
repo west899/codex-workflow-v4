@@ -14,6 +14,14 @@ Use only the sections relevant to the change. This is a prompt for investigation
 - Is there exactly one `confirmed/narrowed/rejected/unverified` assessment for every Developer claim fingerprint?
 - Is Review `pass` used only when every assessment is `confirmed`? Any other assessment requires `changes_requested`.
 
+## V4 product contract
+
+- Is `focus_slice_id` the human-confirmed core slice, and does supporting work declare `supports_task_id` without claiming the core is done?
+- For `checkpoint.mode=required`, is there a current-snapshot observation receipt and an accepted product direction bound to that receipt?
+- If Reviewer produced a new snapshot, did product-semantic changes request a new observation rather than reuse a stale receipt?
+- If a continuation is claimed, does it satisfy the strict technical-equivalence gate?
+- Do inline guardrails match the live architecture baseline, and does `changes_guardrail` have an accepted architecture decision?
+
 ## Requirement Coverage
 
 - Does every acceptance criterion have an implementation and test or observable proof?

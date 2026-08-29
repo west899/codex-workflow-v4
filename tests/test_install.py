@@ -6,7 +6,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import PACKAGE_ROOT, commit_all, configure_git, install_project, run
+from support import (
+    PACKAGE_ROOT,
+    basic_v3_record,
+    commit_all,
+    configure_git,
+    create_baseline,
+    install_project,
+    run,
+    write_record,
+)
 
 
 class InstallTests(unittest.TestCase):
@@ -141,6 +150,32 @@ class InstallTests(unittest.TestCase):
             self.assertIn("| verified | none |", backlog)
             migrated_record = json.loads((target / ".codex-workflow/state/runs/MVP-001.json").read_text(encoding="utf-8"))
             self.assertEqual(migrated_record["planning"]["exec_plan"], ".codex-workflow/state/plans/MVP-001.md")
+
+    def test_plan_upgrade_lists_inventory_without_guessing_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            base = create_baseline(target)
+            write_record(target, basic_v3_record(base))
+            planned = install_project(target, extra=["--plan-upgrade"])
+            self.assertEqual(planned.returncode, 0, planned.stderr)
+            payload = json.loads(planned.stdout)
+            self.assertEqual(payload["version"], "4.0.0")
+            self.assertEqual(payload["supported_task_record_versions"], [3, 4])
+            self.assertEqual(payload["default_new_task_record_version"], 4)
+            inventory = payload["v4_inventory"]
+            self.assertEqual(inventory["v3_record_ids"], ["MVP-001"])
+            self.assertEqual(inventory["v4_record_ids"], [])
+            self.assertFalse(inventory["architecture_baseline"]["guessed_focus"])
+            self.assertFalse(inventory["architecture_baseline"]["approved"])
+            notes = " ".join(inventory["notes"])
+            self.assertIn("does not guess the current focus", notes)
+            self.assertIn("does not generate or approve", notes)
+            layout = json.loads((target / ".codex-workflow/layout.json").read_text(encoding="utf-8"))
+            self.assertEqual(layout["default_new_task_version"], 4)
+            manifest = json.loads((target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], "4.0.0")
+            self.assertEqual(manifest["supported_task_record_versions"], [3, 4])
 
 
 if __name__ == "__main__":

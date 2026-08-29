@@ -1,9 +1,9 @@
 ---
 name: review-project-change
-description: Independently and read-only review one Codex Workflow V3 lane at an exact delivery commit and snapshot for requirement coverage, correctness, security, regressions, failure handling, and missing tests. Invoke explicitly via $review-project-change.
+description: Independently and read-only review one Codex Workflow V4 lane at an exact delivery commit and snapshot for requirement coverage, correctness, security, regressions, failure handling, and missing tests. Invoke explicitly via $review-project-change.
 ---
 
-# Review Project Change — V3 Reviewer
+# Review Project Change — V4 Reviewer
 
 ## 1. Bind to one lane and snapshot
 
@@ -14,6 +14,8 @@ Read the raw request, approved Requirements/acceptance IDs, project governance, 
 Before trusting Developer rationale, derive a checklist from user-confirmed sources. Examine every canonical changed path and affected caller/data/control/error flow. Run read-only tests when possible. Cover invalid input, boundary/failure paths, retries/concurrency, authorization/privacy/data loss, migration/rollback and compatibility when applicable.
 
 Passing Developer tests are untrusted evidence, not proof. Do not lower acceptance criteria to match implementation. Do not edit files or fix findings.
+
+For a V4 record also reconstruct: current `focus_slice_id`, whether supporting work claims core completion, whether a required product checkpoint is accepted for this snapshot, whether any continuation is current, and whether architecture guardrails match the live baseline. Reject a Review `pass` that treats an unaccepted required checkpoint as product direction confirmed.
 
 Reconstruct every Evidence Contract v1 `evidence_fingerprint` from the sealed snapshot, full normalized claim, full referenced finite scope and full supporting commands sorted by command ID. Reject aggregate scope targets `all`, `*`, `repository_wide` and `all_dry_runs`; a full canonical product-tree scope requires `repository_tree` target `.`, exclusion `mutable_workflow_control`, and supporting commands with `cwd="."`, while exact product-tree identity comes from the snapshot. Confirm that Developer handoff contains only `claim_ids`, `remaining_risks` and `review_focus` and that its claim IDs exactly match the submitted claims.
 

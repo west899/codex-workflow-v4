@@ -1,9 +1,11 @@
 ---
 name: implement-project-task
-description: Implement one authorized Codex Workflow V3 task inside its assigned lane/worktree, stay within allowed paths and resources, create a sealed delivery commit, run real verification, and submit generation-safe Developer evidence. Use only for the write-capable Developer role. Invoke explicitly via $implement-project-task.
+description: Implement one authorized Codex Workflow V4 task inside its assigned lane/worktree, stay within allowed paths and resources, create a sealed delivery commit, run real verification, and submit generation-safe Developer evidence. Use only for the write-capable Developer role. Invoke explicitly via $implement-project-task.
 ---
 
-# Implement Project Task — V3 Developer
+# Implement Project Task — V4 Developer
+
+Build the smallest observable core result first. If a V4 trigger appears—unclear product behavior, data/API contract, architecture boundary, or irreversible default—stop and ask Coordinator to `request-decision`. Do not silently turn an assumption into a public contract.
 
 ## 1. Verify lane identity before editing
 
@@ -25,7 +27,7 @@ Inspect real entry points, callers, tests, Git state and repository commands. Pe
 
 ## 3. Implement depth-first
 
-Build the smallest end-to-end behavior, update risk-proportional tests with the implementation, validate inputs and partial failure, preserve unrelated changes, and maintain recoverable commits. Do not write global governance to resolve your own process suggestion.
+Build the smallest end-to-end observable behavior before supporting platform work. Update risk-proportional tests with the implementation, validate inputs and partial failure, preserve unrelated changes, and maintain recoverable commits. Do not write global governance to resolve your own process suggestion. Record known placeholders in the delivery contract instead of promoting temporary code into shared infrastructure.
 
 Heartbeat at meaningful long-task boundaries. A heartbeat only renews a token/generation-matching runtime lease; failure means stop claiming ownership and ask Coordinator to inspect split-brain/stale state.
 
