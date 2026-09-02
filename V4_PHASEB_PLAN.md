@@ -10,14 +10,14 @@
 | Revision | `2` |
 | Normative fingerprint | `70200558cc4e063acec1dd6e37cac658e3cec888699a8cca584b13e33c53a9ae` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
-| 计划状态 | `approved_not_started` |
-| 实施授权 | `implementation_not_authorized` |
+| 计划状态 | `executing` |
+| 实施授权 | `phase_b_authorized_complete` / 用户于 2026-09-02 授权按 revision 2 一口气完成 PB-002–009 |
 | 目标分支 | `v4` |
 | Phase A 基线 | `phase_a_passed` / Plan ID `V4-PHASEA` revision `1` / fingerprint `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | 取代 | revision `1` / fingerprint `c28f862ce5651e64cd44f6434b1b07c27f413b6829548c141ecd5a574a8ee0c7` |
 | 设计输入 | `改进建议.md` 第 6.4、7、10、11、12、15.4、16、18–19、23–24 节；`V4_PHASEA_PLAN.md` 第 3.2 节延后表 |
-| 当前允许动作 | 记录本批准；等待人类整阶段或里程碑实施授权 |
-| 当前禁止动作 | 实施 Phase B/C；开始 PB-002；修改 Phase A 冻结语义；新增 decision kind、主状态机或第二套 checkpoint 命令 |
+| 当前允许动作 | 按第 5.2 节连接标准串行完成 PB-002–009 |
+| 当前禁止动作 | 实施 Phase C；并行 `in_progress`；修改第 2–10 节；新增 decision kind、主状态机或第二套 checkpoint 命令 |
 
 规范指纹校验命令：
 

@@ -792,6 +792,7 @@
         "decision_fingerprint": {"$ref": "#/$defs/sha256"},
         "decision_state_fingerprint": {"$ref": "#/$defs/sha256"},
         "resolution": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/checkpoint_resolution"}]},
+        "resolution_history": {"type": "array", "items": {"$ref": "#/$defs/checkpoint_resolution"}},
         "deferrals": {"type": "array", "items": {"$ref": "#/$defs/deferral"}},
         "contract_material": {"$ref": "#/$defs/contract_fingerprint_material"},
         "continuations": {"type": "array", "items": {"$ref": "#/$defs/observation_continuation"}}
@@ -850,6 +851,7 @@
         "decision_fingerprint": {"$ref": "#/$defs/sha256"},
         "decision_state_fingerprint": {"$ref": "#/$defs/sha256"},
         "resolution": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/selected_resolution"}]},
+        "resolution_history": {"type": "array", "items": {"$ref": "#/$defs/selected_resolution"}},
         "deferrals": {"type": "array", "items": {"$ref": "#/$defs/deferral"}}
       }
     },
@@ -905,6 +907,7 @@
         "decision_fingerprint": {"$ref": "#/$defs/sha256"},
         "decision_state_fingerprint": {"$ref": "#/$defs/sha256"},
         "resolution": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/selected_resolution"}]},
+        "resolution_history": {"type": "array", "items": {"$ref": "#/$defs/selected_resolution"}},
         "deferrals": {"type": "array", "items": {"$ref": "#/$defs/deferral"}}
       }
     },
@@ -962,6 +965,7 @@
         "decision_fingerprint": {"$ref": "#/$defs/sha256"},
         "decision_state_fingerprint": {"$ref": "#/$defs/sha256"},
         "resolution": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/selected_resolution"}]},
+        "resolution_history": {"type": "array", "items": {"$ref": "#/$defs/selected_resolution"}},
         "deferrals": {"type": "array", "items": {"$ref": "#/$defs/deferral"}}
       }
     },
@@ -1371,6 +1375,8 @@
         "completed": {"type": "boolean"},
         "completed_by": {"type": ["string", "null"]},
         "completed_at": {"type": ["string", "null"]},
+        "not_required": {"type": "boolean"},
+        "not_required_reason": {"type": ["string", "null"]},
         "questions": {
           "type": "object",
           "additionalProperties": false,

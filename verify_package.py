@@ -82,6 +82,7 @@ REQUIRED = {
     "tests/test_v4_status.py",
     "tests/test_v4_closeout.py",
     "tests/test_v4_lifecycle.py",
+    "tests/test_v4_phase_b.py",
     "V4_PHASEA_PLAN.md",
     "V4_PHASE0_PILOT.md",
     "V4_PHASEA_CORE_SLICE.md",

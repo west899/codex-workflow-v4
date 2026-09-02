@@ -235,10 +235,13 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
         },
         "observation_entrypoints": [],
         "governance_customizations": [],
+        "backlog_focus_metadata": False,
+        "guardrail_registry": {"present": False, "status": None},
         "notes": [
             "Upgrade does not generate or approve a project architecture baseline.",
             "Upgrade does not guess the current focus core slice.",
             "Upgrade lists customized project-owned governance files and does not overwrite them.",
+            "Upgrade lists Backlog focus metadata and guardrail registry status without approving them.",
             "Existing V3 tasks keep V3 closeout semantics; new tasks should use task-record-v4.",
         ],
     }
@@ -277,6 +280,31 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
                 inventory["pending_closeout_task_ids"].append(task_id)
     inventory["architecture_baseline"] = _architecture_baseline_inventory(target_root)
     inventory["governance_customizations"] = _governance_customizations(target_root)
+    backlog = target_root / ".codex-workflow/state/MVP_BACKLOG.md"
+    if backlog.is_file():
+        try:
+            backlog_text = backlog.read_text(encoding="utf-8")
+        except OSError:
+            backlog_text = ""
+        inventory["backlog_focus_metadata"] = "<!-- CODEX_BACKLOG_FOCUS_START -->" in backlog_text
+    decisions = target_root / ".codex-workflow/governance/DECISIONS.md"
+    if decisions.is_file():
+        try:
+            decisions_text = decisions.read_text(encoding="utf-8")
+        except OSError:
+            decisions_text = ""
+        present = "<!-- CODEX_GUARDRAIL_REGISTRY_START -->" in decisions_text
+        status = None
+        if present:
+            try:
+                start = decisions_text.split("<!-- CODEX_GUARDRAIL_REGISTRY_START -->", 1)[1]
+                raw = start.split("<!-- CODEX_GUARDRAIL_REGISTRY_END -->", 1)[0]
+                payload = json.loads(raw)
+                if isinstance(payload, dict) and isinstance(payload.get("status"), str):
+                    status = payload.get("status")
+            except (ValueError, json.JSONDecodeError, IndexError):
+                status = "invalid"
+        inventory["guardrail_registry"] = {"present": present, "status": status}
     try:
         common = git_common_dir(target_root)
     except (OSError, subprocess.CalledProcessError, InstallError):

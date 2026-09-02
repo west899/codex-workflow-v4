@@ -20,6 +20,8 @@ from workflow_common import (
     WorkflowDataError,
     WorkflowJSONResourceError,
     allowed_path,
+    apply_supersede_resolution,
+    assert_v4_decision_write_allowed,
     canonical_delivery,
     block_backlog_for_requirements,
     closeout_state_fingerprint,
@@ -62,6 +64,7 @@ from workflow_common import (
     validate_v4_live_architecture_baseline,
     validate_v4_live_dependencies,
     validate_v4_live_focus_relationship,
+    validate_v4_retrospective,
     validate_v4_live_requirements_baseline,
     validate_v4_observation_receipt,
     v4_dependency_snapshot,
@@ -509,10 +512,10 @@ def request_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                     "The current snapshot already has a product checkpoint; "
                     "resolve it before creating a new delivery snapshot."
                 )
-        if (record.get("integration") or {}).get("status") != "not_ready":
-            raise StateError(
-                "New V4 decisions are refused after integration leaves not_ready; abandon and rebuild explicitly."
-            )
+        try:
+            assert_v4_decision_write_allowed((record.get("integration") or {}).get("status"))
+        except WorkflowDataError as exc:
+            raise StateError(str(exc)) from exc
         fault_injection("v4-request-before-append")
         decisions.append(decision)
 
@@ -524,6 +527,16 @@ def request_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         mutation,
         allowed_versions=(4,),
     )
+
+
+def _split_supersede(supplied: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    payload = dict(supplied)
+    if "supersede" not in payload:
+        return payload, False
+    flag = payload.pop("supersede")
+    if flag not in {True, False}:
+        raise StateError("Decision supersede must be a boolean.")
+    return payload, flag is True
 
 
 def _checkpoint_resolution(
@@ -598,6 +611,7 @@ def _selected_resolution(decision: dict[str, Any], supplied: dict[str, Any]) -> 
 
 def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     supplied = read_json(args.resolution_json, name="decision resolution")
+    supplied, supersede = _split_supersede(supplied)
     if not re.fullmatch(r"[0-9a-f]{64}", args.expected_fingerprint):
         raise StateError("--expected-fingerprint must be a full SHA-256 hex digest.")
 
@@ -637,9 +651,20 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 if resolution in deferrals:
                     return
             elif decision.get("status") == "resolved":
-                if decision.get("resolution") == resolution:
+                try:
+                    result = apply_supersede_resolution(
+                        decision, resolution, supersede=supersede
+                    )
+                except WorkflowDataError as exc:
+                    raise StateError(str(exc)) from exc
+                if result == "idempotent":
                     return
-                raise StateError("Conflicting checkpoint answer requires a future supersede flow.")
+                if integration_status != "not_ready":
+                    raise StateError(
+                        "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
+                    )
+                decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                return
             observation_identity = validate_v4_observation_receipt(
                 record, decision.get("observation_receipt")
             )
@@ -672,9 +697,20 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 raise StateError("Decision Requirements baseline is stale.")
             resolution = _selected_resolution(decision, supplied)
             if decision.get("status") == "resolved":
-                if decision.get("resolution") == resolution:
+                try:
+                    result = apply_supersede_resolution(
+                        decision, resolution, supersede=supersede
+                    )
+                except WorkflowDataError as exc:
+                    raise StateError(str(exc)) from exc
+                if result == "idempotent":
                     return
-                raise StateError("Conflicting decision answer requires a future supersede flow.")
+                if integration_status != "not_ready":
+                    raise StateError(
+                        "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
+                    )
+                decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                return
             if integration_status != "not_ready":
                 raise StateError(
                     "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
@@ -1166,8 +1202,10 @@ def complete_task(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if not isinstance(updates, list) or not isinstance(retrospective, dict):
             raise StateError("Acceptance JSON requires acceptance array and process_retrospective object.")
         if record.get("version") == 4:
-            if retrospective.get("completed") is not True:
-                raise StateError("V4 process retrospective must be completed before task completion.")
+            try:
+                validate_v4_retrospective(record, retrospective)
+            except WorkflowDataError as exc:
+                raise StateError(str(exc)) from exc
             expected_ids = [
                 item.get("id")
                 for item in record.get("acceptance", [])

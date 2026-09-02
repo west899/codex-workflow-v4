@@ -15,7 +15,7 @@ Before trusting Developer rationale, derive a checklist from user-confirmed sour
 
 Passing Developer tests are untrusted evidence, not proof. Do not lower acceptance criteria to match implementation. Do not edit files or fix findings.
 
-For a V4 record also reconstruct: current `focus_slice_id`, whether supporting work claims core completion, whether a required product checkpoint is accepted for this snapshot, whether any continuation is current, and whether architecture guardrails match the live baseline. Reject a Review `pass` that treats an unaccepted required checkpoint as product direction confirmed.
+For a V4 record also reconstruct: current `focus_slice_id`, whether supporting work claims core completion, whether a required product checkpoint is accepted for this snapshot, whether any continuation is current, whether architecture guardrails match the live baseline, and whether `declared_impact` matches independently classified paths plus fitness evidence. Reject a Review `pass` that treats an unaccepted required checkpoint as product direction confirmed.
 
 Reconstruct every Evidence Contract v1 `evidence_fingerprint` from the sealed snapshot, full normalized claim, full referenced finite scope and full supporting commands sorted by command ID. Reject aggregate scope targets `all`, `*`, `repository_wide` and `all_dry_runs`; a full canonical product-tree scope requires `repository_tree` target `.`, exclusion `mutable_workflow_control`, and supporting commands with `cwd="."`, while exact product-tree identity comes from the snapshot. Confirm that Developer handoff contains only `claim_ids`, `remaining_risks` and `review_focus` and that its claim IDs exactly match the submitted claims.
 

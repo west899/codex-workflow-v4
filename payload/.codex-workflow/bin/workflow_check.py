@@ -25,6 +25,7 @@ from workflow_common import (
     allowed_path,
     architecture_baseline_fingerprint,
     backlog_rows,
+    maybe_validate_v4_backlog_focus,
     canonical_delivery,
     closeout_state_fingerprint,
     current_requirements_baseline,
@@ -53,6 +54,8 @@ from workflow_common import (
     validate_v4_live_dependencies,
     validate_v4_live_focus_relationship,
     validate_v4_live_requirements_baseline,
+    validate_rolling_requirements,
+    validate_v4_retrospective,
     v4_action_blockers,
     workflow_status_is_current,
 )
@@ -286,6 +289,11 @@ def requirements_gate(paths: WorkflowPaths, path: Path, checks: Checks) -> Any:
             checks.require_text(question.get("resolution_target"), f"requirements.open_questions[{index}].resolution_target")
         elif status not in {"open", "resolved"}:
             checks.error(f"requirements.open_questions[{index}].status is invalid.")
+    try:
+        validate_rolling_requirements(data)
+    except WorkflowDataError as exc:
+        checks.error(str(exc))
+
     if rounds and rounds[-1].get("result") != "confirmed":
         checks.error("The final calibration round must be confirmed.")
     for index, round_item in enumerate(rounds):
@@ -478,6 +486,11 @@ def _v4_contract_gate(
 
     capture(lambda: validate_v4_live_requirements_baseline(paths, record))
     capture(lambda: validate_v4_live_focus_relationship(paths, record))
+    capture(
+        lambda: maybe_validate_v4_backlog_focus(
+            paths.tracked("backlog").read_text(encoding="utf-8"), record
+        )
+    )
     capture(lambda: validate_v4_live_architecture_baseline(paths, record))
     capture(lambda: validate_v4_live_dependencies(paths, record))
     contract = record.get("delivery_contract") or {}
@@ -849,7 +862,12 @@ def task_gate(paths: WorkflowPaths, record: dict[str, Any], checks: Checks, *, f
                     )
 
     retrospective = record.get("process_retrospective")
-    if not isinstance(retrospective, dict) or retrospective.get("completed") is not True:
+    if record.get("version") == 4:
+        try:
+            validate_v4_retrospective(record, retrospective if isinstance(retrospective, dict) else {})
+        except WorkflowDataError as exc:
+            checks.error(str(exc))
+    elif not isinstance(retrospective, dict) or retrospective.get("completed") is not True:
         checks.error("Process retrospective must be completed.")
     proposals = record.get("rule_proposals")
     if not isinstance(proposals, list):

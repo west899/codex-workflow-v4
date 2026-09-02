@@ -46,6 +46,9 @@ Before authorization, confirm with the human:
 - the observation recipe (UI / API / CLI / data) and what is real vs temporary;
 - any blocking product or architecture decision card (2–3 existing options, no invented options);
 - the project architecture baseline is approved; do not generate or approve a baseline yourself.
+- Backlog focus metadata lists `kind` / `focus_slice_id` / `supports_task_id` and stays within the unconfirmed-direction core-slice WIP;
+- future candidates stay out of the approved Must Requirements contract;
+- pending/queued recovery is abandon-only (no dequeue/reopen, no forged done).
 
 Fill source and requirements baseline, raw request, scope in/out, allowed paths, conservative resource keys, acceptance criteria, risk flags, planning depth, exact base commit, `delivery_contract`, and implementation authorization.
 

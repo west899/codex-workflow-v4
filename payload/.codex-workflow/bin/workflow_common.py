@@ -33,7 +33,21 @@ from workflow_paths import (
 REQUIREMENTS_START = "<!-- CODEX_REQUIREMENTS_JSON_START -->"
 REQUIREMENTS_END = "<!-- CODEX_REQUIREMENTS_JSON_END -->"
 REQUIREMENTS_BASELINE_MARKER = "CODEX_REQUIREMENTS_BASELINE"
+BACKLOG_FOCUS_MARKER = "CODEX_BACKLOG_FOCUS"
+GUARDRAIL_REGISTRY_MARKER = "CODEX_GUARDRAIL_REGISTRY"
 STATUS_MARKER = "CODEX_WORKFLOW_STATUS_JSON"
+BACKLOG_FIXED_HEADER = [
+    "ID",
+    "优先级",
+    "可观察交付结果",
+    "依赖",
+    "验收来源",
+    "风险",
+    "状态",
+    "阻塞类型",
+]
+DEFAULT_UNCONFIRMED_CORE_WIP = 1
+PHASE_B_PENDING_QUEUED_RECOVERY = "abandon_only"
 HEX_OID = re.compile(r"^[0-9a-f]{40,64}$")
 REQUIREMENT_ID = re.compile(r"\bREQ-[A-Za-z0-9._-]+\b")
 
@@ -4299,6 +4313,381 @@ def backlog_rows(text: str) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def backlog_header_cells(text: str) -> list[str] | None:
+    for line in text.splitlines():
+        cells = split_markdown_row(line)
+        if cells and cells[0] == "ID":
+            return cells
+    return None
+
+
+def validate_backlog_fixed_columns(text: str) -> None:
+    """Fail closed if existing Backlog identity columns were inserted or reordered."""
+
+    header = backlog_header_cells(text)
+    if header is None:
+        raise WorkflowDataError("Backlog is missing the fixed column header row.")
+    expected = BACKLOG_FIXED_HEADER
+    if len(header) < len(expected):
+        raise WorkflowDataError("Backlog fixed columns were removed.")
+    if header[: len(expected)] != expected:
+        raise WorkflowDataError("Backlog fixed columns were inserted or reordered.")
+
+
+def parse_backlog_focus_metadata(text: str) -> dict[str, Any]:
+    payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
+    if payload.get("workflow_schema_version") != 4:
+        raise WorkflowDataError("Backlog focus metadata workflow_schema_version must be 4.")
+    wip = payload.get("wip")
+    if not isinstance(wip, dict):
+        raise WorkflowDataError("Backlog focus metadata wip must be an object.")
+    limit = wip.get("unconfirmed_core_slice_limit", DEFAULT_UNCONFIRMED_CORE_WIP)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise WorkflowDataError("Backlog WIP unconfirmed_core_slice_limit must be an integer >= 1.")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise WorkflowDataError("Backlog focus metadata items must be an array.")
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise WorkflowDataError(f"Backlog focus items[{index}] must be an object.")
+        task_id = item.get("id")
+        kind = item.get("kind")
+        focus_id = item.get("focus_slice_id")
+        supports_id = item.get("supports_task_id")
+        confirmed = item.get("direction_confirmed")
+        if not isinstance(task_id, str) or not re.fullmatch(r"(?:MVP|OPS)-[A-Za-z0-9._-]+", task_id):
+            raise WorkflowDataError(f"Backlog focus items[{index}].id is invalid.")
+        if task_id in seen:
+            raise WorkflowDataError(f"Backlog focus metadata has duplicate id: {task_id}.")
+        seen.add(task_id)
+        if kind not in {"core_slice", "supporting", "hardening", "governance"}:
+            raise WorkflowDataError(f"Backlog focus {task_id} kind is invalid.")
+        if not isinstance(focus_id, str) or not focus_id:
+            raise WorkflowDataError(f"Backlog focus {task_id} is missing focus_slice_id.")
+        if not isinstance(confirmed, bool):
+            raise WorkflowDataError(f"Backlog focus {task_id} direction_confirmed must be boolean.")
+        if kind == "core_slice":
+            if focus_id != task_id:
+                raise WorkflowDataError("Backlog core slice focus_slice_id must equal its id.")
+            if supports_id not in {None, task_id}:
+                raise WorkflowDataError("Backlog core slice supports_task_id must be null or itself.")
+        elif kind == "supporting":
+            if not isinstance(supports_id, str) or not supports_id:
+                raise WorkflowDataError(f"Backlog supporting {task_id} is missing supports_task_id.")
+            if supports_id != focus_id:
+                raise WorkflowDataError(
+                    f"Backlog supporting {task_id} must bind supports_task_id to the same focus."
+                )
+        elif supports_id not in {None, focus_id}:
+            raise WorkflowDataError(
+                f"Backlog {kind} {task_id} supports_task_id must be null or match focus_slice_id."
+            )
+        normalized.append(
+            {
+                "id": task_id,
+                "kind": kind,
+                "focus_slice_id": focus_id,
+                "supports_task_id": supports_id,
+                "direction_confirmed": confirmed,
+            }
+        )
+    unconfirmed = [
+        item["id"]
+        for item in normalized
+        if item["kind"] == "core_slice" and item["direction_confirmed"] is False
+    ]
+    if len(unconfirmed) > limit:
+        raise WorkflowDataError(
+            "Backlog WIP overflow: "
+            f"{len(unconfirmed)} unconfirmed-direction core slices exceed limit {limit}."
+        )
+    return {
+        "wip": {"unconfirmed_core_slice_limit": limit},
+        "items": normalized,
+        "unconfirmed_core_slice_ids": unconfirmed,
+    }
+
+
+def validate_contract_backlog_focus(
+    record: dict[str, Any], metadata: dict[str, Any]
+) -> None:
+    if record.get("version") != 4:
+        return
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    task_id = record.get("task_id")
+    items = {
+        item["id"]: item
+        for item in metadata.get("items", [])
+        if isinstance(item, dict)
+    }
+    item = items.get(task_id) if isinstance(task_id, str) else None
+    if item is None:
+        raise WorkflowDataError(f"V4 task {task_id} is missing from Backlog focus metadata.")
+    if item.get("kind") != contract.get("kind"):
+        raise WorkflowDataError(f"V4 task {task_id} kind does not match Backlog focus metadata.")
+    if item.get("focus_slice_id") != contract.get("focus_slice_id"):
+        raise WorkflowDataError(
+            f"V4 task {task_id} focus_slice_id does not match Backlog focus metadata."
+        )
+    if item.get("kind") == "supporting" and item.get("supports_task_id") != contract.get(
+        "supports_task_id"
+    ):
+        raise WorkflowDataError(
+            f"V4 supporting {task_id} supports_task_id does not match Backlog focus metadata."
+        )
+
+
+def validate_v4_backlog_focus(backlog_text: str, record: dict[str, Any] | None = None) -> dict[str, Any]:
+    validate_backlog_fixed_columns(backlog_text)
+    metadata = parse_backlog_focus_metadata(backlog_text)
+    if record is not None:
+        validate_contract_backlog_focus(record, metadata)
+    return metadata
+
+
+def maybe_validate_v4_backlog_focus(
+    backlog_text: str, record: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    start = f"<!-- {BACKLOG_FOCUS_MARKER}_START -->"
+    if start not in backlog_text:
+        return None
+    validate_backlog_fixed_columns(backlog_text)
+    metadata = parse_backlog_focus_metadata(backlog_text)
+    if record is not None:
+        items = {
+            item["id"]: item
+            for item in metadata.get("items", [])
+            if isinstance(item, dict)
+        }
+        if isinstance(record.get("task_id"), str) and record.get("task_id") in items:
+            validate_contract_backlog_focus(record, metadata)
+    return metadata
+
+
+def validate_rolling_requirements(brief: dict[str, Any]) -> None:
+    """Keep future candidates out of the approved Must contract without changing V1 fingerprint."""
+
+    if not isinstance(brief, dict):
+        raise WorkflowDataError("Rolling Requirements brief must be an object.")
+    requirements = brief.get("requirements") if isinstance(brief.get("requirements"), dict) else {}
+    must_groups = (
+        ("users", requirements.get("users")),
+        ("outcomes", requirements.get("outcomes")),
+        ("flows", requirements.get("flows")),
+        ("non_goals", requirements.get("non_goals")),
+        ("scenarios", requirements.get("scenarios")),
+        ("capabilities", requirements.get("capabilities")),
+    )
+    for group_name, group in must_groups:
+        if not isinstance(group, list):
+            continue
+        for index, item in enumerate(group):
+            if not isinstance(item, dict):
+                continue
+            if item.get("horizon") != "future_candidate":
+                continue
+            if group_name == "capabilities" and item.get("priority") != "must":
+                continue
+            if group_name == "scenarios" and item.get("applicability") == "not_applicable":
+                continue
+            raise WorkflowDataError(
+                f"Future candidate {item.get('id') or group_name + '[' + str(index) + ']'} "
+                "cannot enter the approved Must contract."
+            )
+
+
+def v4_effective_risk_tier(record: dict[str, Any]) -> str:
+    planning = record.get("planning") if isinstance(record.get("planning"), dict) else {}
+    risk = record.get("risk") if isinstance(record.get("risk"), dict) else {}
+    level = planning.get("level")
+    tier = {"small": 1, "medium": 2, "large": 3}.get(level, 1)
+    if risk.get("product_scope") is True:
+        tier = max(tier, 2)
+    if any(
+        risk.get(flag) is True
+        for flag in (
+            "sensitive_data",
+            "destructive_change",
+            "irreversible_architecture",
+            "production_release",
+        )
+    ):
+        tier = 3
+    return {1: "small", 2: "medium", 3: "high"}[tier]
+
+
+def v4_retrospective_not_required_allowed(record: dict[str, Any], retrospective: dict[str, Any]) -> bool:
+    if v4_effective_risk_tier(record) != "small":
+        return False
+    risk = record.get("risk") if isinstance(record.get("risk"), dict) else {}
+    if any(risk.get(flag) is True for flag in risk):
+        return False
+    questions = retrospective.get("questions") if isinstance(retrospective.get("questions"), dict) else {}
+    if any(questions.get(flag) is True for flag in questions):
+        return False
+    return True
+
+
+def validate_v4_retrospective(record: dict[str, Any], retrospective: dict[str, Any]) -> None:
+    if not isinstance(retrospective, dict):
+        raise WorkflowDataError("V4 process retrospective must be an object.")
+    not_required = retrospective.get("not_required")
+    if not_required is True:
+        reason = retrospective.get("not_required_reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise WorkflowDataError("V4 retrospective not_required requires a non-empty reason.")
+        if not v4_retrospective_not_required_allowed(record, retrospective):
+            raise WorkflowDataError(
+                "V4 retrospective not_required is only allowed for small/no-trigger tasks."
+            )
+        if retrospective.get("completed") is True:
+            raise WorkflowDataError("V4 retrospective cannot be both completed and not_required.")
+        return
+    if retrospective.get("completed") is not True:
+        raise WorkflowDataError("V4 process retrospective must be completed before task completion.")
+
+
+def classify_independent_architecture_impact(changed_paths: Iterable[str]) -> str:
+    if v4_architecture_sensitive_paths(changed_paths):
+        return "changes_guardrail"
+    return "none"
+
+
+def parse_guardrail_registry(text: str) -> dict[str, Any]:
+    payload = read_embedded_json(text, GUARDRAIL_REGISTRY_MARKER)
+    if payload.get("workflow_schema_version") != 4:
+        raise WorkflowDataError("Guardrail registry workflow_schema_version must be 4.")
+    status = payload.get("status")
+    if status not in {"unconfigured", "approved"}:
+        raise WorkflowDataError("Guardrail registry status must be unconfigured or approved.")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise WorkflowDataError("Guardrail registry items must be an array.")
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise WorkflowDataError(f"Guardrail registry items[{index}] must be an object.")
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not re.fullmatch(r"ARCH-G-[A-Za-z0-9._-]+", item_id):
+            raise WorkflowDataError(f"Guardrail registry items[{index}].id is invalid.")
+        if item_id in seen:
+            raise WorkflowDataError(f"Guardrail registry has duplicate id: {item_id}.")
+        seen.add(item_id)
+        for field in ("source", "owner", "statement"):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise WorkflowDataError(f"Guardrail {item_id} is missing {field}.")
+        refs = item.get("fitness_refs")
+        if not isinstance(refs, list) or not refs or any(
+            not isinstance(ref, str) or not ref.strip() for ref in refs
+        ):
+            raise WorkflowDataError(f"Guardrail {item_id} is missing fitness_refs.")
+    return payload
+
+
+def validate_independent_architecture_impact(
+    record: dict[str, Any],
+    changed_paths: Iterable[str],
+    registry: dict[str, Any] | None = None,
+) -> str:
+    independent = classify_independent_architecture_impact(changed_paths)
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    architecture = contract.get("architecture") if isinstance(contract.get("architecture"), dict) else {}
+    declared = architecture.get("declared_impact")
+    if independent == "changes_guardrail" and declared != "changes_guardrail":
+        raise WorkflowDataError(
+            "Independent architecture impact is changes_guardrail; declared_impact cannot be trusted."
+        )
+    if declared == "within_guardrails":
+        guardrails = architecture.get("guardrails")
+        if not isinstance(guardrails, list) or not guardrails:
+            raise WorkflowDataError("within_guardrails requires fitness evidence on inline guardrails.")
+        for item in guardrails:
+            if not isinstance(item, dict):
+                raise WorkflowDataError("Inline architecture guardrail must be an object.")
+            refs = item.get("verification_refs")
+            if not isinstance(refs, list) or not refs:
+                raise WorkflowDataError(
+                    f"Guardrail {item.get('id')} is missing fitness/verification evidence."
+                )
+            if registry and registry.get("status") == "approved":
+                known = {
+                    entry.get("id")
+                    for entry in registry.get("items", [])
+                    if isinstance(entry, dict)
+                }
+                if item.get("id") not in known:
+                    raise WorkflowDataError(
+                        f"Guardrail {item.get('id')} is not in the approved project registry."
+                    )
+    if declared == "changes_guardrail":
+        decisions = [
+            item
+            for item in record.get("decision_log", [])
+            if isinstance(item, dict)
+            and item.get("kind") == "architecture_decision"
+            and item.get("status") == "resolved"
+        ]
+        if not decisions:
+            raise WorkflowDataError(
+                "changes_guardrail requires an accepted architecture decision."
+            )
+    return independent
+
+
+def assert_v4_decision_write_allowed(integration_status: str) -> None:
+    if integration_status != "not_ready":
+        raise WorkflowDataError(
+            "New V4 decisions are refused after integration leaves not_ready; abandon and rebuild explicitly."
+        )
+
+
+def apply_supersede_resolution(
+    decision: dict[str, Any],
+    resolution: dict[str, Any],
+    *,
+    supersede: bool,
+) -> str:
+    """Same-fingerprint retry is a no-op; conflicting answers require explicit supersede."""
+
+    if decision.get("status") == "resolved":
+        if decision.get("resolution") == resolution:
+            return "idempotent"
+        if not supersede:
+            raise WorkflowDataError("Conflicting decision answer requires explicit supersede.")
+        history = decision.setdefault("resolution_history", [])
+        if not isinstance(history, list):
+            raise WorkflowDataError("Decision resolution_history is invalid.")
+        history.append(decision["resolution"])
+        decision["resolution"] = resolution
+        return "superseded"
+    decision["status"] = "resolved"
+    decision["resolution"] = resolution
+    return "resolved"
+
+
+def phase_b_pending_queued_recovery(command: str, integration_status: str) -> str:
+    """Sealed abandon-only recovery. Dequeue/reopen and done forgery fail closed."""
+
+    if command in {"dequeue", "reopen"}:
+        raise WorkflowDataError(
+            "Phase B pending/queued recovery is abandon-only; dequeue/reopen is refused."
+        )
+    if command in {"mark-done", "forge-done"} and integration_status in {
+        "pending",
+        "queued",
+        "merged_pending_closeout",
+    }:
+        raise WorkflowDataError("Pending/queued recovery cannot forge done.")
+    if command != "abandon":
+        raise WorkflowDataError(
+            f"Unsupported pending/queued recovery command: {command}."
+        )
+    return PHASE_B_PENDING_QUEUED_RECOVERY
 
 
 def local_bootstrap_policy_gate(

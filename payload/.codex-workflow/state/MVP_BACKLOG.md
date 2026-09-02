@@ -12,6 +12,22 @@
 }
 <!-- CODEX_REQUIREMENTS_BASELINE_END -->
 
+<!-- CODEX_BACKLOG_FOCUS_START -->
+{
+  "workflow_schema_version": 4,
+  "wip": {"unconfirmed_core_slice_limit": 1},
+  "items": [
+    {
+      "id": "MVP-001",
+      "kind": "core_slice",
+      "focus_slice_id": "MVP-001",
+      "supports_task_id": null,
+      "direction_confirmed": false
+    }
+  ]
+}
+<!-- CODEX_BACKLOG_FOCUS_END -->
+
 > 状态：draft｜更新：{{INSTALL_DATE}}｜目标范围来源：`../../governance/PROJECT.md`
 
 ## 发布门

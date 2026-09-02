@@ -12,6 +12,22 @@
 }
 <!-- CODEX_REQUIREMENTS_BASELINE_END -->
 
+<!-- CODEX_BACKLOG_FOCUS_START -->
+{
+  "workflow_schema_version": 4,
+  "wip": {"unconfirmed_core_slice_limit": 1},
+  "items": [
+    {
+      "id": "MVP-001",
+      "kind": "core_slice",
+      "focus_slice_id": "MVP-001",
+      "supports_task_id": null,
+      "direction_confirmed": false
+    }
+  ]
+}
+<!-- CODEX_BACKLOG_FOCUS_END -->
+
 > 只有 `requirements-gate` 通过、PROJECT 与本区块逐项一致后，才能批准 ready 项。
 
 ## 发布目标与发布门

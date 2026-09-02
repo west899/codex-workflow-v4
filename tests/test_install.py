@@ -169,6 +169,11 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(inventory["v3_record_ids"], ["MVP-001"])
             self.assertEqual(inventory["v4_record_ids"], [])
             self.assertEqual(inventory["governance_customizations"], [])
+            self.assertTrue(inventory["backlog_focus_metadata"])
+            self.assertEqual(
+                inventory["guardrail_registry"],
+                {"present": True, "status": "unconfigured"},
+            )
             self.assertFalse(inventory["architecture_baseline"]["guessed_focus"])
             self.assertFalse(inventory["architecture_baseline"]["approved"])
             notes = " ".join(inventory["notes"])
