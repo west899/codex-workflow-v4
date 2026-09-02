@@ -12,12 +12,14 @@ from workflow_common import (  # noqa: E402
     apply_supersede_resolution,
     assert_v4_decision_write_allowed,
     classify_independent_architecture_impact,
+    maybe_validate_v4_backlog_focus,
     parse_guardrail_registry,
     phase_b_pending_queued_recovery,
     validate_backlog_fixed_columns,
     validate_contract_backlog_focus,
     validate_independent_architecture_impact,
     validate_rolling_requirements,
+    validate_v4_architecture_delivery,
     validate_v4_backlog_focus,
     validate_v4_retrospective,
     v4_effective_risk_tier,
@@ -142,6 +144,22 @@ class PhaseBBacklogTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(WorkflowDataError, "kind does not match"):
             validate_contract_backlog_focus(record, metadata)
+
+    def test_live_helper_rejects_v4_task_absent_from_metadata(self) -> None:
+        text = _backlog()
+        omitted = {
+            "version": 4,
+            "task_id": "MVP-002",
+            "delivery_contract": {
+                "kind": "core_slice",
+                "focus_slice_id": "MVP-002",
+                "supports_task_id": None,
+            },
+        }
+        with self.assertRaisesRegex(WorkflowDataError, "missing from Backlog focus metadata"):
+            maybe_validate_v4_backlog_focus(text, omitted)
+        with self.assertRaisesRegex(WorkflowDataError, "missing from Backlog focus metadata"):
+            validate_v4_backlog_focus(text, omitted)
 
 
 class PhaseBRequirementsAndRiskTests(unittest.TestCase):
@@ -280,6 +298,8 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(WorkflowDataError, "fitness evidence"):
             validate_independent_architecture_impact(missing, ["src/app.py"])
+        with self.assertRaisesRegex(WorkflowDataError, "fitness evidence"):
+            validate_v4_architecture_delivery(missing, ["src/app.py"])
 
     def test_conflicting_decision_requires_explicit_supersede(self) -> None:
         decision = {

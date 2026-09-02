@@ -56,6 +56,7 @@ from workflow_common import (
     update_backlog_status,
     utc_now,
     validate_developer_evidence,
+    maybe_load_guardrail_registry,
     validate_v4_architecture_delivery,
     validate_v4_contract_identity,
     validate_v4_current_observation_continuations,
@@ -905,7 +906,12 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 "Developer evidence can only be recorded from developer/coordinator/review phase."
             )
         if record.get("version") == 4:
-            validate_v4_architecture_delivery(record, delivery["changed_paths"])
+            registry = maybe_load_guardrail_registry(
+                paths.tracked("decisions").read_text(encoding="utf-8")
+            )
+            validate_v4_architecture_delivery(
+                record, delivery["changed_paths"], registry
+            )
             reset_v4_snapshot_evidence(record)
         record["developer"] = prepared
         record["review"] = {

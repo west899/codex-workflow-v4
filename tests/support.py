@@ -346,6 +346,43 @@ def configure_v4_architecture_baseline(target: Path) -> str:
     return fingerprint
 
 
+def sync_backlog_focus_from_record(target: Path, record: dict) -> None:
+    """Keep installed Backlog focus metadata aligned with a V4 test record."""
+
+    path = target / ".codex-workflow/state/MVP_BACKLOG.md"
+    text = path.read_text(encoding="utf-8")
+    bin_path = PACKAGE_ROOT / "payload/.codex-workflow/bin"
+    sys.path.insert(0, str(bin_path))
+    try:
+        from workflow_common import BACKLOG_FOCUS_MARKER, read_embedded_json, replace_embedded_json
+    finally:
+        sys.path.pop(0)
+    payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
+    contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
+    item = {
+        "id": record["task_id"],
+        "kind": contract.get("kind") or "core_slice",
+        "focus_slice_id": contract.get("focus_slice_id") or record["task_id"],
+        "supports_task_id": contract.get("supports_task_id"),
+        "direction_confirmed": False,
+    }
+    items = [
+        existing
+        for existing in payload.get("items", [])
+        if isinstance(existing, dict) and existing.get("id") != item["id"]
+    ]
+    if item["kind"] == "core_slice":
+        for existing in items:
+            if existing.get("kind") == "core_slice":
+                existing["direction_confirmed"] = True
+    items.append(item)
+    payload["items"] = items
+    path.write_text(
+        replace_embedded_json(text, BACKLOG_FOCUS_MARKER, payload),
+        encoding="utf-8",
+    )
+
+
 def basic_v4_record(
     base_commit: str,
     *,

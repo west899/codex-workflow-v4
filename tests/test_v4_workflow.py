@@ -27,6 +27,7 @@ from support import (
     requirements_fingerprint,
     review_evidence_v1,
     run,
+    sync_backlog_focus_from_record,
     v4_checkpoint_request,
     v4_observation_receipt,
     workflow_command,
@@ -122,6 +123,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             execution_mode=execution_mode,
         )
         record_path = write_record(target, record)
+        sync_backlog_focus_from_record(target, record)
         product = target / "src/feature.txt"
         product.parent.mkdir(parents=True, exist_ok=True)
         product.write_text("observable v4 delivery\n", encoding="utf-8")
@@ -3224,6 +3226,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             dependent["lane"]["dependency_snapshot"]["dependencies"] = [source["task_id"]]
             dependent["contract_fingerprint"] = contract_fingerprint(dependent)
             dependent_path = write_record(target, dependent)
+            sync_backlog_focus_from_record(target, dependent)
             dependent_relative = record_relative(dependent_path, target)
             blocked = run(
                 workflow_command(
@@ -4525,7 +4528,9 @@ class V4WorkflowM2Tests(unittest.TestCase):
             }
         )
         record["contract_fingerprint"] = contract_fingerprint(record)
-        return write_record(target, record)
+        path = write_record(target, record)
+        sync_backlog_focus_from_record(target, record)
+        return path
 
     def _forged_current_continuation(self, record: dict) -> dict:
         decision = next(

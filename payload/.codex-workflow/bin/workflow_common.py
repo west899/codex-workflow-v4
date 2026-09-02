@@ -1699,15 +1699,24 @@ def v4_architecture_sensitive_paths(changed_paths: Iterable[str]) -> list[str]:
 
 
 def validate_v4_architecture_delivery(
-    record: dict[str, Any], changed_paths: Iterable[str]
+    record: dict[str, Any],
+    changed_paths: Iterable[str],
+    registry: dict[str, Any] | None = None,
 ) -> None:
     """Require an accepted contract-bound architecture decision for structural paths."""
 
     sensitive = v4_architecture_sensitive_paths(changed_paths)
-    if not sensitive:
-        return
     contract = record.get("delivery_contract") or {}
     architecture = contract.get("architecture") or {}
+    if sensitive:
+        if architecture.get("declared_impact") != "changes_guardrail":
+            raise WorkflowDataError(
+                "V4 delivery changes architecture-sensitive paths without declared_impact=changes_guardrail: "
+                + ", ".join(sensitive)
+            )
+    validate_independent_architecture_impact(record, changed_paths, registry)
+    if not sensitive:
+        return
     if architecture.get("declared_impact") != "changes_guardrail":
         raise WorkflowDataError(
             "V4 delivery changes architecture-sensitive paths without declared_impact=changes_guardrail: "
@@ -4455,17 +4464,14 @@ def maybe_validate_v4_backlog_focus(
     start = f"<!-- {BACKLOG_FOCUS_MARKER}_START -->"
     if start not in backlog_text:
         return None
-    validate_backlog_fixed_columns(backlog_text)
-    metadata = parse_backlog_focus_metadata(backlog_text)
-    if record is not None:
-        items = {
-            item["id"]: item
-            for item in metadata.get("items", [])
-            if isinstance(item, dict)
-        }
-        if isinstance(record.get("task_id"), str) and record.get("task_id") in items:
-            validate_contract_backlog_focus(record, metadata)
-    return metadata
+    return validate_v4_backlog_focus(backlog_text, record)
+
+
+def maybe_load_guardrail_registry(text: str) -> dict[str, Any] | None:
+    start = f"<!-- {GUARDRAIL_REGISTRY_MARKER}_START -->"
+    if start not in text:
+        return None
+    return parse_guardrail_registry(text)
 
 
 def validate_rolling_requirements(brief: dict[str, Any]) -> None:

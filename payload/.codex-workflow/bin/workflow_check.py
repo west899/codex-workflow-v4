@@ -25,6 +25,7 @@ from workflow_common import (
     allowed_path,
     architecture_baseline_fingerprint,
     backlog_rows,
+    maybe_load_guardrail_registry,
     maybe_validate_v4_backlog_focus,
     canonical_delivery,
     closeout_state_fingerprint,
@@ -46,6 +47,7 @@ from workflow_common import (
     status_paths,
     utc_now,
     validate_developer_evidence,
+    validate_independent_architecture_impact,
     validate_v4_architecture_delivery,
     validate_v4_contract_identity,
     validate_v4_current_observation_continuations,
@@ -414,6 +416,15 @@ def _v4_architecture_gate(
 ) -> None:
     try:
         validate_v4_live_architecture_baseline(paths, record)
+        changed_paths = (record.get("verification") or {}).get("changed_paths") or []
+        if not isinstance(changed_paths, list):
+            changed_paths = []
+        registry = maybe_load_guardrail_registry(
+            paths.tracked("decisions").read_text(encoding="utf-8")
+        )
+        validate_independent_architecture_impact(record, changed_paths, registry)
+        if changed_paths:
+            validate_v4_architecture_delivery(record, changed_paths, registry)
     except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
         checks.error(str(exc))
 
