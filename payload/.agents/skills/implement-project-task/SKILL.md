@@ -3,7 +3,7 @@ name: implement-project-task
 description: Implement one authorized Codex Workflow V4 task inside its assigned lane/worktree, stay within allowed paths and resources, create a sealed delivery commit, run real verification, and submit generation-safe Developer evidence. Use only for the write-capable Developer role. Invoke explicitly via $implement-project-task.
 ---
 
-# Implement Project Task — V4 Developer
+# Implement Project Task — Codex Workflow V4 Developer
 
 Build the smallest observable core result first. If a V4 trigger appears—unclear product behavior, data/API contract, architecture boundary, or irreversible default—stop and ask Coordinator to `request-decision`. Do not silently turn an assumption into a public contract. Do not mark architecture `none` when changed paths are independently `changes_guardrail`. Conflicting human answers need an explicit supersede, not a last-writer overwrite.
 

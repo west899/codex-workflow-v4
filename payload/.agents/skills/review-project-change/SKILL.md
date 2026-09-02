@@ -3,7 +3,7 @@ name: review-project-change
 description: Independently and read-only review one Codex Workflow V4 lane at an exact delivery commit and snapshot for requirement coverage, correctness, security, regressions, failure handling, and missing tests. Invoke explicitly via $review-project-change.
 ---
 
-# Review Project Change — V4 Reviewer
+# Review Project Change — Codex Workflow V4 Reviewer
 
 ## 1. Bind to one lane and snapshot
 

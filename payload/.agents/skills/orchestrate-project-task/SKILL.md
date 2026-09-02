@@ -3,7 +3,7 @@ name: orchestrate-project-task
 description: Coordinate Codex Workflow V4 from requirements calibration through a focus core slice, human product decisions, isolated lanes, independent review, verification, serial integration, and two-phase closeout. Use for non-trivial feature, bug, refactor, migration, or release-scope work. Invoke explicitly via $orchestrate-project-task.
 ---
 
-# Orchestrate Project Task — V4
+# Orchestrate Project Task — Codex Workflow V4
 
 New work uses `task-record-v4`. Keep existing V3 records on the V3 closeout path. Do not invent a second checkpoint command or product state machine. `workflow_lane.py` never carries product semantics.
 

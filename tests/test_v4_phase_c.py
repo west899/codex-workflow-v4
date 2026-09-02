@@ -29,8 +29,8 @@ from workflow_common import (  # noqa: E402
 
 
 SCHEMA = PACKAGE_ROOT / "payload/.codex-workflow/schemas" / PROVIDER_RECEIPT_SCHEMA
-EQUIVALENCE = PACKAGE_ROOT / "V4_PHASEC_EQUIVALENCE.md"
-PLAN = PACKAGE_ROOT / "V4_PHASEC_PLAN.md"
+EQUIVALENCE = PACKAGE_ROOT / "docs/history/V4_PHASEC_EQUIVALENCE.md"
+PLAN = PACKAGE_ROOT / "docs/history/V4_PHASEC_PLAN.md"
 
 
 def _receipt(commit: str = "abc123", snapshot_id: str = "a" * 64, **overrides) -> dict:
