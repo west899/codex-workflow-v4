@@ -56,6 +56,7 @@ from workflow_common import (
     update_backlog_status,
     utc_now,
     validate_developer_evidence,
+    mark_backlog_focus_direction_confirmed,
     maybe_load_guardrail_registry,
     phase_b_pending_queued_recovery,
     validate_v4_live_backlog_focus,
@@ -682,6 +683,8 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                         "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
                     )
                 decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                if resolution.get("outcome") == "accepted":
+                    mark_backlog_focus_direction_confirmed(paths, str(record.get("task_id")))
                 if resolution.get("outcome") in {"changes_requested", "stopped"}:
                     fault_injection("v4-reset-after-decision")
                     reset_v4_snapshot_evidence(record)
@@ -711,6 +714,8 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             decision["status"] = "resolved"
             decision["resolution"] = resolution
             decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+            if resolution["outcome"] == "accepted":
+                mark_backlog_focus_direction_confirmed(paths, str(record.get("task_id")))
             if resolution["outcome"] in {"changes_requested", "stopped"}:
                 fault_injection("v4-reset-after-decision")
                 reset_v4_snapshot_evidence(record)

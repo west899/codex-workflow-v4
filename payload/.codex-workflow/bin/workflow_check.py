@@ -56,6 +56,7 @@ from workflow_common import (
     validate_v4_live_dependencies,
     validate_v4_live_focus_relationship,
     validate_v4_live_requirements_baseline,
+    rolling_must_future_candidates,
     validate_rolling_requirements,
     validate_v4_planning_risk,
     validate_v4_retrospective,
@@ -130,6 +131,7 @@ def parser() -> argparse.ArgumentParser:
         choices=(
             "start", "manual", "doctor", "stop", "preflight", "snapshot", "gate",
             "requirements-snapshot", "requirements-gate", "requirements-impact",
+            "rolling-promotion",
             "status", "integration-preflight", "closeout-gate",
         ),
     )
@@ -1455,7 +1457,7 @@ def main() -> None:
                 lock_probe(paths.shared_runtime / "locks" / "advisory-probe.lock")
             except Exception as exc:
                 checks.error(str(exc))
-    elif mode in {"requirements-snapshot", "requirements-gate", "requirements-impact"}:
+    elif mode in {"requirements-snapshot", "requirements-gate", "requirements-impact", "rolling-promotion"}:
         if not args.target:
             checks.error(f"{mode} requires a requirements brief path.")
         else:
@@ -1479,6 +1481,20 @@ def main() -> None:
                 }
                 if mode == "requirements-gate":
                     requirements_gate(paths, candidate, checks)
+                elif mode == "rolling-promotion":
+                    pending = rolling_must_future_candidates(brief.metadata)
+                    payload = {
+                        **payload,
+                        "must_promote": pending,
+                        "action": (
+                            "Create a new Brief revision; do not confirm future candidates as Must."
+                        ),
+                    }
+                    if pending:
+                        checks.error(
+                            "Future candidates must be promoted out of the approved Must contract: "
+                            + ", ".join(pending)
+                        )
                 elif mode == "requirements-impact":
                     requirements_gate(paths, candidate, checks)
                     if not checks.errors:
@@ -1550,6 +1566,8 @@ def main() -> None:
         elif mode == "requirements-impact":
             print(f"REQUIREMENTS_IMPACT_ID={payload['analysis_id']}")
             print(f"REQUIREMENTS_IMPACT_STATUS={payload['status']}")
+        elif mode == "rolling-promotion":
+            print("MUST_PROMOTE=" + ",".join(payload.get("must_promote") or []))
         elif mode == "status":
             print(f"STATUS_SHA256={payload['status_fingerprint']}")
         elif "snapshot_id" in payload:

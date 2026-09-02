@@ -45,6 +45,7 @@ from workflow_common import (  # noqa: E402
     decision_state_fingerprint,
     observation_fingerprint,
     observation_receipt_fingerprint,
+    parse_backlog_focus_metadata,
     read_embedded_json,
     replace_embedded_json,
     snapshot_id,
@@ -2896,6 +2897,13 @@ class V4WorkflowM2Tests(unittest.TestCase):
             accepted = json.loads(record_path.read_text(encoding="utf-8"))
             self.assertEqual(accepted["review"]["status"], "pending")
             self.assertIsNotNone(accepted["verification"]["snapshot_id"])
+            focus = parse_backlog_focus_metadata(
+                (target / ".codex-workflow/state/MVP_BACKLOG.md").read_text(encoding="utf-8")
+            )
+            confirmed = next(
+                item for item in focus["items"] if item["id"] == accepted["task_id"]
+            )
+            self.assertTrue(confirmed["direction_confirmed"])
             resolution = self._checkpoint_resolution("changes_requested")
             resolution["supersede"] = True
             resolution["decided_at"] = "2026-07-20T09:00:00Z"

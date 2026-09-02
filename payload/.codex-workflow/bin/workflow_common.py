@@ -1698,6 +1698,18 @@ def v4_architecture_sensitive_paths(changed_paths: Iterable[str]) -> list[str]:
     return sorted(sensitive)
 
 
+def _contained_project_path(project_root: Path, target: str) -> Path:
+    resolved_root = project_root.resolve()
+    candidate = (project_root / target).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise WorkflowDataError(
+            f"Fitness evidence path escapes the project root: {target}."
+        ) from exc
+    return candidate
+
+
 def validate_fitness_ref(ref: str, *, project_root: Path | None = None) -> None:
     if not isinstance(ref, str) or ":" not in ref:
         raise WorkflowDataError(f"Fitness evidence {ref!r} is invalid.")
@@ -1706,14 +1718,15 @@ def validate_fitness_ref(ref: str, *, project_root: Path | None = None) -> None:
         raise WorkflowDataError(f"Fitness evidence {ref} has an unknown kind.")
     if not target.strip():
         raise WorkflowDataError(f"Fitness evidence {ref} is missing a target.")
-    if (
-        project_root is not None
-        and kind in {"test", "check"}
-        and ("/" in target or target.endswith((".py", ".sh", ".rb", ".js")))
-    ):
-        evidence_path = project_root / target
-        if not evidence_path.is_file():
-            raise WorkflowDataError(f"Fitness evidence {ref} does not exist.")
+    if project_root is None or kind not in {"test", "check"}:
+        return
+    if "/" in target or target.endswith((".py", ".sh", ".rb", ".js")):
+        relative = target
+    else:
+        relative = f".codex-workflow/governance/{target}.check"
+    evidence_path = _contained_project_path(project_root, relative)
+    if not evidence_path.is_file():
+        raise WorkflowDataError(f"Fitness evidence {ref} does not exist.")
 
 
 def validate_v4_architecture_delivery(
@@ -4498,6 +4511,34 @@ def validate_v4_live_backlog_focus(paths: WorkflowPaths, record: dict[str, Any])
     )
 
 
+def mark_backlog_focus_direction_confirmed(paths: WorkflowPaths, task_id: str) -> None:
+    """Mark a core slice's product direction confirmed in Backlog focus metadata."""
+
+    if not isinstance(task_id, str) or not task_id:
+        raise WorkflowDataError("Backlog focus confirmation requires a task id.")
+    backlog = paths.tracked("backlog")
+    text = backlog.read_text(encoding="utf-8")
+    payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise WorkflowDataError("Backlog focus metadata items must be an array.")
+    found = False
+    for item in items:
+        if not isinstance(item, dict) or item.get("id") != task_id:
+            continue
+        found = True
+        if item.get("kind") == "core_slice":
+            item["direction_confirmed"] = True
+        break
+    if not found:
+        raise WorkflowDataError(
+            f"V4 task {task_id} is missing from Backlog focus metadata."
+        )
+    updated = replace_embedded_json(text, BACKLOG_FOCUS_MARKER, payload)
+    parse_backlog_focus_metadata(updated)
+    backlog.write_text(updated, encoding="utf-8")
+
+
 def maybe_load_guardrail_registry(text: str) -> dict[str, Any] | None:
     start = f"<!-- {GUARDRAIL_REGISTRY_MARKER}_START -->"
     if start not in text:
@@ -4516,12 +4557,13 @@ def requirement_horizon(item: dict[str, Any]) -> str:
     return horizon
 
 
-def validate_rolling_requirements(brief: dict[str, Any]) -> None:
-    """Keep future candidates out of the approved Must contract without changing V1 fingerprint."""
+def rolling_must_future_candidates(brief: dict[str, Any]) -> list[str]:
+    """IDs that must be promoted out of the approved Must contract via a new Brief revision."""
 
     if not isinstance(brief, dict):
         raise WorkflowDataError("Rolling Requirements brief must be an object.")
     requirements = brief.get("requirements") if isinstance(brief.get("requirements"), dict) else {}
+    found: list[str] = []
     must_groups = (
         ("users", requirements.get("users")),
         ("outcomes", requirements.get("outcomes")),
@@ -4542,10 +4584,20 @@ def validate_rolling_requirements(brief: dict[str, Any]) -> None:
                 continue
             if group_name == "scenarios" and item.get("applicability") == "not_applicable":
                 continue
-            raise WorkflowDataError(
-                f"Future candidate {item.get('id') or group_name + '[' + str(index) + ']'} "
-                "cannot enter the approved Must contract; promote it through a new Brief revision."
-            )
+            found.append(str(item.get("id") or f"{group_name}[{index}]"))
+    return found
+
+
+def validate_rolling_requirements(brief: dict[str, Any]) -> None:
+    """Keep future candidates out of the approved Must contract without changing V1 fingerprint."""
+
+    pending = rolling_must_future_candidates(brief)
+    if pending:
+        raise WorkflowDataError(
+            "Future candidate "
+            + pending[0]
+            + " cannot enter the approved Must contract; promote it through a new Brief revision."
+        )
 
 
 def v4_effective_risk_tier(record: dict[str, Any]) -> str:

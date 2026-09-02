@@ -15,7 +15,7 @@
 | 目标分支 | `v4` |
 | Phase 0 基线 | `69c52ad09576a181f18dbe8b8735a8a638a3d27c` / `phase0_passed` |
 | 设计输入 | `改进建议.md` 第 14–19 节、第 23–24 节 |
-| 当前允许动作 | 封存 Phase A；[V4 Phase B 执行计划](V4_PHASEB_PLAN.md) revision 2 正在 `phase_b_authorized_complete` 下执行 |
+| 当前允许动作 | 封存 Phase A；[V4 Phase B 执行计划](V4_PHASEB_PLAN.md) revision 2 为 `phase_b_passed` |
 | 当前禁止动作 | 实施 Phase B/C；新增 decision kind、主状态机或第二套 checkpoint 命令；回改第 2–10 节冻结语义 |
 
 规范指纹校验命令：

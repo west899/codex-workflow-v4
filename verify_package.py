@@ -88,6 +88,7 @@ REQUIRED = {
     "V4_PHASEA_CORE_SLICE.md",
     "V4_PHASEA_CLOSEOUT.md",
     "V4_PHASEB_PLAN.md",
+    "V4_PHASEB_CLOSEOUT.md",
 }
 FORBIDDEN_FILES = {
     "payload/PROJECT.md",

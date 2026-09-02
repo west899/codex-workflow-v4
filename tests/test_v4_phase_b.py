@@ -289,6 +289,17 @@ class PhaseBRequirementsAndRiskTests(unittest.TestCase):
             )
             self.assertNotEqual(blocked.returncode, 0, blocked.stderr)
             self.assertIn("Future candidate", blocked.stderr)
+            promotion = run(
+                workflow_command(
+                    target,
+                    "workflow_check.py",
+                    "rolling-promotion",
+                    str(brief.relative_to(target)),
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(promotion.returncode, 0, promotion.stderr)
+            self.assertIn("REQ-F-001", promotion.stderr + promotion.stdout)
 
     def test_not_required_rejected_above_small_no_trigger(self) -> None:
         small = {
@@ -429,6 +440,16 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
                     project_root=Path(directory),
                 )
         validate_fitness_ref("test:architecture-boundary")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            escaped = root / "outside.py"
+            escaped.write_text("print(1)\n", encoding="utf-8")
+            project = root / "project"
+            project.mkdir()
+            with self.assertRaisesRegex(WorkflowDataError, "escapes the project root"):
+                validate_fitness_ref("test:../outside.py", project_root=project)
+            install_project(project)
+            validate_fitness_ref("test:architecture-boundary", project_root=project)
 
     def test_conflicting_decision_requires_explicit_supersede(self) -> None:
         decision = {
