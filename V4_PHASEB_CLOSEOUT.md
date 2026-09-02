@@ -18,7 +18,7 @@
 
 | # | 完成定义 | 结论 |
 | --- | --- | --- |
-| 1–2 | Backlog kind/supports/focus + WIP | 满足；写路径与 doctor 已接 focus/WIP；accepted 后 core slice `direction_confirmed` |
+| 1–2 | Backlog kind/supports/focus + WIP | 满足；写路径与 doctor 已接 focus/WIP；accepted 后仅 Coordinator worktree 更新 `direction_confirmed` |
 | 3 | 滚动 Requirements | 满足最小路径：future Must fail closed；`rolling-promotion` 列出须晋升项；不改 V1 fingerprint |
 | 4 | 风险比例复盘 | 满足；unknown level fail closed；high-risk 需 ExecPlan |
 | 5 | registry / 独立 impact / fitness | 满足最小路径：独立分类、文件型 fitness 不得逃出仓库、逻辑 ID 映射到 governance `.check` |
@@ -33,3 +33,4 @@
 - 没有自动改写 Brief 的切片晋升引擎；晋升仍是新 revision。
 - `command:` / `manual:` / `ci:` fitness 不执行外部命令。
 - 本包自身未安装为 V4 工作流项目，因此没有 package-local task record closeout。
+- 产品方向 `accepted` 必须在 Coordinator/integration worktree 记录，lane 内不得写共享 Backlog。

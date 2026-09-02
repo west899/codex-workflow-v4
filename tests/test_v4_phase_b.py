@@ -24,12 +24,14 @@ from support import (
 
 BIN_PATH = PACKAGE_ROOT / "payload/.codex-workflow/bin"
 sys.path.insert(0, str(BIN_PATH))
+from workflow_paths import WorkflowPaths  # noqa: E402
 from workflow_common import (  # noqa: E402
     WorkflowDataError,
     apply_supersede_resolution,
     assert_v4_decision_write_allowed,
     classify_independent_architecture_impact,
     BACKLOG_FOCUS_MARKER,
+    mark_backlog_focus_direction_confirmed,
     maybe_validate_v4_backlog_focus,
     parse_guardrail_registry,
     read_embedded_json,
@@ -684,6 +686,48 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             )
             self.assertNotEqual(claimed.returncode, 0, claimed.stderr)
             self.assertIn("requires Backlog focus metadata", claimed.stderr)
+
+    def test_focus_confirmation_refuses_lane_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(
+                install_project(target, parallel_mode="local_worktree").returncode, 0
+            )
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(
+                base,
+                requirements_baseline={
+                    "brief_id": "REQ-001",
+                    "revision": 1,
+                    "approval_fingerprint": requirements_fingerprint,
+                },
+                architecture_fingerprint=architecture_fingerprint,
+            )
+            write_record(target, record)
+            sync_backlog_focus_from_record(target, record)
+            commit_all(target, "authorized V4 claim fixture")
+            claimed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    record["task_id"],
+                    "--base",
+                    "main",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(claimed.returncode, 0, claimed.stderr)
+            marker = "worktree="
+            stdout = claimed.stdout + claimed.stderr
+            self.assertIn(marker, stdout)
+            worktree = Path(stdout.split(marker, 1)[1].split()[0])
+            lane_paths = WorkflowPaths.discover(worktree)
+            with self.assertRaisesRegex(WorkflowDataError, "coordinator/integration worktree"):
+                mark_backlog_focus_direction_confirmed(lane_paths, record["task_id"])
 
 
 if __name__ == "__main__":

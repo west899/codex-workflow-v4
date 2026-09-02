@@ -4516,6 +4516,10 @@ def mark_backlog_focus_direction_confirmed(paths: WorkflowPaths, task_id: str) -
 
     if not isinstance(task_id, str) or not task_id:
         raise WorkflowDataError("Backlog focus confirmation requires a task id.")
+    if (paths.lane_runtime / "lane.json").is_file():
+        raise WorkflowDataError(
+            "Backlog focus confirmation must run from the coordinator/integration worktree."
+        )
     backlog = paths.tracked("backlog")
     text = backlog.read_text(encoding="utf-8")
     payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
@@ -4536,7 +4540,7 @@ def mark_backlog_focus_direction_confirmed(paths: WorkflowPaths, task_id: str) -
         )
     updated = replace_embedded_json(text, BACKLOG_FOCUS_MARKER, payload)
     parse_backlog_focus_metadata(updated)
-    backlog.write_text(updated, encoding="utf-8")
+    atomic_write_text(backlog, updated)
 
 
 def maybe_load_guardrail_registry(text: str) -> dict[str, Any] | None:
