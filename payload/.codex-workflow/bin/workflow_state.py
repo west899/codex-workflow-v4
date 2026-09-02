@@ -57,6 +57,7 @@ from workflow_common import (
     utc_now,
     validate_developer_evidence,
     maybe_load_guardrail_registry,
+    phase_b_pending_queued_recovery,
     validate_v4_architecture_delivery,
     validate_v4_contract_identity,
     validate_v4_current_observation_continuations,
@@ -142,6 +143,13 @@ def parser() -> argparse.ArgumentParser:
     record_decision.add_argument("--decision-id", required=True)
     record_decision.add_argument("--expected-fingerprint", required=True)
     record_decision.add_argument("--resolution-json", required=True)
+
+    pending_recovery = record_command("pending-queued-recovery")
+    pending_recovery.add_argument(
+        "--action",
+        required=True,
+        choices=("dequeue", "reopen", "abandon", "mark-done"),
+    )
 
     def add_integrator_lease_arguments(command: argparse.ArgumentParser) -> None:
         command.add_argument("--integrator-token")
@@ -2217,6 +2225,37 @@ def reconcile(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     )
 
 
+def pending_queued_recovery(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    """Sealed Phase B policy: pending/queued recovery is abandon-only and never mutates."""
+
+    _, record = load_record(paths, args.record)
+    if record.get("version") != 4:
+        raise StateError("pending-queued-recovery requires a V4 task record.")
+    integration = record.get("integration") if isinstance(record.get("integration"), dict) else {}
+    status = integration.get("status")
+    if not isinstance(status, str) or not status:
+        raise StateError("V4 integration.status is missing.")
+    recovery = phase_b_pending_queued_recovery(args.action, status)
+    print(
+        json.dumps(
+            {
+                "task_id": record.get("task_id"),
+                "integration_status": status,
+                "action": args.action,
+                "recovery": recovery,
+                "mutated": False,
+                "note": (
+                    "Phase B pending/queued recovery is abandon-only; "
+                    "use workflow_lane.py release --abandon. "
+                    "This command never forges done."
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
 def invalidate(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     def mutation(record: dict[str, Any]) -> None:
         record["status"] = "in_progress"
@@ -2254,6 +2293,8 @@ def main() -> None:
             request_decision(paths, args)
         elif command == "record-decision":
             record_decision(paths, args)
+        elif command == "pending-queued-recovery":
+            pending_queued_recovery(paths, args)
         elif command == "prepare-local-closeout":
             prepare_local_closeout(paths, args)
         elif command == "prepare-remote-closeout":

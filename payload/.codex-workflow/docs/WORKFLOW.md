@@ -24,7 +24,7 @@ py -3 .codex-workflow/bin/workflow_state.py sync-status --apply
 
 新任务使用 V4 core/supporting 模板创建 `.codex-workflow/state/runs/<task-id>.json`。Coordinator 先和人类确认 `focus_slice_id`、观察入口、真实/临时部分和架构基线，再填写来源、需求基线、请求、范围、非目标、allowed paths、resource keys、验收、风险、`delivery_contract`、授权和 exact base commit。已在进行中的 V3 record 继续走 V3 closeout，不要改写其 pending fingerprint。task record 的后续写入只经 state/lane 命令；不要手改 JSON 来跳过 generation 或角色边界。
 
-`checkpoint.mode=required` 时，独立 Review 前必须有当前 snapshot 的 observation receipt 和人类产品方向确认。使用 `request-decision` / `record-decision`，不要新增另一套 checkpoint 命令。冲突答复必须显式 `supersede`。`workflow_lane.py` 不承载产品语义。STATUS 和 Stop Hook 只派生下一动作，不批准、不改状态。Backlog focus metadata 与 task contract 必须一致；默认 WIP 为 1 个未确认方向的 core slice。`horizon=future_candidate` 不能进入已批准 Must 合同。small/no-trigger 可将 retrospective 标为 `not_required`；pending/queued 后只允许显式 abandon。
+`checkpoint.mode=required` 时，独立 Review 前必须有当前 snapshot 的 observation receipt 和人类产品方向确认。使用 `request-decision` / `record-decision`，不要新增另一套 checkpoint 命令。冲突答复必须显式 `supersede`。`workflow_lane.py` 不承载产品语义。STATUS 和 Stop Hook 只派生下一动作，不批准、不改状态。Backlog focus metadata 与 task contract 必须一致；默认 WIP 为 1 个未确认方向的 core slice。`horizon=future_candidate` 不能进入已批准 Must 合同。small/no-trigger 可将 retrospective 标为 `not_required`。V4 任务必须有 Backlog focus metadata。pending/queued 后用 `pending-queued-recovery` 核验：只允许 abandon-only，`dequeue`/`reopen` 失败，且不伪造 done；真正清理 runtime 仍走 `workflow_lane.py release --abandon`。
 
 ```text
 py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs/MVP-001.json

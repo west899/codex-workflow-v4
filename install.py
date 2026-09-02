@@ -237,11 +237,13 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
         "governance_customizations": [],
         "backlog_focus_metadata": False,
         "guardrail_registry": {"present": False, "status": None},
+        "pending_queued_recovery": "abandon_only",
         "notes": [
             "Upgrade does not generate or approve a project architecture baseline.",
             "Upgrade does not guess the current focus core slice.",
             "Upgrade lists customized project-owned governance files and does not overwrite them.",
             "Upgrade lists Backlog focus metadata and guardrail registry status without approving them.",
+            "Pending/queued recovery is sealed abandon-only; dequeue/reopen is refused and done is not forged.",
             "Existing V3 tasks keep V3 closeout semantics; new tasks should use task-record-v4.",
         ],
     }

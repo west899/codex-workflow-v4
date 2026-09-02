@@ -4463,6 +4463,8 @@ def maybe_validate_v4_backlog_focus(
 ) -> dict[str, Any] | None:
     start = f"<!-- {BACKLOG_FOCUS_MARKER}_START -->"
     if start not in backlog_text:
+        if record is None or record.get("version") == 4:
+            raise WorkflowDataError("V4 task requires Backlog focus metadata.")
         return None
     return validate_v4_backlog_focus(backlog_text, record)
 

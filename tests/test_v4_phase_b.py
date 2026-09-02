@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from support import PACKAGE_ROOT
+from support import (
+    PACKAGE_ROOT,
+    basic_v4_record,
+    configure_v4_architecture_baseline,
+    create_baseline,
+    install_project,
+    record_relative,
+    run,
+    sync_backlog_focus_from_record,
+    workflow_command,
+    write_record,
+)
 
 BIN_PATH = PACKAGE_ROOT / "payload/.codex-workflow/bin"
 sys.path.insert(0, str(BIN_PATH))
@@ -160,6 +174,22 @@ class PhaseBBacklogTests(unittest.TestCase):
             maybe_validate_v4_backlog_focus(text, omitted)
         with self.assertRaisesRegex(WorkflowDataError, "missing from Backlog focus metadata"):
             validate_v4_backlog_focus(text, omitted)
+
+    def test_live_helper_rejects_v4_when_focus_marker_is_missing(self) -> None:
+        omitted = {
+            "version": 4,
+            "task_id": "MVP-001",
+            "delivery_contract": {
+                "kind": "core_slice",
+                "focus_slice_id": "MVP-001",
+                "supports_task_id": None,
+            },
+        }
+        with self.assertRaisesRegex(WorkflowDataError, "requires Backlog focus metadata"):
+            maybe_validate_v4_backlog_focus("# MVP Backlog\n", omitted)
+        self.assertIsNone(
+            maybe_validate_v4_backlog_focus("# MVP Backlog\n", {"version": 3, "task_id": "MVP-001"})
+        )
 
 
 class PhaseBRequirementsAndRiskTests(unittest.TestCase):
@@ -338,6 +368,71 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             self.assertEqual(
                 phase_b_pending_queued_recovery("abandon", status), "abandon_only"
             )
+
+    def test_pending_queued_recovery_command_is_abandon_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(base)
+            record["integration"]["status"] = "queued"
+            path = write_record(target, record)
+            sync_backlog_focus_from_record(target, record)
+            relative = record_relative(path, target)
+            refused = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "pending-queued-recovery",
+                    relative,
+                    "--action",
+                    "dequeue",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(refused.returncode, 0, refused.stderr)
+            self.assertIn("abandon-only", refused.stderr)
+            before = path.read_bytes()
+            sealed = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "pending-queued-recovery",
+                    relative,
+                    "--action",
+                    "abandon",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            payload = json.loads(sealed.stdout)
+            self.assertEqual(payload["recovery"], "abandon_only")
+            self.assertFalse(payload["mutated"])
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_preflight_rejects_v4_without_backlog_focus_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(base)
+            path = write_record(target, record)
+            backlog = target / ".codex-workflow/state/MVP_BACKLOG.md"
+            backlog.write_text("# MVP Backlog\n", encoding="utf-8")
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_check.py",
+                    "preflight",
+                    record_relative(path, target),
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertIn("requires Backlog focus metadata", blocked.stderr)
 
 
 if __name__ == "__main__":

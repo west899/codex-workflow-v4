@@ -174,12 +174,14 @@ class InstallTests(unittest.TestCase):
                 inventory["guardrail_registry"],
                 {"present": True, "status": "unconfigured"},
             )
+            self.assertEqual(inventory["pending_queued_recovery"], "abandon_only")
             self.assertFalse(inventory["architecture_baseline"]["guessed_focus"])
             self.assertFalse(inventory["architecture_baseline"]["approved"])
             notes = " ".join(inventory["notes"])
             self.assertIn("does not guess the current focus", notes)
             self.assertIn("does not generate or approve", notes)
             self.assertIn("does not overwrite them", notes)
+            self.assertIn("abandon-only", notes)
             layout = json.loads((target / ".codex-workflow/layout.json").read_text(encoding="utf-8"))
             self.assertEqual(layout["default_new_task_version"], 4)
             manifest = json.loads((target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8"))
