@@ -4633,6 +4633,11 @@ def validate_independent_architecture_impact(
         raise WorkflowDataError(
             "Independent architecture impact is changes_guardrail; declared_impact cannot be trusted."
         )
+    if independent == "within_guardrails" and declared == "none":
+        raise WorkflowDataError(
+            "declared_impact=none is not allowed when delivery changes files; "
+            "use within_guardrails or changes_guardrail."
+        )
     if declared == "within_guardrails":
         guardrails = architecture.get("guardrails")
         if not isinstance(guardrails, list) or not guardrails:
@@ -4717,6 +4722,11 @@ def phase_b_pending_queued_recovery(command: str, integration_status: str) -> st
     if command != "abandon":
         raise WorkflowDataError(
             f"Unsupported pending/queued recovery command: {command}."
+        )
+    if integration_status not in {"pending", "queued", "merged_pending_closeout"}:
+        raise WorkflowDataError(
+            "abandon-only recovery only applies when integration is pending, queued, "
+            "or merged_pending_closeout."
         )
     return PHASE_B_PENDING_QUEUED_RECOVERY
 

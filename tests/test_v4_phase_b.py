@@ -308,6 +308,14 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(WorkflowDataError, "cannot be trusted"):
             validate_independent_architecture_impact(record, ["openapi.yaml"])
+        ordinary = {
+            "delivery_contract": {
+                "architecture": {"declared_impact": "none", "guardrails": []}
+            },
+            "decision_log": [],
+        }
+        with self.assertRaisesRegex(WorkflowDataError, "declared_impact=none"):
+            validate_independent_architecture_impact(ordinary, ["src/app.py"])
 
     def test_within_guardrails_requires_fitness_and_registry_id(self) -> None:
         record = {
@@ -395,6 +403,8 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             self.assertEqual(
                 phase_b_pending_queued_recovery("abandon", status), "abandon_only"
             )
+        with self.assertRaisesRegex(WorkflowDataError, "pending, queued"):
+            phase_b_pending_queued_recovery("abandon", "not_ready")
 
     def test_pending_queued_recovery_command_is_abandon_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -543,7 +553,52 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
                 workflow_command(target, "workflow_check.py", "doctor"),
                 cwd=target,
             )
-            self.assertNotEqual(doctor.returncode, 0, doctor.stderr)
+            self.assertNotEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
+            self.assertIn("WIP overflow", doctor.stderr + doctor.stdout)
+
+    def test_lane_claim_rejects_missing_backlog_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(
+                install_project(target, parallel_mode="local_worktree").returncode, 0
+            )
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(
+                base,
+                requirements_baseline={
+                    "brief_id": "REQ-001",
+                    "revision": 1,
+                    "approval_fingerprint": requirements_fingerprint,
+                },
+                architecture_fingerprint=architecture_fingerprint,
+            )
+            write_record(target, record)
+            sync_backlog_focus_from_record(target, record)
+            commit_all(target, "authorized V4 claim fixture")
+            backlog = target / ".codex-workflow/state/MVP_BACKLOG.md"
+            original = backlog.read_text(encoding="utf-8")
+            start = "<!-- CODEX_BACKLOG_FOCUS_START -->"
+            end = "<!-- CODEX_BACKLOG_FOCUS_END -->"
+            backlog.write_text(
+                original.split(start, 1)[0] + original.split(end, 1)[1],
+                encoding="utf-8",
+            )
+            claimed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    record["task_id"],
+                    "--base",
+                    "main",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(claimed.returncode, 0, claimed.stderr)
+            self.assertIn("requires Backlog focus metadata", claimed.stderr)
 
 
 if __name__ == "__main__":

@@ -2887,6 +2887,47 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 record["decision_log"][0]["resolution"]["outcome"], "changes_requested"
             )
 
+    def test_checkpoint_supersede_to_changes_requested_resets_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, record_path, _ = self._prepare_delivery(root)
+            decision = self._request_checkpoint(target, record_path, root)
+            self._record_checkpoint(target, record_path, root, decision, "accepted")
+            accepted = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(accepted["review"]["status"], "pending")
+            self.assertIsNotNone(accepted["verification"]["snapshot_id"])
+            resolution = self._checkpoint_resolution("changes_requested")
+            resolution["supersede"] = True
+            resolution["decided_at"] = "2026-07-20T09:00:00Z"
+            resolution_path = self._write_json(root / "supersede.json", resolution)
+            superseded = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-decision",
+                    record_relative(record_path, target),
+                    "--decision-id",
+                    decision["id"],
+                    "--expected-fingerprint",
+                    decision["decision_fingerprint"],
+                    "--resolution-json",
+                    str(resolution_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(superseded.returncode, 0, superseded.stderr)
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["status"], "in_progress")
+            self.assertIsNone(record["verification"]["snapshot_id"])
+            self.assertIsNone(record["developer"]["agent_id"])
+            self.assertEqual(
+                record["decision_log"][0]["resolution"]["outcome"], "changes_requested"
+            )
+            self.assertEqual(
+                record["decision_log"][0]["resolution_history"][0]["outcome"], "accepted"
+            )
+
     def test_show_before_dependency_allows_review_but_blocks_dependency_and_integration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3226,7 +3267,6 @@ class V4WorkflowM2Tests(unittest.TestCase):
             dependent["lane"]["dependency_snapshot"]["dependencies"] = [source["task_id"]]
             dependent["contract_fingerprint"] = contract_fingerprint(dependent)
             dependent_path = write_record(target, dependent)
-            sync_backlog_focus_from_record(target, dependent)
             sync_backlog_focus_from_record(target, dependent)
             dependent_relative = record_relative(dependent_path, target)
             blocked = run(

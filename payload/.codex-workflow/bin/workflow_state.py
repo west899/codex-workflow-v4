@@ -59,6 +59,7 @@ from workflow_common import (
     maybe_load_guardrail_registry,
     phase_b_pending_queued_recovery,
     validate_v4_live_backlog_focus,
+    validate_v4_planning_risk,
     validate_v4_architecture_delivery,
     validate_v4_contract_identity,
     validate_v4_current_observation_continuations,
@@ -301,6 +302,7 @@ def mutate_record(
                 validate_v4_live_architecture_baseline(paths, current)
                 validate_v4_live_focus_relationship(paths, current)
                 validate_v4_live_backlog_focus(paths, current)
+                validate_v4_planning_risk(current)
                 validate_v4_live_dependencies(paths, current)
                 validate_v4_current_observation_continuations(current)
                 validate_v4_contract_identity(current)
@@ -491,6 +493,9 @@ def request_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             raise StateError("request-decision requires a V4 task record.")
         validate_v4_live_requirements_baseline(paths, record)
         validate_v4_live_architecture_baseline(paths, record)
+        validate_v4_live_focus_relationship(paths, record)
+        validate_v4_live_backlog_focus(paths, record)
+        validate_v4_planning_risk(record)
         validate_v4_live_dependencies(paths, record)
         validate_v4_current_observation_continuations(record)
         validate_v4_contract_identity(record)
@@ -631,6 +636,9 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             raise StateError("record-decision requires a V4 task record.")
         validate_v4_live_requirements_baseline(paths, record)
         validate_v4_live_architecture_baseline(paths, record)
+        validate_v4_live_focus_relationship(paths, record)
+        validate_v4_live_backlog_focus(paths, record)
+        validate_v4_planning_risk(record)
         validate_v4_live_dependencies(paths, record)
         validate_v4_current_observation_continuations(record)
         validate_v4_contract_identity(record)
@@ -654,7 +662,6 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             if (decision.get("binding") or {}).get("requirements_baseline") != baseline:
                 raise StateError("Checkpoint Requirements baseline is stale.")
             lifecycle, resolution = _checkpoint_resolution(decision, supplied)
-            _validate_checkpoint_answer_chronology(decision, lifecycle, resolution)
             if lifecycle == "deferred":
                 if decision.get("status") != "open":
                     raise StateError("A resolved checkpoint cannot be deferred or overwritten.")
@@ -679,6 +686,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                     fault_injection("v4-reset-after-decision")
                     reset_v4_snapshot_evidence(record)
                 return
+            _validate_checkpoint_answer_chronology(decision, lifecycle, resolution)
             observation_identity = validate_v4_observation_receipt(
                 record, decision.get("observation_receipt")
             )
@@ -724,6 +732,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                         "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
                     )
                 decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                reset_v4_snapshot_evidence(record)
                 return
             if integration_status != "not_ready":
                 raise StateError(
@@ -772,6 +781,7 @@ def _require_v4_integrity(paths: WorkflowPaths, record: dict[str, Any]) -> None:
     validate_v4_live_architecture_baseline(paths, record)
     validate_v4_live_focus_relationship(paths, record)
     validate_v4_live_backlog_focus(paths, record)
+    validate_v4_planning_risk(record)
     validate_v4_live_dependencies(paths, record)
     validate_v4_decision_references(record)
     validate_v4_current_observation_continuations(record)
@@ -1970,9 +1980,12 @@ def resolve_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) 
     def mutation(record: dict[str, Any]) -> None:
         if record.get("version") == 4:
             # This recovery transition intentionally starts from a stale
-            # Requirements baseline; architecture and identity must still be
-            # current before the baseline is replaced.
+            # Requirements baseline; focus/WIP, architecture and identity
+            # must still be current before the baseline is replaced.
             validate_v4_live_architecture_baseline(paths, record)
+            validate_v4_live_focus_relationship(paths, record)
+            validate_v4_live_backlog_focus(paths, record)
+            validate_v4_planning_risk(record)
             validate_v4_contract_identity(record)
         source = record.get("source")
         if not isinstance(source, dict) or source.get("type") != "mvp_backlog":

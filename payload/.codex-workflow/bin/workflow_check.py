@@ -57,6 +57,7 @@ from workflow_common import (
     validate_v4_live_focus_relationship,
     validate_v4_live_requirements_baseline,
     validate_rolling_requirements,
+    validate_v4_planning_risk,
     validate_v4_retrospective,
     v4_action_blockers,
     workflow_status_is_current,
@@ -396,17 +397,15 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
             for path in sorted(runs.glob("*.json")):
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
+                except (OSError, json.JSONDecodeError) as exc:
+                    checks.error(f"Unable to read task record {path.name}: {exc}")
                     continue
                 if isinstance(payload, dict) and payload.get("version") == 4:
                     v4_records.append(payload)
-        if v4_records or "CODEX_BACKLOG_FOCUS_START" in text:
+        if v4_records:
             try:
-                if v4_records:
-                    for payload in v4_records:
-                        maybe_validate_v4_backlog_focus(text, payload)
-                else:
-                    maybe_validate_v4_backlog_focus(text, None)
+                for payload in v4_records:
+                    maybe_validate_v4_backlog_focus(text, payload)
             except WorkflowDataError as exc:
                 checks.error(str(exc))
 
@@ -521,6 +520,7 @@ def _v4_contract_gate(
             paths.tracked("backlog").read_text(encoding="utf-8"), record
         )
     )
+    capture(lambda: validate_v4_planning_risk(record))
     capture(lambda: validate_v4_live_architecture_baseline(paths, record))
     capture(lambda: validate_v4_live_dependencies(paths, record))
     contract = record.get("delivery_contract") or {}
