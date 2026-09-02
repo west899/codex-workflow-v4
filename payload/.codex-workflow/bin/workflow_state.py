@@ -682,7 +682,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                         "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
                     )
                 decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
-                if resolution.get("outcome") == "changes_requested":
+                if resolution.get("outcome") in {"changes_requested", "stopped"}:
                     fault_injection("v4-reset-after-decision")
                     reset_v4_snapshot_evidence(record)
                 return
@@ -711,7 +711,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             decision["status"] = "resolved"
             decision["resolution"] = resolution
             decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
-            if resolution["outcome"] == "changes_requested":
+            if resolution["outcome"] in {"changes_requested", "stopped"}:
                 fault_injection("v4-reset-after-decision")
                 reset_v4_snapshot_evidence(record)
         else:
@@ -934,7 +934,10 @@ def record_developer(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 paths.tracked("decisions").read_text(encoding="utf-8")
             )
             validate_v4_architecture_delivery(
-                record, delivery["changed_paths"], registry
+                record,
+                delivery["changed_paths"],
+                registry,
+                project_root=paths.root,
             )
             reset_v4_snapshot_evidence(record)
         record["developer"] = prepared

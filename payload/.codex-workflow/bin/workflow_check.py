@@ -403,11 +403,11 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
                 if isinstance(payload, dict) and payload.get("version") == 4:
                     v4_records.append(payload)
         if v4_records:
-            try:
-                for payload in v4_records:
+            for payload in v4_records:
+                try:
                     maybe_validate_v4_backlog_focus(text, payload)
-            except WorkflowDataError as exc:
-                checks.error(str(exc))
+                except WorkflowDataError as exc:
+                    checks.error(str(exc))
 
 
 def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:
@@ -440,9 +440,13 @@ def _v4_architecture_gate(
         registry = maybe_load_guardrail_registry(
             paths.tracked("decisions").read_text(encoding="utf-8")
         )
-        validate_independent_architecture_impact(record, changed_paths, registry)
+        validate_independent_architecture_impact(
+            record, changed_paths, registry, project_root=paths.root
+        )
         if changed_paths:
-            validate_v4_architecture_delivery(record, changed_paths, registry)
+            validate_v4_architecture_delivery(
+                record, changed_paths, registry, project_root=paths.root
+            )
     except (OSError, WorkflowDataError, WorkflowPathError, WorkflowJSONResourceError) as exc:
         checks.error(str(exc))
 

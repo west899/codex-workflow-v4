@@ -1698,10 +1698,30 @@ def v4_architecture_sensitive_paths(changed_paths: Iterable[str]) -> list[str]:
     return sorted(sensitive)
 
 
+def validate_fitness_ref(ref: str, *, project_root: Path | None = None) -> None:
+    if not isinstance(ref, str) or ":" not in ref:
+        raise WorkflowDataError(f"Fitness evidence {ref!r} is invalid.")
+    kind, _, target = ref.partition(":")
+    if kind not in {"test", "command", "check", "manual", "ci"}:
+        raise WorkflowDataError(f"Fitness evidence {ref} has an unknown kind.")
+    if not target.strip():
+        raise WorkflowDataError(f"Fitness evidence {ref} is missing a target.")
+    if (
+        project_root is not None
+        and kind in {"test", "check"}
+        and ("/" in target or target.endswith((".py", ".sh", ".rb", ".js")))
+    ):
+        evidence_path = project_root / target
+        if not evidence_path.is_file():
+            raise WorkflowDataError(f"Fitness evidence {ref} does not exist.")
+
+
 def validate_v4_architecture_delivery(
     record: dict[str, Any],
     changed_paths: Iterable[str],
     registry: dict[str, Any] | None = None,
+    *,
+    project_root: Path | None = None,
 ) -> None:
     """Require an accepted contract-bound architecture decision for structural paths."""
 
@@ -1714,7 +1734,9 @@ def validate_v4_architecture_delivery(
                 "V4 delivery changes architecture-sensitive paths without declared_impact=changes_guardrail: "
                 + ", ".join(sensitive)
             )
-    validate_independent_architecture_impact(record, changed_paths, registry)
+    validate_independent_architecture_impact(
+        record, changed_paths, registry, project_root=project_root
+    )
     if not sensitive:
         return
     if architecture.get("declared_impact") != "changes_guardrail":
@@ -4483,6 +4505,17 @@ def maybe_load_guardrail_registry(text: str) -> dict[str, Any] | None:
     return parse_guardrail_registry(text)
 
 
+def requirement_horizon(item: dict[str, Any]) -> str:
+    """Missing horizon is current_slice so unlabeled V1 Must items stay compatible."""
+
+    horizon = item.get("horizon")
+    if horizon in {None, ""}:
+        return "current_slice"
+    if horizon not in {"stable_core", "current_slice", "future_candidate"}:
+        raise WorkflowDataError(f"Requirements horizon {horizon!r} is invalid.")
+    return horizon
+
+
 def validate_rolling_requirements(brief: dict[str, Any]) -> None:
     """Keep future candidates out of the approved Must contract without changing V1 fingerprint."""
 
@@ -4503,7 +4536,7 @@ def validate_rolling_requirements(brief: dict[str, Any]) -> None:
         for index, item in enumerate(group):
             if not isinstance(item, dict):
                 continue
-            if item.get("horizon") != "future_candidate":
+            if requirement_horizon(item) != "future_candidate":
                 continue
             if group_name == "capabilities" and item.get("priority") != "must":
                 continue
@@ -4511,7 +4544,7 @@ def validate_rolling_requirements(brief: dict[str, Any]) -> None:
                 continue
             raise WorkflowDataError(
                 f"Future candidate {item.get('id') or group_name + '[' + str(index) + ']'} "
-                "cannot enter the approved Must contract."
+                "cannot enter the approved Must contract; promote it through a new Brief revision."
             )
 
 
@@ -4624,6 +4657,8 @@ def validate_independent_architecture_impact(
     record: dict[str, Any],
     changed_paths: Iterable[str],
     registry: dict[str, Any] | None = None,
+    *,
+    project_root: Path | None = None,
 ) -> str:
     independent = classify_independent_architecture_impact(changed_paths)
     contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
@@ -4650,6 +4685,12 @@ def validate_independent_architecture_impact(
                 raise WorkflowDataError(
                     f"Guardrail {item.get('id')} is missing fitness/verification evidence."
                 )
+            for ref in refs:
+                if not isinstance(ref, str):
+                    raise WorkflowDataError(
+                        f"Guardrail {item.get('id')} fitness evidence must be text."
+                    )
+                validate_fitness_ref(ref, project_root=project_root)
             if registry and registry.get("status") == "approved":
                 known = {
                     entry.get("id")
@@ -5537,6 +5578,22 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
     for row in backlog_rows(backlog_text):
         if row["status"] in counts:
             counts[row["status"]] += 1
+    backlog_focus_wip: dict[str, Any] | None = None
+    focus_by_id: dict[str, dict[str, Any]] = {}
+    if "CODEX_BACKLOG_FOCUS_START" in backlog_text:
+        try:
+            metadata = parse_backlog_focus_metadata(backlog_text)
+            backlog_focus_wip = {
+                "unconfirmed_core_slice_ids": metadata["unconfirmed_core_slice_ids"],
+                "limit": metadata["wip"]["unconfirmed_core_slice_limit"],
+            }
+            focus_by_id = {
+                item["id"]: item
+                for item in metadata.get("items", [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+        except WorkflowDataError as exc:
+            backlog_focus_wip = {"status": "invalid", "reason": str(exc)}
     records_by_task: dict[str, dict[str, Any]] = {}
 
     def add_status_record(
@@ -5562,6 +5619,17 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
         }
         product = entry["product"]
         if isinstance(product, dict) and product.get("has_product_card"):
+            item = focus_by_id.get(record["task_id"])
+            if isinstance(item, dict):
+                kind = item.get("kind")
+                product = {
+                    **product,
+                    "focus_slice_id": item.get("focus_slice_id") or product.get("focus_slice_id"),
+                    "kind": kind or product.get("kind"),
+                    "supports_task_id": item.get("supports_task_id"),
+                    "supporting_cannot_claim_core_complete": kind == "supporting",
+                    "focus_source": "backlog_metadata",
+                }
             architecture = dict(product.get("architecture") or {})
             architecture["live_status"] = _v4_architecture_live_status(paths, record)
             entry["product"] = {**product, "architecture": architecture}
@@ -5630,16 +5698,6 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
                     "active_task_ids": [item.get("task_id") for item in payload.get("active_tasks", []) if isinstance(item, dict)],
                 }
             )
-    backlog_focus_wip: dict[str, Any] | None = None
-    if "CODEX_BACKLOG_FOCUS_START" in backlog_text:
-        try:
-            metadata = parse_backlog_focus_metadata(backlog_text)
-            backlog_focus_wip = {
-                "unconfirmed_core_slice_ids": metadata["unconfirmed_core_slice_ids"],
-                "limit": metadata["wip"]["unconfirmed_core_slice_limit"],
-            }
-        except WorkflowDataError as exc:
-            backlog_focus_wip = {"status": "invalid", "reason": str(exc)}
     state = {
         "schema_version": 1,
         "requirements_baseline": baseline,

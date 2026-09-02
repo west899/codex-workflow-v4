@@ -2928,6 +2928,38 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 record["decision_log"][0]["resolution_history"][0]["outcome"], "accepted"
             )
 
+    def test_checkpoint_supersede_to_stopped_resets_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, record_path, _ = self._prepare_delivery(root)
+            decision = self._request_checkpoint(target, record_path, root)
+            self._record_checkpoint(target, record_path, root, decision, "accepted")
+            resolution = self._checkpoint_resolution("stopped")
+            resolution["supersede"] = True
+            resolution["decided_at"] = "2026-07-20T09:00:00Z"
+            resolution_path = self._write_json(root / "stop.json", resolution)
+            stopped = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "record-decision",
+                    record_relative(record_path, target),
+                    "--decision-id",
+                    decision["id"],
+                    "--expected-fingerprint",
+                    decision["decision_fingerprint"],
+                    "--resolution-json",
+                    str(resolution_path),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertIsNone(record["verification"]["snapshot_id"])
+            self.assertIsNone(record["developer"]["agent_id"])
+            self.assertEqual(record["decision_log"][0]["resolution"]["outcome"], "stopped")
+
     def test_show_before_dependency_allows_review_but_blocks_dependency_and_integration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3567,6 +3599,20 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 str(decision_path),
                 "--apply",
             )
+            backlog = target / ".codex-workflow/state/MVP_BACKLOG.md"
+            original_backlog = backlog.read_text(encoding="utf-8")
+            focus_start = "<!-- CODEX_BACKLOG_FOCUS_START -->"
+            focus_end = "<!-- CODEX_BACKLOG_FOCUS_END -->"
+            if focus_start in original_backlog:
+                backlog.write_text(
+                    original_backlog.split(focus_start, 1)[0]
+                    + original_backlog.split(focus_end, 1)[1],
+                    encoding="utf-8",
+                )
+                missing_focus = run(resolve_command, cwd=target)
+                self.assertNotEqual(missing_focus.returncode, 0, missing_focus.stderr)
+                self.assertIn("requires Backlog focus metadata", missing_focus.stderr)
+                backlog.write_text(original_backlog, encoding="utf-8")
 
             invalidated_record = copy.deepcopy(stale_record)
             invalidated_record["verification"]["status"] = "invalidated"

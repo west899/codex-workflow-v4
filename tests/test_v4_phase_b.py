@@ -38,6 +38,8 @@ from workflow_common import (  # noqa: E402
     validate_backlog_fixed_columns,
     validate_contract_backlog_focus,
     validate_independent_architecture_impact,
+    requirement_horizon,
+    validate_fitness_ref,
     validate_rolling_requirements,
     validate_v4_architecture_delivery,
     validate_v4_backlog_focus,
@@ -232,6 +234,61 @@ class PhaseBRequirementsAndRiskTests(unittest.TestCase):
             },
         }
         validate_rolling_requirements(brief)
+        self.assertEqual(requirement_horizon({"id": "REQ-F-001"}), "current_slice")
+        with self.assertRaisesRegex(WorkflowDataError, "horizon"):
+            requirement_horizon({"id": "REQ-F-002", "horizon": "later"})
+
+    def test_requirements_gate_rejects_future_must_and_invalid_horizon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            approved_requirements(target)
+            brief = target / ".codex-workflow/governance/requirements/REQ-001.md"
+            start = "<!-- CODEX_REQUIREMENTS_JSON_START -->"
+            end = "<!-- CODEX_REQUIREMENTS_JSON_END -->"
+            text = brief.read_text(encoding="utf-8")
+            payload = json.loads(text.split(start, 1)[1].split(end, 1)[0])
+            payload["requirements"]["capabilities"][0]["horizon"] = "future_candidate"
+            markdown = text.split(end, 1)[1]
+            from support import requirements_fingerprint
+
+            fingerprint = requirements_fingerprint(payload, markdown)
+            payload["approval"]["approved_fingerprint"] = fingerprint
+            brief.write_text(
+                start + "\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n" + end + markdown,
+                encoding="utf-8",
+            )
+            for relative in (
+                Path(".codex-workflow/governance/PROJECT.md"),
+                Path(".codex-workflow/state/MVP_BACKLOG.md"),
+            ):
+                path = target / relative
+                block_start = "<!-- CODEX_REQUIREMENTS_BASELINE_START -->"
+                block_end = "<!-- CODEX_REQUIREMENTS_BASELINE_END -->"
+                current = path.read_text(encoding="utf-8")
+                baseline = json.loads(current.split(block_start, 1)[1].split(block_end, 1)[0])
+                baseline["approval_fingerprint"] = fingerprint
+                path.write_text(
+                    current.split(block_start, 1)[0]
+                    + block_start
+                    + "\n"
+                    + json.dumps(baseline, ensure_ascii=False, indent=2)
+                    + "\n"
+                    + block_end
+                    + current.split(block_end, 1)[1],
+                    encoding="utf-8",
+                )
+            blocked = run(
+                workflow_command(
+                    target,
+                    "workflow_check.py",
+                    "requirements-gate",
+                    str(brief.relative_to(target)),
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertIn("Future candidate", blocked.stderr)
 
     def test_not_required_rejected_above_small_no_trigger(self) -> None:
         small = {
@@ -365,6 +422,13 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             validate_independent_architecture_impact(missing, ["src/app.py"])
         with self.assertRaisesRegex(WorkflowDataError, "fitness evidence"):
             validate_v4_architecture_delivery(missing, ["src/app.py"])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(WorkflowDataError, "does not exist"):
+                validate_fitness_ref(
+                    "test:tests/missing_guard.py",
+                    project_root=Path(directory),
+                )
+        validate_fitness_ref("test:architecture-boundary")
 
     def test_conflicting_decision_requires_explicit_supersede(self) -> None:
         decision = {
