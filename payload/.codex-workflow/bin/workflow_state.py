@@ -72,6 +72,10 @@ from workflow_common import (
     validate_v4_retrospective,
     validate_v4_live_requirements_baseline,
     validate_v4_observation_receipt,
+    validate_remote_closeout_evidence,
+    bind_provider_receipt_to_delivery,
+    PROVIDER_RECEIPT_SCHEMA,
+    REMOTE_PROOF_SUBSTITUTION_FLAGS,
     v4_dependency_snapshot,
     v4_continuation_path_class,
     validate_workflow_schema,
@@ -683,7 +687,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                         "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
                     )
                 decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
-                if resolution.get("outcome") == "accepted":
+                if resolution.get("outcome") == "accepted" and not (paths.lane_runtime / "lane.json").is_file():
                     mark_backlog_focus_direction_confirmed(paths, str(record.get("task_id")))
                 if resolution.get("outcome") in {"changes_requested", "stopped"}:
                     fault_injection("v4-reset-after-decision")
@@ -714,7 +718,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
             decision["status"] = "resolved"
             decision["resolution"] = resolution
             decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
-            if resolution["outcome"] == "accepted":
+            if resolution["outcome"] == "accepted" and not (paths.lane_runtime / "lane.json").is_file():
                 mark_backlog_focus_direction_confirmed(paths, str(record.get("task_id")))
             if resolution["outcome"] in {"changes_requested", "stopped"}:
                 fault_injection("v4-reset-after-decision")
@@ -1676,17 +1680,11 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
 
 def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     evidence = read_json(args.evidence_json, name="remote integration evidence")
-    required = {"target_ref", "target_parent", "pr_head_commit", "result_commit", "merge_strategy", "pr_url", "ci_checks"}
-    missing = sorted(required - set(evidence))
-    if missing:
-        raise StateError("Remote evidence is missing: " + ", ".join(missing))
-    if evidence.get("merge_strategy") != "ff":
-        raise StateError("V3.0 remote closeout only supports strict ff product integration.")
-    checks = evidence.get("ci_checks")
-    if not isinstance(checks, list) or not checks or any(
-        not isinstance(item, dict) or item.get("status") != "success" for item in checks
-    ):
-        raise StateError("Every required remote CI check must be recorded as success.")
+    schema_path = paths.tracked("schemas") / PROVIDER_RECEIPT_SCHEMA
+    try:
+        validate_remote_closeout_evidence(evidence, schema_path=schema_path)
+    except WorkflowDataError as exc:
+        raise StateError(str(exc)) from exc
     _, record = load_record(paths, args.record)
     if record.get("version") == 2:
         raise StateError("V2 records are read-only history and cannot close out.")
@@ -1696,8 +1694,11 @@ def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> N
         )
     integration = record.get("integration") or {}
     verification = record.get("verification") or {}
+    review = record.get("review") or {}
     if integration.get("mode") != "remote_pr_ci" or integration.get("status") not in {"pending", "merged_pending_closeout"}:
         raise StateError("Remote closeout requires pending remote_pr_ci integration.")
+    if review.get("status") != "pass":
+        raise StateError("EQ-001: remote closeout requires Independent Reviewer record-review pass.")
     if integration.get("target_ref") != evidence.get("target_ref"):
         raise StateError("Remote evidence target ref differs from policy.")
     result_commit = rev_parse(paths, str(evidence["result_commit"]))
@@ -1706,15 +1707,33 @@ def prepare_remote_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> N
     if pr_head != verification.get("delivery_commit"):
         raise StateError("Remote PR head is not the exact verified delivery commit.")
     if result_commit != pr_head:
-        raise StateError("Strict ff integration requires result_commit == pr_head_commit.")
+        raise StateError("EQ-006: Strict ff integration requires result_commit == pr_head_commit.")
     if not is_ancestor(paths, target_parent, result_commit):
         raise StateError("Remote result is not a fast-forward descendant of target_parent.")
     if not is_ancestor(paths, result_commit, rev_parse(paths, str(evidence["target_ref"]))):
         raise StateError("Configured target ref does not contain the remote result commit.")
     evidence = dict(evidence)
-    evidence["evidence"] = evidence.get("evidence", []) + [
-        {"kind": "remote_ff", "verified_at": utc_now()}
-    ]
+    extra = [{"kind": "remote_ff", "verified_at": utc_now()}]
+    receipt = evidence.pop("provider_receipt", None)
+    if receipt is not None:
+        snapshot = verification.get("snapshot_id")
+        if not isinstance(snapshot, str) or not snapshot:
+            raise StateError("EQ-002: verified snapshot_id is required to attach a provider receipt.")
+        try:
+            bind_provider_receipt_to_delivery(
+                receipt,
+                pr_head_commit=pr_head,
+                snapshot_id=snapshot,
+            )
+        except WorkflowDataError as exc:
+            raise StateError(str(exc)) from exc
+        extra.append({"kind": "provider_receipt", "verified_at": utc_now(), "additive_only": True})
+    for flag in REMOTE_PROOF_SUBSTITUTION_FLAGS:
+        evidence.pop(flag, None)
+    evidence.pop("expected_check_source", None)
+    evidence.pop("dismiss_stale_reviews", None)
+    evidence.pop("require_last_push_approval", None)
+    evidence["evidence"] = list(evidence.get("evidence") or []) + extra
     _prepare_closeout_commit(
         paths,
         args.record,

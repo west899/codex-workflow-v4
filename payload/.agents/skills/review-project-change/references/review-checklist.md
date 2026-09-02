@@ -14,6 +14,12 @@ Use only the sections relevant to the change. This is a prompt for investigation
 - Is there exactly one `confirmed/narrowed/rejected/unverified` assessment for every Developer claim fingerprint?
 - Is Review `pass` used only when every assessment is `confirmed`? Any other assessment requires `changes_requested`.
 
+## Remote integration
+
+- Does remote closeout still require strict-ff, `result_commit == pr_head_commit`, and CI `status == success`?
+- If a provider receipt is present, is it additive only and unable to skip Independent Reviewer or local ff/CI proofs?
+- Are `skipped`/`neutral`, admin bypass, and branch-protection-as-Reviewer paths rejected?
+
 ## V4 product contract
 
 - Is `focus_slice_id` the human-confirmed core slice, and does supporting work declare `supports_task_id` without claiming the core is done?

@@ -3131,6 +3131,146 @@ def _validate_json_schema_node(
                     )
 
 
+PROVIDER_RECEIPT_SCHEMA = "provider-receipt-v1.schema.json"
+REMOTE_PROOF_SUBSTITUTION_FLAGS = {
+    "github_review_equivalent": "EQ-001",
+    "skip_reviewer": "EQ-001",
+    "substitutes_reviewer": "EQ-001",
+    "reviewer_equivalent": "EQ-001",
+    "merge_queue_review_equivalent": "EQ-001",
+    "branch_protection_review_equivalent": "EQ-001",
+    "admin_bypass": "EQ-005",
+    "bypass_branch_protection": "EQ-005",
+    "stale_approval": "EQ-002",
+    "missing_latest_push_approval": "EQ-002",
+}
+_UNTRUSTED_CHECK_SOURCES = frozenset({"", "unknown", "untrusted", "admin", "admin-bypass", "bypass"})
+
+
+def validate_provider_receipt(schema_path: Path, payload: Any) -> dict[str, Any]:
+    """Fail-closed read-only GitHub receipt. Never substitutes local proofs."""
+
+    if not isinstance(payload, dict):
+        raise WorkflowDataError("Provider receipt must be an object.")
+    validate_json_schema(schema_path, payload, label="Provider receipt")
+    if payload.get("additive_only") is not True:
+        raise WorkflowDataError("Provider receipt additive_only must be true.")
+    if payload.get("substitutes_reviewer") is not False:
+        raise WorkflowDataError("EQ-001: provider receipt cannot substitute Independent Reviewer.")
+    if payload.get("substitutes_local_proofs") is not False:
+        raise WorkflowDataError("Provider receipt cannot substitute local remote proofs.")
+    protection = payload.get("protection")
+    if not isinstance(protection, dict):
+        raise WorkflowDataError("Provider receipt protection must be an object.")
+    if protection.get("admin_bypass_allowed") is not False:
+        raise WorkflowDataError("EQ-005: provider receipt with admin bypass cannot be accepted.")
+    if protection.get("dismiss_stale_reviews") is not True:
+        raise WorkflowDataError("EQ-002: provider receipt must dismiss stale reviews.")
+    if protection.get("require_last_push_approval") is not True:
+        raise WorkflowDataError("EQ-002: provider receipt must require latest-push approval.")
+    for item in payload.get("checks") or []:
+        if not isinstance(item, dict):
+            raise WorkflowDataError("Provider receipt checks must be objects.")
+        status = item.get("status")
+        if status in {"skipped", "neutral"}:
+            raise WorkflowDataError("EQ-004: skipped/neutral is not V4 CI success.")
+        if status != "success":
+            raise WorkflowDataError("Every provider receipt check must be recorded as success.")
+        source = item.get("source")
+        if not isinstance(source, str) or source.strip().lower() in _UNTRUSTED_CHECK_SOURCES:
+            raise WorkflowDataError("EQ-009: provider receipt check source is missing or untrusted.")
+    return payload
+
+
+def bind_provider_receipt_to_delivery(
+    receipt: dict[str, Any],
+    *,
+    pr_head_commit: str,
+    snapshot_id: str | None = None,
+) -> None:
+    """Require an additive receipt to name the current delivery, not another SHA."""
+
+    commit = receipt.get("commit_sha")
+    if not isinstance(commit, str) or commit != pr_head_commit:
+        raise WorkflowDataError("EQ-002: provider receipt commit_sha must equal pr_head_commit.")
+    if snapshot_id is not None:
+        receipt_snapshot = receipt.get("snapshot_id")
+        if not isinstance(receipt_snapshot, str) or receipt_snapshot != snapshot_id:
+            raise WorkflowDataError("EQ-002: provider receipt snapshot_id must equal the verified snapshot.")
+    for index, item in enumerate(receipt.get("reviews") or []):
+        if not isinstance(item, dict):
+            raise WorkflowDataError("Provider receipt reviews must be objects.")
+        review_commit = item.get("commit_sha")
+        if not isinstance(review_commit, str) or review_commit != pr_head_commit:
+            raise WorkflowDataError(
+                f"EQ-002: provider receipt reviews[{index}].commit_sha must equal pr_head_commit."
+            )
+
+
+def validate_remote_closeout_evidence(evidence: dict[str, Any], *, schema_path: Path | None = None) -> None:
+    """Policy checks for remote product integration. Does not relax ff/CI proofs."""
+
+    required = {
+        "target_ref",
+        "target_parent",
+        "pr_head_commit",
+        "result_commit",
+        "merge_strategy",
+        "pr_url",
+        "ci_checks",
+    }
+    missing = sorted(required - set(evidence))
+    if missing:
+        raise WorkflowDataError("Remote evidence is missing: " + ", ".join(missing))
+    for flag, matrix_id in REMOTE_PROOF_SUBSTITUTION_FLAGS.items():
+        if evidence.get(flag):
+            raise WorkflowDataError(
+                f"{matrix_id}: {flag} cannot substitute Independent Reviewer or local remote proofs."
+            )
+    if evidence.get("dismiss_stale_reviews") is False:
+        raise WorkflowDataError("EQ-002: stale approvals are not acceptable remote proof.")
+    if evidence.get("require_last_push_approval") is False:
+        raise WorkflowDataError("EQ-002: latest-push approval is required when claimed.")
+    for field in ("merge_group", "result_tree"):
+        if field in evidence and evidence.get(field) is not None:
+            value = evidence.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise WorkflowDataError(f"Optional topology field {field} must be non-empty text when present.")
+    if evidence.get("merge_strategy") != "ff":
+        raise WorkflowDataError("EQ-006: V3.0 remote closeout only supports strict ff product integration.")
+    result_commit = evidence.get("result_commit")
+    pr_head = evidence.get("pr_head_commit")
+    merge_group = evidence.get("merge_group")
+    if isinstance(merge_group, str) and merge_group and merge_group != result_commit:
+        raise WorkflowDataError("EQ-006: optional merge_group must equal result_commit on the ff path.")
+    checks = evidence.get("ci_checks")
+    if not isinstance(checks, list) or not checks:
+        raise WorkflowDataError("Every required remote CI check must be recorded as success.")
+    expected_source = evidence.get("expected_check_source")
+    for index, item in enumerate(checks):
+        if not isinstance(item, dict):
+            raise WorkflowDataError("Every required remote CI check must be recorded as success.")
+        status = item.get("status")
+        if status in {"skipped", "neutral"}:
+            raise WorkflowDataError("EQ-004: skipped/neutral is not V4 CI success.")
+        if status != "success":
+            raise WorkflowDataError("Every required remote CI check must be recorded as success.")
+        if "source" in item:
+            source = item.get("source")
+            if not isinstance(source, str) or source.strip().lower() in _UNTRUSTED_CHECK_SOURCES:
+                raise WorkflowDataError("EQ-009: remote CI check source is missing or untrusted.")
+            if isinstance(expected_source, str) and expected_source and source != expected_source:
+                raise WorkflowDataError("EQ-009: remote CI check source differs from expected_check_source.")
+    receipt = evidence.get("provider_receipt")
+    if receipt is not None:
+        if schema_path is None:
+            raise WorkflowDataError("Provider receipt validation requires the installed schema.")
+        validate_provider_receipt(schema_path, receipt)
+        if not isinstance(pr_head, str) or not pr_head:
+            raise WorkflowDataError("Remote evidence pr_head_commit is required to bind a provider receipt.")
+        bind_provider_receipt_to_delivery(receipt, pr_head_commit=pr_head)
+
+
 def validate_json_schema(schema_path: Path, payload: Any, *, label: str) -> None:
     """Validate a workflow payload with the portable JSON Schema subset we ship.
 

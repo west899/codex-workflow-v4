@@ -13,7 +13,7 @@
 <details>
 <summary>Requirements、Backlog、task status/phase/verification/integration</summary>
 
-- 状态指纹：`2ca4dc0a7e39a862c0805f172b5d9622c2eb2e1ca6eabe465827db5880a18e76`
+- 状态指纹：`985e310e670ef7d562e60dcc7b21ffcaff515e13ff9a17e2c2dbb51816c142db`
 
 </details>
 
@@ -25,6 +25,12 @@
     "draft": 1,
     "ready": 0,
     "removed": 0
+  },
+  "backlog_focus_wip": {
+    "limit": 1,
+    "unconfirmed_core_slice_ids": [
+      "MVP-001"
+    ]
   },
   "generated_at": "{{INSTALL_DATE}}",
   "requirements_baseline": {
@@ -43,7 +49,7 @@
   },
   "requirements_impacts": [],
   "schema_version": 1,
-  "status_fingerprint": "2ca4dc0a7e39a862c0805f172b5d9622c2eb2e1ca6eabe465827db5880a18e76",
+  "status_fingerprint": "985e310e670ef7d562e60dcc7b21ffcaff515e13ff9a17e2c2dbb51816c142db",
   "task_records": []
 }
 <!-- CODEX_WORKFLOW_STATUS_JSON_END -->

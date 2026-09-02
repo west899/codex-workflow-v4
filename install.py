@@ -245,6 +245,8 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
             "Upgrade lists Backlog focus metadata and guardrail registry status without approving them.",
             "Pending/queued recovery is sealed abandon-only; dequeue/reopen is refused and done is not forged.",
             "Existing V3 tasks keep V3 closeout semantics; new tasks should use task-record-v4.",
+            "Remote product integration remains strict-ff; upgrade does not guess GitHub protection or approve merge queue.",
+            "Provider receipts are additive only and do not replace Independent Reviewer or local remote proofs.",
         ],
     }
     if not target_root.exists():

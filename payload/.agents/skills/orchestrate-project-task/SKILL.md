@@ -116,7 +116,7 @@ py -3 .codex-workflow/bin/workflow_lane.py refresh-base <lane-id> --base main --
 ## 8. Two-phase closeout
 
 - Local bootstrap: external ff-only product integration, then `prepare-local-closeout` from a clean target worktree.
-- Remote: external push/PR/CI/human merge, fetch, validate strict-ff evidence JSON, then `prepare-remote-closeout` from the latest target baseline; its closeout-only commit goes through an external PR/CI/human merge.
+- Remote: external push/PR/CI/human merge, fetch, validate strict-ff evidence JSON, then `prepare-remote-closeout` from the latest target baseline; its closeout-only commit goes through an external PR/CI/human merge. Optional `provider-receipt` is additive only and cannot replace Independent Reviewer or ff/CI proofs. Do not treat branch protection or merge queue as Reviewer equivalence. Closeout is not `released`.
 
 Prepare writes done/integration evidence/dependency unlock into one closeout commit and records a canonical state fingerprint. The prepared SHA is printed and kept in local audit because a Git-tracked record cannot contain its own commit SHA. It does not release claims. After the configured target ref contains that exact commit:
 

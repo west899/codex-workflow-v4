@@ -16,8 +16,8 @@
 | Phase A 基线 | `phase_a_passed` / Plan ID `V4-PHASEA` revision `1` / fingerprint `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | 取代 | revision `1` / fingerprint `c28f862ce5651e64cd44f6434b1b07c27f413b6829548c141ecd5a574a8ee0c7` |
 | 设计输入 | `改进建议.md` 第 6.4、7、10、11、12、15.4、16、18–19、23–24 节；`V4_PHASEA_PLAN.md` 第 3.2 节延后表 |
-| 当前允许动作 | 封存 Phase B；准备 Phase C 须另开计划 |
-| 当前禁止动作 | 实施 Phase C；并行 `in_progress`；修改第 2–10 节；新增 decision kind、主状态机或第二套 checkpoint 命令 |
+| 当前允许动作 | 封存 Phase B；[V4 Phase C 执行计划](V4_PHASEC_PLAN.md) revision 2 为 `phase_c_passed` |
+| 当前禁止动作 | 并行 `in_progress`；修改第 2–10 节；新增 decision kind、主状态机或第二套 checkpoint 命令 |
 
 规范指纹校验命令：
 

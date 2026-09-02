@@ -32,7 +32,7 @@ py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs
 
 ### 3.1 JSON Schema 结构门禁
 
-随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` / `task-record-v4.schema.json` 在对应版本 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
+随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` / `task-record-v4.schema.json` 在对应版本 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验；`provider-receipt-v1.schema.json` 在 `provider-receipt` 与 remote closeout 附加证据时只读校验。远端产品集成默认仍是 strict-ff；receipt 只能附加，不能替代 Independent Reviewer 或 ff/CI 本地证明。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。integration/closeout 不写成 released。
 
 校验器仅支持这些 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3/V4 state 写入。
 
@@ -289,13 +289,14 @@ prepare 生成只含 task/Backlog/依赖解锁状态的 closeout commit 和 fing
 py -3 .codex-workflow/bin/workflow_state.py prepare-integration <record> --mode remote_pr_ci --apply
 ```
 
-外部执行 push、产品 PR、CI 和人工合并；本工作流不会自动完成这些操作。V3.0 只接受严格 ff 证明。跨这些外部步骤时可按 4.1 持有同一 Integrator 租约；fetch 后提供 evidence JSON（target_ref、target_parent、pr_head_commit、result_commit、merge_strategy=`ff`、PR URL、全部 success 的 CI checks），从最新目标基线创建 closeout commit：
+外部执行 push、产品 PR、CI 和人工合并；本工作流不会自动完成这些操作。远端产品集成默认仍是 strict-ff。跨这些外部步骤时可按 4.1 持有同一 Integrator 租约；fetch 后提供 evidence JSON（target_ref、target_parent、pr_head_commit、result_commit、merge_strategy=`ff`、PR URL、全部 success 的 CI checks），从最新目标基线创建 closeout commit。可选 `provider_receipt` 只能附加：
 
 ```text
+py -3 .codex-workflow/bin/workflow_check.py provider-receipt receipt.json
 py -3 .codex-workflow/bin/workflow_state.py prepare-remote-closeout <record> --evidence-json remote.json --apply
 ```
 
-closeout commit 再走外部 closeout-only PR/CI/人工合并；fetch 后 confirm/reconcile。缺字段、CI 非 success、result 不在 target、PR head 不是 verified commit 或非 ff 全部 fail closed。
+closeout commit 再走外部 closeout-only PR/CI/人工合并；fetch 后 confirm/reconcile。缺字段、CI 为 `skipped`/`neutral`、result 不在 target、PR head 不是 verified commit、`head != result`、管理员 bypass、stale approval、未要求 latest-push、receipt 未绑定当前 delivery，或 `review.status` 不是 `pass`，全部 fail closed。GitHub required reviews 不能替代 Independent Reviewer。receipt 不能替代本地证明。integration/closeout 不写成 released。
 
 ## 8. 集成队列、恢复与释放
 

@@ -62,6 +62,8 @@ from workflow_common import (
     validate_v4_retrospective,
     v4_action_blockers,
     workflow_status_is_current,
+    validate_provider_receipt,
+    PROVIDER_RECEIPT_SCHEMA,
 )
 from workflow_lock import canonical_resource_key, lock_probe
 from workflow_paths import (
@@ -132,7 +134,7 @@ def parser() -> argparse.ArgumentParser:
             "start", "manual", "doctor", "stop", "preflight", "snapshot", "gate",
             "requirements-snapshot", "requirements-gate", "requirements-impact",
             "rolling-promotion",
-            "status", "integration-preflight", "closeout-gate",
+            "status", "integration-preflight", "closeout-gate", "provider-receipt",
         ),
     )
     result.add_argument("target", nargs="?")
@@ -1433,6 +1435,26 @@ def main() -> None:
 
     if args.mode == "doctor":
         raise SystemExit(doctor(paths))
+
+    if args.mode == "provider-receipt":
+        checks = Checks()
+        if not args.target:
+            checks.error("provider-receipt requires a receipt JSON path.")
+            checks.finish("provider-receipt")
+            return
+        candidate = Path(args.target)
+        if not candidate.is_absolute():
+            candidate = paths.root / candidate
+        try:
+            candidate = resolve_path(candidate, label="Provider receipt")
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            validate_provider_receipt(paths.tracked("schemas") / PROVIDER_RECEIPT_SCHEMA, payload)
+        except (OSError, json.JSONDecodeError, WorkflowDataError, WorkflowPathError) as exc:
+            checks.error(str(exc))
+        if args.as_json and not checks.errors:
+            print(json.dumps({"status": "ok", "additive_only": True, "substitutes_reviewer": False}, ensure_ascii=False))
+        checks.finish("provider-receipt")
+        return
 
     checks = Checks()
 

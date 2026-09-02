@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-workflow/provider-receipt-v1.schema.json",
+  "title": "Codex Workflow V4 provider receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "kind",
+    "snapshot_id",
+    "commit_sha",
+    "checks",
+    "reviews",
+    "protection",
+    "additive_only",
+    "substitutes_reviewer",
+    "substitutes_local_proofs"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "provider": {"enum": ["github"]},
+    "kind": {"enum": ["pull_request", "merge_group"]},
+    "snapshot_id": {"type": "string", "minLength": 1, "pattern": "^[0-9a-f]{64}$"},
+    "commit_sha": {"type": "string", "minLength": 1},
+    "tree_sha": {"type": "string", "minLength": 1},
+    "pr_head": {"type": "string", "minLength": 1},
+    "merge_group": {"type": "string", "minLength": 1},
+    "result_commit": {"type": "string", "minLength": 1},
+    "result_tree": {"type": "string", "minLength": 1},
+    "check_run_id": {"type": "string", "minLength": 1},
+    "additive_only": {"const": true},
+    "substitutes_reviewer": {"type": "boolean"},
+    "substitutes_local_proofs": {"type": "boolean"},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "source"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "status": {"enum": ["success", "skipped", "neutral"]},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reviewer", "state", "commit_sha"],
+        "properties": {
+          "reviewer": {"type": "string", "minLength": 1},
+          "state": {"enum": ["approved"]},
+          "commit_sha": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "protection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admin_bypass_allowed",
+        "dismiss_stale_reviews",
+        "require_last_push_approval"
+      ],
+      "properties": {
+        "admin_bypass_allowed": {"type": "boolean"},
+        "dismiss_stale_reviews": {"type": "boolean"},
+        "require_last_push_approval": {"type": "boolean"}
+      }
+    }
+  }
+}
