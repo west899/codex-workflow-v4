@@ -8,9 +8,12 @@ from pathlib import Path
 
 from support import (
     PACKAGE_ROOT,
+    approved_requirements,
     basic_v4_record,
+    commit_all,
     configure_v4_architecture_baseline,
     create_baseline,
+    developer_evidence_v1,
     install_project,
     record_relative,
     run,
@@ -26,8 +29,11 @@ from workflow_common import (  # noqa: E402
     apply_supersede_resolution,
     assert_v4_decision_write_allowed,
     classify_independent_architecture_impact,
+    BACKLOG_FOCUS_MARKER,
     maybe_validate_v4_backlog_focus,
     parse_guardrail_registry,
+    read_embedded_json,
+    replace_embedded_json,
     phase_b_pending_queued_recovery,
     validate_backlog_fixed_columns,
     validate_contract_backlog_focus,
@@ -35,6 +41,7 @@ from workflow_common import (  # noqa: E402
     validate_rolling_requirements,
     validate_v4_architecture_delivery,
     validate_v4_backlog_focus,
+    validate_v4_planning_risk,
     validate_v4_retrospective,
     v4_effective_risk_tier,
 )
@@ -250,6 +257,26 @@ class PhaseBRequirementsAndRiskTests(unittest.TestCase):
         }
         self.assertEqual(v4_effective_risk_tier(small), "small")
         self.assertEqual(v4_effective_risk_tier(high), "high")
+        with self.assertRaisesRegex(WorkflowDataError, "planning.level"):
+            v4_effective_risk_tier({"planning": {"level": "tiny"}, "risk": {}})
+        completed = {
+            "completed": True,
+            "completed_by": "v4-developer",
+            "completed_at": "2026-07-20T02:00:00Z",
+            "questions": {
+                "repeated_problem_found": False,
+                "guidance_gap_found": False,
+                "deterministic_check_candidate_found": False,
+            },
+            "summary": "done",
+        }
+        with self.assertRaisesRegex(WorkflowDataError, "exec_plan"):
+            validate_v4_planning_risk(high)
+        with self.assertRaisesRegex(WorkflowDataError, "exec_plan"):
+            validate_v4_retrospective(high, completed)
+        high["planning"]["exec_plan"] = ".codex-workflow/state/plans/HIGH.md"
+        validate_v4_planning_risk(high)
+        validate_v4_retrospective(high, completed)
         allowed = {
             "not_required": True,
             "not_required_reason": "small no-trigger supporting fix",
@@ -318,7 +345,7 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
         )
         self.assertEqual(
             validate_independent_architecture_impact(record, ["src/app.py"], registry),
-            "none",
+            "within_guardrails",
         )
         missing = {
             "delivery_contract": {
@@ -402,7 +429,6 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
                     relative,
                     "--action",
                     "abandon",
-                    "--apply",
                 ),
                 cwd=target,
             )
@@ -410,6 +436,20 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             payload = json.loads(sealed.stdout)
             self.assertEqual(payload["recovery"], "abandon_only")
             self.assertFalse(payload["mutated"])
+            applied = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "pending-queued-recovery",
+                    relative,
+                    "--action",
+                    "abandon",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertNotEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("never mutates", applied.stderr)
             self.assertEqual(path.read_bytes(), before)
 
     def test_preflight_rejects_v4_without_backlog_focus_marker(self) -> None:
@@ -433,6 +473,77 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
             )
             self.assertNotEqual(blocked.returncode, 0, blocked.stderr)
             self.assertIn("requires Backlog focus metadata", blocked.stderr)
+
+    def test_record_developer_rejects_missing_focus_and_wip_overflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            _, requirements_fingerprint = approved_requirements(target)
+            architecture_fingerprint = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(
+                base,
+                requirements_baseline={
+                    "brief_id": "REQ-001",
+                    "revision": 1,
+                    "approval_fingerprint": requirements_fingerprint,
+                },
+                architecture_fingerprint=architecture_fingerprint,
+            )
+            path = write_record(target, record)
+            sync_backlog_focus_from_record(target, record)
+            src = target / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "feature.txt").write_text("observable v4 delivery\n", encoding="utf-8")
+            commit_all(target, "v4 delivery")
+            evidence = target / "developer.json"
+            evidence.write_text(
+                json.dumps(developer_evidence_v1("v4-developer"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            relative = record_relative(path, target)
+            command = workflow_command(
+                target,
+                "workflow_state.py",
+                "record-developer",
+                relative,
+                "--evidence-json",
+                str(evidence),
+                "--apply",
+            )
+            backlog = target / ".codex-workflow/state/MVP_BACKLOG.md"
+            original = backlog.read_text(encoding="utf-8")
+            start = "<!-- CODEX_BACKLOG_FOCUS_START -->"
+            end = "<!-- CODEX_BACKLOG_FOCUS_END -->"
+            stripped = original.split(start, 1)[0] + original.split(end, 1)[1]
+            backlog.write_text(stripped, encoding="utf-8")
+            missing = run(command, cwd=target)
+            self.assertNotEqual(missing.returncode, 0, missing.stderr)
+            self.assertIn("requires Backlog focus metadata", missing.stderr)
+            payload = read_embedded_json(original, BACKLOG_FOCUS_MARKER)
+            items = list(payload.get("items") or [])
+            items.append(
+                {
+                    "id": "MVP-002",
+                    "kind": "core_slice",
+                    "focus_slice_id": "MVP-002",
+                    "supports_task_id": None,
+                    "direction_confirmed": False,
+                }
+            )
+            payload["items"] = items
+            backlog.write_text(
+                replace_embedded_json(original, BACKLOG_FOCUS_MARKER, payload),
+                encoding="utf-8",
+            )
+            overflow = run(command, cwd=target)
+            self.assertNotEqual(overflow.returncode, 0, overflow.stderr)
+            self.assertIn("WIP overflow", overflow.stderr)
+            doctor = run(
+                workflow_command(target, "workflow_check.py", "doctor"),
+                cwd=target,
+            )
+            self.assertNotEqual(doctor.returncode, 0, doctor.stderr)
 
 
 if __name__ == "__main__":

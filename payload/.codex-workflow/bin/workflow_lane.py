@@ -39,6 +39,7 @@ from workflow_common import (
     validate_v4_current_observation_continuations,
     validate_v4_live_architecture_baseline,
     validate_v4_live_dependencies,
+    validate_v4_live_backlog_focus,
     validate_v4_live_focus_relationship,
     validate_v4_live_requirements_baseline,
 )
@@ -531,6 +532,7 @@ def _require_v4_record_for_lane(paths: WorkflowPaths, record: dict[str, Any]) ->
         validate_v4_live_requirements_baseline(paths, record)
         validate_v4_live_architecture_baseline(paths, record)
         validate_v4_live_focus_relationship(paths, record)
+        validate_v4_live_backlog_focus(paths, record)
         validate_v4_live_dependencies(paths, record)
         validate_v4_current_observation_continuations(record)
         validate_v4_contract_identity(record)

@@ -3227,6 +3227,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             dependent["contract_fingerprint"] = contract_fingerprint(dependent)
             dependent_path = write_record(target, dependent)
             sync_backlog_focus_from_record(target, dependent)
+            sync_backlog_focus_from_record(target, dependent)
             dependent_relative = record_relative(dependent_path, target)
             blocked = run(
                 workflow_command(
@@ -4112,6 +4113,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 }
             )
             dependent_path = write_record(target, dependent)
+            sync_backlog_focus_from_record(target, dependent)
             relative = record_relative(dependent_path, target)
             lane = dependent["lane"]
             payload = {
@@ -4743,6 +4745,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             dependent["decision_log"] = []
             dependent["review"]["observation_equivalence"] = None
             dependent_path = write_record(target, dependent)
+            sync_backlog_focus_from_record(target, dependent)
             blocked = run(
                 workflow_command(
                     target,

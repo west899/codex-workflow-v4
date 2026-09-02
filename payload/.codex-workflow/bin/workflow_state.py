@@ -58,6 +58,7 @@ from workflow_common import (
     validate_developer_evidence,
     maybe_load_guardrail_registry,
     phase_b_pending_queued_recovery,
+    validate_v4_live_backlog_focus,
     validate_v4_architecture_delivery,
     validate_v4_contract_identity,
     validate_v4_current_observation_continuations,
@@ -299,6 +300,7 @@ def mutate_record(
                 validate_v4_live_requirements_baseline(paths, current)
                 validate_v4_live_architecture_baseline(paths, current)
                 validate_v4_live_focus_relationship(paths, current)
+                validate_v4_live_backlog_focus(paths, current)
                 validate_v4_live_dependencies(paths, current)
                 validate_v4_current_observation_continuations(current)
                 validate_v4_contract_identity(current)
@@ -673,6 +675,9 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                         "Open decisions cannot be answered after integration leaves not_ready; abandon and rebuild explicitly."
                     )
                 decision["decision_state_fingerprint"] = decision_state_fingerprint(decision)
+                if resolution.get("outcome") == "changes_requested":
+                    fault_injection("v4-reset-after-decision")
+                    reset_v4_snapshot_evidence(record)
                 return
             observation_identity = validate_v4_observation_receipt(
                 record, decision.get("observation_receipt")
@@ -766,6 +771,7 @@ def _require_v4_integrity(paths: WorkflowPaths, record: dict[str, Any]) -> None:
     validate_v4_live_requirements_baseline(paths, record)
     validate_v4_live_architecture_baseline(paths, record)
     validate_v4_live_focus_relationship(paths, record)
+    validate_v4_live_backlog_focus(paths, record)
     validate_v4_live_dependencies(paths, record)
     validate_v4_decision_references(record)
     validate_v4_current_observation_continuations(record)
@@ -2228,6 +2234,10 @@ def reconcile(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 def pending_queued_recovery(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     """Sealed Phase B policy: pending/queued recovery is abandon-only and never mutates."""
 
+    if args.apply:
+        raise StateError(
+            "pending-queued-recovery never mutates; use workflow_lane.py release --abandon."
+        )
     _, record = load_record(paths, args.record)
     if record.get("version") != 4:
         raise StateError("pending-queued-recovery requires a V4 task record.")

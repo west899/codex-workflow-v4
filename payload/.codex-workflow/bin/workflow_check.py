@@ -390,6 +390,25 @@ def check_governance(paths: WorkflowPaths, checks: Checks) -> None:
             local_bootstrap_policy_gate(paths.layout.get("integration_policy"), text)
         except WorkflowDataError as exc:
             checks.error(str(exc))
+        v4_records: list[dict[str, Any]] = []
+        runs = paths.tracked("runs")
+        if runs.is_dir():
+            for path in sorted(runs.glob("*.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("version") == 4:
+                    v4_records.append(payload)
+        if v4_records or "CODEX_BACKLOG_FOCUS_START" in text:
+            try:
+                if v4_records:
+                    for payload in v4_records:
+                        maybe_validate_v4_backlog_focus(text, payload)
+                else:
+                    maybe_validate_v4_backlog_focus(text, None)
+            except WorkflowDataError as exc:
+                checks.error(str(exc))
 
 
 def _baseline(paths: WorkflowPaths, checks: Checks) -> dict[str, Any] | None:

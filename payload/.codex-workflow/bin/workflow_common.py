@@ -4463,10 +4463,17 @@ def maybe_validate_v4_backlog_focus(
 ) -> dict[str, Any] | None:
     start = f"<!-- {BACKLOG_FOCUS_MARKER}_START -->"
     if start not in backlog_text:
-        if record is None or record.get("version") == 4:
+        if record is not None and record.get("version") == 4:
             raise WorkflowDataError("V4 task requires Backlog focus metadata.")
         return None
     return validate_v4_backlog_focus(backlog_text, record)
+
+
+def validate_v4_live_backlog_focus(paths: WorkflowPaths, record: dict[str, Any]) -> None:
+    maybe_validate_v4_backlog_focus(
+        paths.tracked("backlog").read_text(encoding="utf-8"),
+        record,
+    )
 
 
 def maybe_load_guardrail_registry(text: str) -> dict[str, Any] | None:
@@ -4512,7 +4519,9 @@ def v4_effective_risk_tier(record: dict[str, Any]) -> str:
     planning = record.get("planning") if isinstance(record.get("planning"), dict) else {}
     risk = record.get("risk") if isinstance(record.get("risk"), dict) else {}
     level = planning.get("level")
-    tier = {"small": 1, "medium": 2, "large": 3}.get(level, 1)
+    if level not in {"small", "medium", "large"}:
+        raise WorkflowDataError("V4 planning.level must be small, medium, or large.")
+    tier = {"small": 1, "medium": 2, "large": 3}[level]
     if risk.get("product_scope") is True:
         tier = max(tier, 2)
     if any(
@@ -4557,11 +4566,25 @@ def validate_v4_retrospective(record: dict[str, Any], retrospective: dict[str, A
         return
     if retrospective.get("completed") is not True:
         raise WorkflowDataError("V4 process retrospective must be completed before task completion.")
+    validate_v4_planning_risk(record)
+
+
+def validate_v4_planning_risk(record: dict[str, Any]) -> None:
+    tier = v4_effective_risk_tier(record)
+    planning = record.get("planning") if isinstance(record.get("planning"), dict) else {}
+    if tier != "high":
+        return
+    exec_plan = planning.get("exec_plan")
+    if not isinstance(exec_plan, str) or not exec_plan.strip():
+        raise WorkflowDataError("High-risk V4 tasks require a non-empty planning.exec_plan.")
 
 
 def classify_independent_architecture_impact(changed_paths: Iterable[str]) -> str:
-    if v4_architecture_sensitive_paths(changed_paths):
+    paths = [path for path in changed_paths if isinstance(path, str) and path]
+    if v4_architecture_sensitive_paths(paths):
         return "changes_guardrail"
+    if paths:
+        return "within_guardrails"
     return "none"
 
 
@@ -5597,11 +5620,22 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
                     "active_task_ids": [item.get("task_id") for item in payload.get("active_tasks", []) if isinstance(item, dict)],
                 }
             )
+    backlog_focus_wip: dict[str, Any] | None = None
+    if "CODEX_BACKLOG_FOCUS_START" in backlog_text:
+        try:
+            metadata = parse_backlog_focus_metadata(backlog_text)
+            backlog_focus_wip = {
+                "unconfirmed_core_slice_ids": metadata["unconfirmed_core_slice_ids"],
+                "limit": metadata["wip"]["unconfirmed_core_slice_limit"],
+            }
+        except WorkflowDataError as exc:
+            backlog_focus_wip = {"status": "invalid", "reason": str(exc)}
     state = {
         "schema_version": 1,
         "requirements_baseline": baseline,
         "requirements_contract": requirements_contract,
         "backlog_counts": counts,
+        "backlog_focus_wip": backlog_focus_wip,
         "task_records": records,
         "requirements_impacts": impacts,
     }
@@ -5610,6 +5644,19 @@ def workflow_status_snapshot(paths: WorkflowPaths) -> dict[str, Any]:
         "status_fingerprint": sha256_json(state),
         "generated_at": utc_now(),
     }
+
+
+def _backlog_focus_wip_lines(wip: Any) -> list[str]:
+    if not isinstance(wip, dict):
+        return []
+    if wip.get("status") == "invalid":
+        return ["- Backlog focus/WIP 元数据无效，V4 任务在 preflight 前不可授权。", ""]
+    ids = wip.get("unconfirmed_core_slice_ids")
+    limit = wip.get("limit")
+    if not isinstance(ids, list) or not isinstance(limit, int):
+        return []
+    shown = ", ".join(f"`{item}`" for item in ids if isinstance(item, str)) or "无"
+    return [f"- 未确认方向 core slice：{shown}（WIP 上限 {limit}）", ""]
 
 
 def render_workflow_status(snapshot: dict[str, Any]) -> str:
@@ -5653,6 +5700,7 @@ def render_workflow_status(snapshot: dict[str, Any]) -> str:
         "",
         "## 产品状态",
         "",
+        *(_backlog_focus_wip_lines(snapshot.get("backlog_focus_wip"))),
         *product_cards,
         "",
         "## 技术交付",
