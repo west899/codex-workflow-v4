@@ -10,13 +10,13 @@
 | Revision | `1` |
 | Normative fingerprint | `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
-| 计划状态 | `executing` |
-| 实施授权 | `phase_a_authorized_complete` / 用户于 2026-08-29 授权完成 Phase A（PA-010–012），中间自行审查和修复 |
+| 计划状态 | `phase_a_passed` |
+| 实施授权 | `phase_a_authorized_complete` / 用户于 2026-08-29 授权完成 Phase A（PA-010–012），中间自行审查和修复；用户于 2026-09-02 授权收口 Phase A，并只允许开始 Phase B 计划准备 |
 | 目标分支 | `v4` |
 | Phase 0 基线 | `69c52ad09576a181f18dbe8b8735a8a638a3d27c` / `phase0_passed` |
 | 设计输入 | `改进建议.md` 第 14–19 节、第 23–24 节 |
-| 当前允许动作 | 完成 Phase A：PA-010 安装/升级并轨、PA-011 单一默认路径文档、PA-012 回归与 V4 生命周期证据 |
-| 当前禁止动作 | 开始 Phase B/C；新增 decision kind、主状态机或第二套 checkpoint 命令 |
+| 当前允许动作 | 封存 Phase A；准备 [V4 Phase B 执行计划](V4_PHASEB_PLAN.md) 供人类审阅 |
+| 当前禁止动作 | 实施 Phase B/C；新增 decision kind、主状态机或第二套 checkpoint 命令；回改第 2–10 节冻结语义 |
 
 规范指纹校验命令：
 
@@ -326,3 +326,7 @@ Phase A 只有在以下结果全部有精确证据时才可标记 `phase_a_passe
 5. 计划批准与实施授权分开；批准 revision 不自动开始 PA-002。
 
 人类批准后，下一次只将 `计划状态` 更新为 `approved_not_started`，不修改第 2–10 节，因而 normative fingerprint 保持不变。该状态回写提交作为后续 task authorization 引用的 approved plan commit；实施授权继续保持关闭，直到人类明确授权相应里程碑。
+
+## 12. 落账
+
+Phase A 于 2026-09-02 标记 `phase_a_passed`。第 2–10 节未被修改，normative fingerprint 保持 `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8`。封存证据见 [V4 Phase A 收口证据](V4_PHASEA_CLOSEOUT.md)。下一阶段规划真相源是 [V4 Phase B 执行计划](V4_PHASEB_PLAN.md)；批准该计划不等于实施授权。

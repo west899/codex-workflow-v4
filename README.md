@@ -64,7 +64,7 @@ AGENTS.md                              # 薄发现入口，marker 合并
   state/MVP_BACKLOG.md                 # durable 状态
   state/STATUS.md                      # 由脚本生成的当前状态快照
   state/requirements-impacts/          # 已应用的 Requirements 变更影响报告
-  state/runs/                          # task record v3
+  state/runs/                          # task record v3 / v4
   state/plans/                         # large/high-risk ExecPlan
   schemas/                             # task/requirements/lane/remote claim/developer-review evidence
   bin/                                 # paths/lock/check/state/lane/Stop Hook
@@ -76,9 +76,9 @@ linked worktree 中 `.git` 通常是文件。因此共享 runtime 总是从 `git
 
 ## JSON Schema 结构门禁
 
-`task-record-v3`（含其 `lane-v1` 引用）、`requirements-v1`、`remote-claim-v1`、`developer-evidence-v1` 和 `review-evidence-v1` 是强制结构门禁，不是只供阅读的示例。Requirements snapshot/gate 读取 Brief 时、所有 V3 task record 读取时、state/lane 写入更新前、Developer/Review evidence 入库前，以及远端 claim 的生成、提交、读取和远端 closeout 证明时都会 fail-closed 校验。字段缺失、类型/枚举/长度/模式不符或引用的 lane 无效时，命令不写 task record、queue、closeout 或远端 claim/ref。
+`requirements-v1`、`task-record-v3`、`task-record-v4`（均含其 `lane-v1` 引用）、`remote-claim-v1`、`developer-evidence-v1` 和 `review-evidence-v1` 是强制结构门禁，不是只供阅读的示例。Requirements snapshot/gate 读取 Brief 时、对应版本 task record 读取时、state/lane 写入更新前、Developer/Review evidence 入库前，以及远端 claim 的生成、提交、读取和远端 closeout 证明时都会 fail-closed 校验。字段缺失、类型/枚举/长度/模式不符或引用的 lane 无效时，命令不写 task record、queue、closeout 或远端 claim/ref。
 
-校验器只实现包内六份 schema 使用的受限 JSON Schema 子集，随包以 Python 标准库运行；若后续 schema 引入未实现的关键字，也会停止而不是静默忽略。历史 V2 record 仅保留读取兼容，不能借此绕过 V3 写入门禁。
+校验器只实现包内这些 schema 已使用的受限 JSON Schema 子集，随包以 Python 标准库运行；若后续 schema 引入未实现的关键字，也会停止而不是静默忽略。历史 V2 record 仅保留读取兼容，不能借此绕过 V3/V4 写入门禁。
 
 ## Evidence Contract v1
 

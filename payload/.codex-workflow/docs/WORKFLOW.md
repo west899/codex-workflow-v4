@@ -34,7 +34,7 @@ py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs
 
 随包 schema 是运行时门禁：`requirements-v1.schema.json` 在 Brief snapshot/gate 读取时校验；`task-record-v3.schema.json` / `task-record-v4.schema.json` 在对应版本 task record 读取和 state 写入前校验，并强制其 `lane-v1.schema.json` 引用；`developer-evidence-v1.schema.json` 和 `review-evidence-v1.schema.json` 分别在 `record-developer`、`record-review` 入库前校验；`remote-claim-v1.schema.json` 在远端 claim 生成、提交和读取时校验。远端 release 也会校验目标分支中的 task record 和 claim。任一缺字段、错误类型/枚举/长度/模式或无效 lane 都 fail closed，不写 record、queue、closeout 或远端 ref。
 
-校验器仅支持这六份 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3 state 写入。
+校验器仅支持这些 schema 已使用的 JSON Schema 子集，且不依赖第三方包；新增未支持的 schema 关键字同样会明确失败。修复源数据或 schema/实现并补回归测试，不能通过手改状态文件绕开门禁。V2 record 仅用于历史读取兼容，不能进入 V3/V4 state 写入。
 
 ### 3.2 已批准 Requirements 的变更
 

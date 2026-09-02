@@ -57,4 +57,4 @@ STATUS 人类区包含焦点、CLI 入口、观察步骤、真实/临时、产�
 
 - 未把工作流包装进本包目录自身。
 - 未跑 Windows / Python 3.12 / 3.13。
-- 未开始 Phase B。
+- 未实施 Phase B。阶段 A 收口与 Phase B 计划准备见 [V4_PHASEA_CLOSEOUT.md](V4_PHASEA_CLOSEOUT.md) 和 [V4_PHASEB_PLAN.md](V4_PHASEB_PLAN.md)。

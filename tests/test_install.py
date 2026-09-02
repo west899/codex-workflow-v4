@@ -168,16 +168,29 @@ class InstallTests(unittest.TestCase):
             inventory = payload["v4_inventory"]
             self.assertEqual(inventory["v3_record_ids"], ["MVP-001"])
             self.assertEqual(inventory["v4_record_ids"], [])
+            self.assertEqual(inventory["governance_customizations"], [])
             self.assertFalse(inventory["architecture_baseline"]["guessed_focus"])
             self.assertFalse(inventory["architecture_baseline"]["approved"])
             notes = " ".join(inventory["notes"])
             self.assertIn("does not guess the current focus", notes)
             self.assertIn("does not generate or approve", notes)
+            self.assertIn("does not overwrite them", notes)
             layout = json.loads((target / ".codex-workflow/layout.json").read_text(encoding="utf-8"))
             self.assertEqual(layout["default_new_task_version"], 4)
             manifest = json.loads((target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["version"], "4.0.0")
             self.assertEqual(manifest["supported_task_record_versions"], [3, 4])
+            project = target / ".codex-workflow/governance/PROJECT.md"
+            customized = project.read_text(encoding="utf-8") + "\nConfirmed custom fact.\n"
+            project.write_text(customized, encoding="utf-8")
+            planned_custom = install_project(target, extra=["--plan-upgrade"])
+            self.assertEqual(planned_custom.returncode, 0, planned_custom.stderr)
+            custom_inventory = json.loads(planned_custom.stdout)["v4_inventory"]
+            self.assertEqual(
+                custom_inventory["governance_customizations"],
+                [".codex-workflow/governance/PROJECT.md"],
+            )
+            self.assertEqual(project.read_text(encoding="utf-8"), customized)
 
 
 if __name__ == "__main__":

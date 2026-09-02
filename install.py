@@ -178,6 +178,44 @@ def _architecture_baseline_inventory(target_root: Path) -> dict[str, Any]:
     return inventory
 
 
+def _matches_governance_template(template: bytes, installed: bytes) -> bool:
+    if b"{{" not in template:
+        return template == installed
+    try:
+        template_text = template.decode("utf-8")
+        installed_text = installed.decode("utf-8")
+    except UnicodeDecodeError:
+        return template == installed
+    pattern = re.escape(template_text)
+    for placeholder in ("{{PROJECT_NAME}}", "{{INSTALL_DATE}}"):
+        pattern = pattern.replace(re.escape(placeholder), r".+")
+    return re.fullmatch(pattern, installed_text, flags=re.DOTALL) is not None
+
+
+def _governance_customizations(target_root: Path) -> list[str]:
+    """List project-owned governance files that differ from package templates."""
+
+    source_root = PAYLOAD_ROOT / ".codex-workflow/governance"
+    dest_root = target_root / ".codex-workflow/governance"
+    found: list[str] = []
+    if not dest_root.is_dir():
+        return found
+    for path in sorted(dest_root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(dest_root)
+        listed = posix(Path(".codex-workflow/governance") / relative)
+        source = source_root / relative
+        try:
+            installed = path.read_bytes()
+        except OSError:
+            found.append(listed)
+            continue
+        if not source.is_file() or not _matches_governance_template(source.read_bytes(), installed):
+            found.append(listed)
+    return found
+
+
 def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
     """Read-only V4 upgrade inventory. Never invents focus or approves a baseline."""
 
@@ -196,9 +234,11 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
             "guessed_focus": False,
         },
         "observation_entrypoints": [],
+        "governance_customizations": [],
         "notes": [
             "Upgrade does not generate or approve a project architecture baseline.",
             "Upgrade does not guess the current focus core slice.",
+            "Upgrade lists customized project-owned governance files and does not overwrite them.",
             "Existing V3 tasks keep V3 closeout semantics; new tasks should use task-record-v4.",
         ],
     }
@@ -236,6 +276,7 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
             if integration.get("status") in {"pending", "queued", "merged_pending_closeout"}:
                 inventory["pending_closeout_task_ids"].append(task_id)
     inventory["architecture_baseline"] = _architecture_baseline_inventory(target_root)
+    inventory["governance_customizations"] = _governance_customizations(target_root)
     try:
         common = git_common_dir(target_root)
     except (OSError, subprocess.CalledProcessError, InstallError):

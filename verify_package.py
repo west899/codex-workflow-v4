@@ -85,6 +85,8 @@ REQUIRED = {
     "V4_PHASEA_PLAN.md",
     "V4_PHASE0_PILOT.md",
     "V4_PHASEA_CORE_SLICE.md",
+    "V4_PHASEA_CLOSEOUT.md",
+    "V4_PHASEB_PLAN.md",
 }
 FORBIDDEN_FILES = {
     "payload/PROJECT.md",
@@ -155,6 +157,22 @@ def main() -> None:
         raise SystemExit("Hooks do not target the final V3 bin paths.")
     if serialized_hooks.count("workflow_check.py") != 2 or serialized_hooks.count("codex_stop_hook.py") != 2:
         raise SystemExit("Payload Hooks must contain one Unix and one Windows command per V3 handler.")
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    schema_heading = "## JSON Schema 结构门禁"
+    schema_start = readme.find(schema_heading)
+    if schema_start < 0:
+        raise SystemExit("README.md is missing the JSON Schema gate section.")
+    schema_section = readme[schema_start:]
+    next_heading = schema_section.find("\n## ", 1)
+    if next_heading > 0:
+        schema_section = schema_section[:next_heading]
+    if "task-record-v4" not in schema_section:
+        raise SystemExit("README.md schema gate must include task-record-v4.")
+    if "所有 V3 task record 读取时" in schema_section:
+        raise SystemExit("README.md schema gate must not describe V3-only record validation.")
+    if "六份 schema" in schema_section:
+        raise SystemExit("README.md schema count must include task-record-v4.")
 
     entry = (ROOT / "payload/AGENTS.md").read_text(encoding="utf-8")
     if entry.count("BEGIN CODEX WORKFLOW ENTRY") != 1 or entry.count("END CODEX WORKFLOW ENTRY") != 1:
