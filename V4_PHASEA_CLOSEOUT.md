@@ -12,7 +12,7 @@
 | 计划状态 | `phase_a_passed` |
 | 收口授权 | 用户于 2026-09-02 授权收口 Phase A，并只允许开始 Phase B 计划准备 |
 | 产品闭环证据 | [V4_PHASEA_CORE_SLICE.md](V4_PHASEA_CORE_SLICE.md) |
-| 下一规划源 | [V4_PHASEB_PLAN.md](V4_PHASEB_PLAN.md)，状态 `approved_not_started`，实施授权关闭 |
+| 下一规划源 | [V4_PHASEB_PLAN.md](V4_PHASEB_PLAN.md) revision 2，状态 `awaiting_human_review`，实施授权关闭 |
 
 本轮收口补齐了 PA-010 升级盘点中的治理定制列表，以及 PA-011 文档对 `task-record-v4` 的默认路径表述。第 2–10 节冻结语义未改。
 

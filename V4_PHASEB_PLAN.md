@@ -7,15 +7,16 @@
 | 字段 | 值 |
 | --- | --- |
 | Plan ID | `V4-PHASEB` |
-| Revision | `1` |
-| Normative fingerprint | `c28f862ce5651e64cd44f6434b1b07c27f413b6829548c141ecd5a574a8ee0c7` |
+| Revision | `2` |
+| Normative fingerprint | `70200558cc4e063acec1dd6e37cac658e3cec888699a8cca584b13e33c53a9ae` |
 | Fingerprint material | `v1`：从 `## 2. 阶段目标与不变量` 行开始，到 `## 11. 待人类审阅的精确内容` 行之前的精确 UTF-8 字节，使用 SHA-256 |
-| 计划状态 | `approved_not_started` |
+| 计划状态 | `awaiting_human_review` |
 | 实施授权 | `implementation_not_authorized` |
 | 目标分支 | `v4` |
 | Phase A 基线 | `phase_a_passed` / Plan ID `V4-PHASEA` revision `1` / fingerprint `4a4a0eddb63c8d7a7c593235d2cd9e66c0fe8f0f97414e4014168bf47b7acbd8` |
+| 取代 | revision `1` / fingerprint `c28f862ce5651e64cd44f6434b1b07c27f413b6829548c141ecd5a574a8ee0c7` |
 | 设计输入 | `改进建议.md` 第 6.4、7、10、11、12、15.4、16、18–19、23–24 节；`V4_PHASEA_PLAN.md` 第 3.2 节延后表 |
-| 当前允许动作 | 记录本批准；等待人类实施授权 |
+| 当前允许动作 | 人类审阅 revision 2 的整阶段授权模式与任务连接标准 |
 | 当前禁止动作 | 实施 Phase B/C；开始 PB-002；修改 Phase A 冻结语义；新增 decision kind、主状态机或第二套 checkpoint 命令 |
 
 规范指纹校验命令：
@@ -40,7 +41,7 @@ awaiting_human_review
 
 Phase B 在 Phase A 已生效的最小反馈门禁之上，让流程成本随风险缩放，并把 focus、Requirements 细化和架构护栏提升为可机械验证的项目级能力。
 
-实现必须同时保持六个不变量：
+实现必须同时保持七个不变量：
 
 1. 不重写 V3 lane、lease、remote claim、canonical delivery 和 closeout；V3 任务继续按原算法收尾。
 2. 不增加新的全局主状态机，也不增加第二套 checkpoint 命令。
@@ -48,6 +49,7 @@ Phase B 在 Phase A 已生效的最小反馈门禁之上，让流程成本随风
 4. 不静默放宽现有 Requirements V1 gate；若稳定核心 + 当前切片仍造成过宽影响，必须停下来设计切片级 fingerprint/impact，而不是把未确认未来细节塞进同一 approved Brief。
 5. small/no-trigger 可以降低复盘成本，但不能降低授权、范围、验证、独立 Review、安全和恢复底线。
 6. STATUS 继续只派生展示；Backlog metadata 与 task `delivery_contract` 必须互相一致，`workflow_lane.py` 仍不承载产品语义。
+7. 整阶段实施授权只覆盖已冻结的 PB-002–009 串行交付。它不合并任务、不跳过独立 Review/gate/closeout，也不允许用后续未封存实现放宽当前门禁。只有满足第 5.2 节连接标准且未命中第 5.3 节停止项时，才能进入下一任务。
 
 Phase B 的人类结果：使用者能从 Backlog/STATUS 看到当前 focus、supporting 关系与在制约束；小风险任务不再承担与高风险任务相同的复盘重量；重复出现的架构护栏有稳定身份和可重放检查；冲突决定不能靠最后写入覆盖。
 
@@ -83,6 +85,18 @@ Phase B 的人类结果：使用者能从 Backlog/STATUS 看到当前 focus、su
 4. `core_slice` 只增加产品反馈要求，不能降低 sensitive data、destructive change 或 irreversible architecture 的高风险门禁。
 5. 不同答复必须显式 supersede，不能最后写入者覆盖；同 fingerprint 安全重试继续保留。
 6. dequeue/reopen 必须与 queue、claim、integration 状态和 generation CAS 同一事务。若无法证明不出现半状态或伪造 done，该项保持 abandon-only，不得用临时命令假装 reopen。
+7. 整阶段授权下，PB-007 的 abandon-only 是允许的继续路径：必须写入封存结论，不必因此停止整阶段。PB-003 证明 V1 仍然过宽则必须停止并走第 8.3 节。
+
+### 3.4 整阶段实施授权
+
+`phase_b_authorized_complete` 是本 revision 的预期实施模式。它一次覆盖 PB-002 至 PB-009，并受以下约束：
+
+1. 8 个任务保持独立 delivery snapshot，不合成一个任务。
+2. 每个任务仍须独立 Review、gate 和 closeout。
+3. 始终只允许一个任务处于 `in_progress`。PB-002/005/006 共享 `workflow_common.py`，PB-002–005/007 共享 `workflow_check.py`，PB-003/004/006/007 共享 `workflow_state.py`，本 revision 不申请并行。
+4. 计划批准与整阶段实施授权仍然分开；批准本 revision 不自动开始 PB-002。
+5. Coordinator 在连接标准成立且未命中停止项时，可以直接开始下一任务，不必再按任务向人类申请授权。
+6. 任务范围内的修复和复审可以继续；若发现需要改第 2–10 节、重开已封存任务、或离开第 9 节路径表，必须停止。
 
 ## 4. 难度标尺
 
@@ -118,7 +132,7 @@ PB-001 -> PB-002
        -> PB-008 -> PB-009
 ```
 
-PB-003/004 与 PB-005 只有在写入面、契约和验收被证明完全独立后，才能通过计划 revision 申请有限并行。Phase B 初始只允许一个任务处于 `in_progress`。
+即使获得整阶段实施授权，也只允许一个任务处于 `in_progress`，并按上表串行。共享写入面未分离，本 revision 不申请 PB-003/004 与 PB-005 并行。
 
 ### 5.1 单任务阶段内容
 
@@ -126,7 +140,7 @@ PB-002 至 PB-009 每个任务都使用同一阶段合同。PB-001 是人类计�
 
 | 任务阶段 | 必须写入的内容 | 退出条件 |
 | --- | --- | --- |
-| Plan / authorization | Plan ID、revision、normative fingerprint、approved plan commit、依赖 closeout refs、Requirements baseline、目标结果、scope in/out、allowed paths、acceptance IDs、难度与恢复边界 | 人类明确授权当前任务或所在里程碑 |
+| Plan / authorization | Plan ID、revision、normative fingerprint、approved plan commit、依赖 closeout refs、Requirements baseline、目标结果、scope in/out、allowed paths、acceptance IDs、难度与恢复边界 | 人类明确授权当前任务、所在里程碑，或整阶段 `phase_b_authorized_complete` |
 | Coordinator | 创建 exact task record/delivery contract；验证前置依赖、基线 commit、架构引用、护栏、证据 scope 和负例矩阵；claim lane/resources | preflight 零警告，且任务合同与本计划无差异 |
 | Developer | 只修改 allowed paths；先完成最小端到端结果；记录精确命令、平台、表面、负例、剩余风险和 Evidence Contract v1 claims | exact delivery snapshot 形成，focused/full 验证与绕过负例通过 |
 | Independent Reviewer | 从 snapshot 重建范围与合同；核对每个 claim/scope/command/fingerprint；给出 `confirmed/narrowed/rejected/unverified`；检查 V3/V4 回归和跨模块失效 | 所有 claim `confirmed`，无未处理 P0–P3 finding，Review 绑定当前 snapshot |
@@ -134,6 +148,59 @@ PB-002 至 PB-009 每个任务都使用同一阶段合同。PB-001 是人类计�
 | Closeout | 封存 task record、Developer/Review/gate/integration evidence、closeout fingerprint、bundle/manifest 和全部引用哈希 | task record 终态、runtime claim/queue/lane 按策略释放；本计划只追加 sealed task/closeout ref，不镜像实时状态 |
 
 任务授权后发现计划外 allowed path、acceptance 或依赖时，必须停在当前阶段，不得用 Developer/Reviewer 备注替代第 8.3 节的计划变更流程。
+
+### 5.2 任务连接标准
+
+每个任务 closeout 必须留下只读连接包，供下一任务核验。本计划不镜像这些值。连接包至少包含：本任务 ID、未被突破的 allowed paths、delivery commit/hash/snapshot、全部 claim `confirmed` 的 Review、本任务冻结的 parser/schema/语义、剩余风险，以及连接处置 `continue` / `report_and_continue` / `stop`。
+
+下一任务开始前，Coordinator 必须确认：
+
+1. 前一任务已经 closeout，且连接处置不是 `stop`。
+2. 下一任务仍在第 9 节路径表内，且不需要改第 2–10 节。
+3. 前一任务冻结的 parser/schema/语义没有被回改。
+4. 当前没有第二个 `in_progress` 任务。
+5. 本任务的 focused/full 验证已通过；PB-009 才做全矩阵宣称，但每个任务不得把失败测试留到最后。
+
+任务之间的具体连接：
+
+| 从 | 到 | 继续前必须成立 | 停止条件 |
+| --- | --- | --- | --- |
+| 本 revision 获批且整阶段已授权 | PB-002 | G-B0 通过；实施授权为 `phase_b_authorized_complete` | 缺批准或实施授权 |
+| PB-002 | PB-003 | Backlog metadata 与固定列 parser 冻结；WIP fail closed；V3 Backlog 仍可读；contract 与 Backlog 一致性负例通过 | 需要插入或重排现有列 |
+| PB-003 | PB-004 | V1 fingerprint 算法未改；滚动路径可用；未静默放宽 gate | 稳定核心 + 当前切片仍过宽，需要切片级 fingerprint |
+| PB-004 | PB-005 | 风险档位不降低高风险底线；`not_required` 仅用于 small/no-trigger | `core_slice` 被用来降低安全/破坏性/难逆架构门禁 |
+| PB-005 | PB-006 | registry 形状冻结；fitness 缺证据即失败；impact 不只信任自报 | 需要新的架构主状态或替项目批准基线 |
+| PB-006 | PB-007 | 冲突答复缺 supersede 即失败；同 fingerprint 重试安全 | 需要新的 decision kind 或让最后写入者覆盖 |
+| PB-007 | PB-008 | 原子 dequeue/reopen 通过故障注入，或正式写入 abandon-only 冻结结论 | 半状态、伪造 done，或留下临时 reopen 命令 |
+| PB-008 | PB-009 | 文档只解释已实现语义；升级盘点不猜 focus | 文档发明未实现状态 |
+| PB-009 | `phase_b_passed` | 第 10 节 10 项均有精确证据 | 把未跑平台写成已验证，或缺少 Review/gate/closeout |
+
+PB-005 的计划依赖是 PB-002，但本 revision 为了共享写入面安全，仍按 PB-004 完成后再开始 PB-005。不得以“依赖已满足”为理由提前并行。
+
+### 5.3 继续、汇报后继续、停止
+
+整阶段授权把任务间动作分成三类。
+
+`continue`：前一任务连接包完整、未命中停止项，Coordinator 立即开始下一任务。
+
+`report_and_continue`：不阻断整阶段，但必须在连接包中写明结论后继续。包括：
+
+- PB-007 选择 abandon-only。
+- 某平台未跑，只记录为未验证。
+- 同一任务内、allowed paths 内的修复和不超过两轮的完整 Review。
+
+`stop`：立即停止整阶段，保留当前 snapshot，向人类汇报最小判断项。包括：
+
+- 需要修改第 2–10 节，或离开第 9 节路径表。
+- PB-003 证明现有 V1 impact 仍然过宽。
+- 需要插入/重排 Backlog 现有列，或静默放宽 V1 gate。
+- 需要降低高风险底线，或重开已封存任务的合同。
+- PB-007 无法证明原子安全，却仍要留下临时 reopen 命令。
+- 同一任务连续两轮完整 Review 仍不能 `pass`。
+- 出现第二个 `in_progress`，或触及 Phase C / Phase A 冻结语义。
+- 把未验证平台写成已验证。
+
+停止后不得用“整阶段已经授权”继续相邻任务。恢复必须先满足第 8.3 节或获得新的人类指令。
 
 ## 6. 任务卡片
 
@@ -214,13 +281,15 @@ PB-002 至 PB-009 每个任务都使用同一阶段合同。PB-001 是人类计�
 | 门 | 允许进入条件 | 允许退出条件 |
 | --- | --- | --- |
 | G-B0 计划冻结 | Phase A `phase_a_passed` | 人类批准本计划精确 Plan ID/revision/normative fingerprint；实施授权仍可保持关闭 |
-| G-B1 Backlog/WIP | G-B0 通过，PB-002 获授权 | PB-002 独立 Review PASS；固定列 parser 不变；WIP 负例 PASS |
-| G-B2 滚动细化 | G-B1 通过 | PB-003/004 完成；V1 gate 未被静默放宽；风险档位负例 PASS |
-| G-B3 架构护栏 | G-B1 通过 | PB-005 完成；registry/fitness/impact 分类负例 PASS |
-| G-B4 决定与队列 | G-B2 通过 | PB-006/007 完成；supersede 与 dequeue/reopen 或 abandon-only 冻结结论有证据 |
-| G-B5 证明闭环 | G-B3 与 G-B4 通过 | PB-008/009 完成；独立 Review、gate、integration、closeout 和证据持久化全部完成 |
+| G-B1 Backlog/WIP | G-B0 通过，且 PB-002 已获任务、里程碑或整阶段实施授权 | PB-002 独立 Review PASS；固定列 parser 不变；WIP 负例 PASS |
+| G-B2 滚动细化 | G-B1 通过，且第 5.2 节 PB-002→PB-003 连接成立 | PB-003/004 完成；V1 gate 未被静默放宽；风险档位负例 PASS |
+| G-B3 架构护栏 | G-B1 通过，且按串行顺序完成 PB-004 后第 5.2 节 PB-004→PB-005 连接成立 | PB-005 完成；registry/fitness/impact 分类负例 PASS |
+| G-B4 决定与队列 | G-B2 通过，且第 5.2 节 PB-005→PB-006 连接成立 | PB-006/007 完成；supersede 与 dequeue/reopen 或 abandon-only 冻结结论有证据 |
+| G-B5 证明闭环 | G-B3 与 G-B4 通过，且第 5.2 节 PB-007→PB-008 连接成立 | PB-008/009 完成；独立 Review、gate、integration、closeout 和证据持久化全部完成 |
 
 不允许使用后续里程碑的临时实现反向放宽当前门禁。受阻时局部修正当前契约，范围扩展需要计划 revision。
+
+在 `phase_b_authorized_complete` 下，Coordinator 可以在当前门退出条件与第 5.2 节连接标准同时成立时进入下一门，不必再取得人类的分里程碑授权。命中第 5.3 节 `stop` 时除外。
 
 ## 8. 防漂移规则
 
@@ -295,15 +364,24 @@ Phase B 只有在以下结果全部有精确证据时才可标记 `phase_b_passe
 9. V3/V4 Phase A 回归保持通过；product direction、verified、integrated/done 和 released 仍然分开表达。
 10. 全部 Evidence Contract v1 claim 被 Reviewer `confirmed`，独立 Review、gate、integration、closeout 和证据持久化完成。
 
+整阶段实施授权不减少上述任何一项。缺少任一任务的封存连接包，不得标记 `phase_b_passed`。
+
 ## 11. 待人类审阅的精确内容
 
 本轮只请审阅以下六项：
 
-1. 9 个任务的粒度和默认串行顺序；PB-003/004 与 PB-005 只有在写入面独立时才允许申请有限并行。
-2. Backlog 采用“版本化 metadata 为机械真相，可选追加显示列”的方式，而不是插入或重排现有列。
-3. 滚动 Requirements 先复用 V1 fingerprint/impact；只有操作验证证明过宽时才另开 revision 设计切片级 fingerprint。
-4. WIP 缺省为每个产品目标 1 个未确认方向 core slice，且可配置。
-5. PB-007 把 dequeue/reopen 留在 Phase B，但若无法证明原子安全，允许该任务以 abandon-only 冻结结束。
-6. 计划批准与实施授权分开；批准 revision 不自动开始 PB-002。
+1. 保持 9 个任务和严格串行；整阶段授权覆盖 PB-002–009，但不合并任务、不并行。
+2. 任务之间必须满足第 5.2 节连接标准；未封存前一任务不得开始后一任务。
+3. 第 5.3 节停止项是硬停止，尤其是 V1 过宽、重开已封存任务、两轮 Review 仍不通过、以及任何计划外路径。
+4. PB-007 的 abandon-only 属于 `report_and_continue`，不是整阶段停止项。
+5. 同一任务内允许不超过两轮完整 Review 的修复；第三轮前必须停止汇报。
+6. 计划批准与实施授权分开；批准 revision 2 不自动开始 PB-002。随后可以用一次 `phase_b_authorized_complete` 覆盖剩余实现。
 
-人类批准后，下一次只将 `计划状态` 更新为 `approved_not_started`，不修改第 2–10 节，因而 normative fingerprint 保持不变。该状态回写提交作为后续 task authorization 引用的 approved plan commit；实施授权继续保持关闭，直到人类明确授权相应里程碑。
+人类批准后，下一次只将 `计划状态` 更新为 `approved_not_started`，不修改第 2–10 节，因而 normative fingerprint 保持不变。该状态回写提交作为后续 task authorization 引用的 approved plan commit；实施授权继续保持关闭，直到人类明确给出整阶段或里程碑实施授权。
+
+## 12. 修订记录
+
+| Revision | 计划状态 | 变更 |
+| --- | --- | --- |
+| `1` | 已批准后被本 revision 取代 | 初始冻结 9 个任务、WIP/Requirements/registry/supersede/dequeue 延后项 |
+| `2` | `awaiting_human_review` | 增加整阶段实施授权、任务连接标准和继续/停止矩阵；不改变 PB-002–009 交付范围 |
