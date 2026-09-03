@@ -1,4 +1,4 @@
-# Codex Workflow V3 协议
+# Codex Workflow V4 协议
 
 > 本文件由工作流包管理。项目专属永久规则写入 `../governance/AGENTS.md`，不要直接修改本文件。
 

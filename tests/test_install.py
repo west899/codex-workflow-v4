@@ -66,7 +66,7 @@ class InstallTests(unittest.TestCase):
             self.assertIn("package-owned", stopped.stdout)
             forced = install_project(target, extra=["--force-package"])
             self.assertEqual(forced.returncode, 0, forced.stderr)
-            self.assertIn("Codex Workflow V3", protocol.read_text(encoding="utf-8"))
+            self.assertIn("Codex Workflow V4", protocol.read_text(encoding="utf-8"))
 
     def test_v2_active_pointer_is_zero_write_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

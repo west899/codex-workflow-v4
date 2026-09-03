@@ -2,6 +2,8 @@
 
 本目录保存 V4 形成过程，不是产品说明书，也不是运行时真相源。
 
+当前产品名是 Codex Workflow V4。源码仓库目标名为 `codex-workflow-v4`。
+
 当前产品入口：
 
 - [README.md](../../README.md)

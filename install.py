@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install or atomically migrate Codex Workflow V3 into a Git project."""
+"""Install or atomically migrate Codex Workflow V4 into a Git project."""
 
 from __future__ import annotations
 
@@ -43,14 +43,14 @@ class InstallError(ValueError):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Install Codex Workflow V3.")
+    parser = argparse.ArgumentParser(description="Install Codex Workflow V4.")
     parser.add_argument("target", nargs="?", default=".")
     parser.add_argument("--project-name")
     parser.add_argument("--parallel-mode", choices=("single", "local_worktree"), default="single")
     parser.add_argument(
         "--plan-upgrade",
         action="store_true",
-        help="Zero-write plan: V2-to-V3 migration and V3-to-V4 capability inventory.",
+        help="Zero-write plan: V2 migration and V4 capability inventory.",
     )
     parser.add_argument("--adopt-v2", action="store_true", help="Explicitly adopt legacy V2 files when no V2 manifest exists.")
     parser.add_argument("--agents-merge-file", help="Human-approved project-only rules extracted from a modified V2 AGENTS.md.")
@@ -421,7 +421,7 @@ def merged_agents(target_root: Path, *, replace_v2: bool) -> bytes:
     target = target_root / "AGENTS.md"
     existing = target.read_text(encoding="utf-8") if target.exists() else ""
     if replace_v2 and ENTRY_START not in existing:
-        return ("# AGENTS：Codex Workflow V3 入口\n\n" + block + "\n").encode("utf-8")
+        return ("# AGENTS：Codex Workflow V4 入口\n\n" + block + "\n").encode("utf-8")
     return merge_text_block(existing, block, ENTRY_START, ENTRY_END).encode("utf-8")
 
 

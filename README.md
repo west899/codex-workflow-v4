@@ -6,7 +6,7 @@
 
 产品版本是 V4；安装布局里的 `layout_version` / `protocol_version` 仍为 `3`，表示此外环协议代次，不是产品名。
 
-完整已实现能力与测试依据见 [功能.md](功能.md)。阶段 0–C 规划已归档到 [docs/history/](docs/history/)。
+完整已实现能力与测试依据见 [功能.md](功能.md)。版本记录见 [CHANGELOG.md](CHANGELOG.md)。阶段 0–C 规划已归档到 [docs/history/](docs/history/)。许可证为 [MIT](LICENSE)。
 
 ## 已验证能力（摘要）
 

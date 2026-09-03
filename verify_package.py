@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the Codex Workflow V3 package is complete and portable."""
+"""Verify that the Codex Workflow V4 package is complete and portable."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REQUIRED = {
     "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
     "功能.md",
     "docs/history/README.md",
     "docs/history/problem.md",
