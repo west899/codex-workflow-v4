@@ -45,7 +45,19 @@ python install.py <project-root> --project-name <name>
 python install.py <project-root> --project-name <name> --parallel-mode local_worktree
 ```
 
-安装器不会创建产品基线 commit、push、PR、merge、发布或部署。
+安装器不会创建产品基线 commit、push、PR、merge、发布或部署。工作流是嵌在产品 Git 仓库里的助手层，不另建产品子目录。
+
+卸载默认只打印清单（像日志：会列出要删的包文件、要保留的治理状态、live lane、未收口任务）。确认后加 `--apply`。产品源码不会被删。
+
+```text
+python install.py <project-root> --uninstall
+python install.py <project-root> --uninstall --apply
+python install.py <project-root> --uninstall --apply --purge-state
+python install.py <project-root> --export-product <clean-dir>
+python install.py <project-root> --export-product <clean-dir> --apply
+```
+
+`--purge-state` 会删掉 `.codex-workflow/governance` 与 `state`（工作流自己的档案）。`--export-product` 复制业务文件，排除工作流引擎和状态。
 
 ### V2 升级
 

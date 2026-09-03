@@ -58,6 +58,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-check", action="store_true")
     parser.add_argument("--no-git-init", action="store_true")
+    parser.add_argument("--uninstall", action="store_true", help="Remove the workflow overlay. Default is a dry-run inventory.")
+    parser.add_argument(
+        "--export-product",
+        metavar="DEST",
+        help="Copy product files without the workflow overlay. Default is a dry-run inventory.",
+    )
+    parser.add_argument("--apply", action="store_true", help="Write uninstall or export-product. Default is dry-run.")
+    parser.add_argument(
+        "--purge-state",
+        action="store_true",
+        help="Uninstall also deletes project-owned workflow governance/state (the workflow log).",
+    )
+    parser.add_argument(
+        "--purge-runtime",
+        action="store_true",
+        help="Uninstall also deletes Git common-dir workflow runtime (lanes, backups, leases).",
+    )
     return parser.parse_args()
 
 
@@ -652,7 +669,292 @@ def run_check(target_root: Path) -> None:
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     if result.returncode != 0:
-        raise InstallError("Installed V3 workflow self-check failed.")
+        raise InstallError("Installed V4 workflow self-check failed.")
+
+
+def strip_text_block(existing: str, start: str, end: str) -> tuple[str, bool]:
+    if existing.count(start) == 0 and existing.count(end) == 0:
+        return existing, False
+    if existing.count(start) != 1 or existing.count(end) != 1:
+        raise InstallError(f"Existing file has incomplete or duplicate managed block: {start}")
+    before, rest = existing.split(start, 1)
+    _, after = rest.split(end, 1)
+    result = before.rstrip("\n")
+    if result.strip() and after.strip():
+        result += "\n\n"
+    result += after.lstrip("\n")
+    if result.strip():
+        return result.rstrip("\n") + "\n", True
+    return "", True
+
+
+def stripped_hooks(target_root: Path) -> tuple[bytes | None, bool]:
+    path = target_root / HOOKS_PATH
+    if not path.is_file():
+        return None, False
+    payload = read_json(path, missing_ok=False)
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        raise InstallError("Existing .codex/hooks.json hooks must be an object.")
+    changed = False
+    cleaned: dict[str, Any] = {}
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            cleaned[event] = groups
+            continue
+        preserved = []
+        for group in groups:
+            if not isinstance(group, dict):
+                preserved.append(group)
+                continue
+            handlers = group.get("hooks", [])
+            if not isinstance(handlers, list):
+                preserved.append(group)
+                continue
+            remaining = [handler for handler in handlers if not handler_is_managed(handler)]
+            if remaining != handlers:
+                changed = True
+            if remaining:
+                updated = dict(group)
+                updated["hooks"] = remaining
+                preserved.append(updated)
+        if preserved:
+            cleaned[event] = preserved
+        elif event in hooks:
+            changed = True
+    if not changed:
+        return None, False
+    if not any(cleaned.values()):
+        return b"", True
+    payload["hooks"] = cleaned
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"), True
+
+
+def remove_empty_parents(path: Path, stop: Path) -> None:
+    current = path.parent
+    while current != stop:
+        try:
+            current.relative_to(stop)
+        except ValueError:
+            break
+        if not current.is_dir() or any(current.iterdir()):
+            break
+        current.rmdir()
+        current = current.parent
+
+
+def build_uninstall_plan(target_root: Path, *, purge_state: bool, purge_runtime: bool, force_package: bool) -> dict[str, Any]:
+    manifest = read_json(target_root / V3_MANIFEST, missing_ok=True)
+    if not manifest:
+        raise InstallError("No workflow manifest found; nothing to uninstall.")
+    entries = v3_entries(manifest)
+    inventory = collect_upgrade_inventory(target_root)
+    package_deletes: list[str] = []
+    project_kept: list[str] = []
+    project_purge: list[str] = []
+    conflicts: list[str] = []
+    merge_strips: list[dict[str, Any]] = []
+    notices: list[str] = []
+
+    for relative, meta in sorted(entries.items()):
+        owner = meta.get("ownership")
+        destination = target_root / Path(*PurePosixPath(relative).parts)
+        if owner == "package":
+            if destination.is_file() and isinstance(meta.get("managed_sha256"), str):
+                if sha256(destination.read_bytes()) != meta["managed_sha256"] and not force_package:
+                    conflicts.append(relative)
+            if destination.exists():
+                package_deletes.append(relative)
+        elif owner == "project":
+            if destination.exists():
+                (project_purge if purge_state else project_kept).append(relative)
+        elif owner == "merge":
+            merge_strips.append({"path": relative, "present": destination.is_file()})
+    manifest_relative = posix(V3_MANIFEST)
+    if (target_root / V3_MANIFEST).is_file() and manifest_relative not in package_deletes:
+        package_deletes.append(manifest_relative)
+        package_deletes.sort()
+
+    if inventory.get("live_lane_ids"):
+        notices.append("Live lanes still exist: " + ", ".join(inventory["live_lane_ids"]))
+    if inventory.get("queued_lane_ids"):
+        notices.append("Queued lanes still exist: " + ", ".join(inventory["queued_lane_ids"]))
+    if inventory.get("pending_closeout_task_ids"):
+        notices.append("Pending closeout tasks: " + ", ".join(inventory["pending_closeout_task_ids"]))
+    if inventory.get("governance_customizations"):
+        notices.append("Customized governance files: " + ", ".join(inventory["governance_customizations"]))
+    if project_kept:
+        notices.append("Project-owned workflow log is kept. Pass --purge-state to delete governance/state.")
+    if not purge_runtime:
+        notices.append("Git common-dir runtime (lanes/backups/leases) is kept. Pass --purge-runtime to delete it.")
+    if purge_state and inventory.get("pending_closeout_task_ids") and not force_package:
+        raise InstallError(
+            "Refusing --purge-state while closeout is pending: "
+            + ", ".join(inventory["pending_closeout_task_ids"])
+            + ". Review the log, then pass --force-package if you still want to delete it."
+        )
+
+    runtime = None
+    try:
+        runtime = str(git_common_dir(target_root) / "codex-workflow-v3")
+    except (OSError, subprocess.CalledProcessError, InstallError):
+        runtime = None
+
+    return {
+        "action": "uninstall",
+        "package": manifest.get("package"),
+        "version": manifest.get("version"),
+        "target": str(target_root),
+        "apply": False,
+        "package_deletes": package_deletes,
+        "merge_strips": merge_strips,
+        "project_state_kept": project_kept,
+        "project_state_purge": project_purge,
+        "runtime_dir": runtime,
+        "purge_runtime": purge_runtime,
+        "notices": notices,
+        "conflicts": conflicts,
+        "product_source_untouched": True,
+    }
+
+
+def apply_uninstall(target_root: Path, plan: dict[str, Any]) -> None:
+    originals: dict[Path, tuple[bytes, int] | None] = {}
+    backup_root = Path(tempfile.mkdtemp(prefix="codex-workflow-uninstall-"))
+    try:
+        for relative in plan["package_deletes"]:
+            path = target_root / Path(*PurePosixPath(relative).parts)
+            delete_managed(path, originals, target_root, backup_root)
+            remove_empty_parents(path, target_root)
+        for relative in plan["project_state_purge"]:
+            path = target_root / Path(*PurePosixPath(relative).parts)
+            delete_managed(path, originals, target_root, backup_root)
+            remove_empty_parents(path, target_root)
+
+        agents = target_root / "AGENTS.md"
+        if agents.is_file():
+            text, stripped = strip_text_block(agents.read_text(encoding="utf-8"), ENTRY_START, ENTRY_END)
+            if stripped:
+                remember(agents, originals)
+                backup_file(target_root, agents, backup_root)
+                if text.strip():
+                    atomic_write(agents, text.encode("utf-8"))
+                else:
+                    agents.unlink()
+
+        gitignore = target_root / ".gitignore"
+        if gitignore.is_file():
+            text, stripped = strip_text_block(
+                gitignore.read_text(encoding="utf-8"), GITIGNORE_V3_START, GITIGNORE_V3_END
+            )
+            if stripped:
+                remember(gitignore, originals)
+                backup_file(target_root, gitignore, backup_root)
+                if text.strip():
+                    atomic_write(gitignore, text.encode("utf-8"))
+                else:
+                    gitignore.unlink()
+
+        hooks_data, hooks_changed = stripped_hooks(target_root)
+        hooks_path = target_root / HOOKS_PATH
+        if hooks_changed:
+            remember(hooks_path, originals)
+            backup_file(target_root, hooks_path, backup_root)
+            if hooks_data:
+                atomic_write(hooks_path, hooks_data)
+            elif hooks_path.is_file():
+                hooks_path.unlink()
+                remove_empty_parents(hooks_path, target_root)
+
+        for directory in (
+            target_root / ".codex-workflow/bin",
+            target_root / ".codex-workflow/schemas",
+            target_root / ".codex-workflow/protocol",
+            target_root / ".codex-workflow/docs",
+            target_root / ".codex-workflow/install",
+            target_root / ".codex-workflow",
+            target_root / ".agents/skills",
+            target_root / ".agents",
+            target_root / ".codex",
+        ):
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
+
+        if plan.get("purge_runtime") and plan.get("runtime_dir"):
+            runtime = Path(plan["runtime_dir"])
+            if runtime.is_dir():
+                shutil.rmtree(runtime)
+    except (InstallError, OSError) as exc:
+        restore(originals)
+        raise SystemExit(f"Uninstall failed and tracked file changes were restored: {exc}") from exc
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def iter_product_files(target_root: Path) -> Iterable[str]:
+    skip_prefixes = (".codex-workflow/", ".git/")
+    skip_exact = {".git"}
+    for path in sorted(target_root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = posix(path.relative_to(target_root))
+        if relative in skip_exact or relative.startswith(skip_prefixes):
+            continue
+        if relative.startswith(".agents/skills/"):
+            continue
+        yield relative
+
+
+def build_export_plan(target_root: Path, destination: Path) -> dict[str, Any]:
+    copies: list[str] = []
+    stripped: list[str] = []
+    for relative in iter_product_files(target_root):
+        if relative in {"AGENTS.md", ".gitignore", ".codex/hooks.json"}:
+            stripped.append(relative)
+        else:
+            copies.append(relative)
+    return {
+        "action": "export-product",
+        "target": str(target_root),
+        "destination": str(destination),
+        "apply": False,
+        "copy": copies,
+        "copy_stripped": stripped,
+        "excluded": [".codex-workflow/", ".agents/skills/", ".git/"],
+        "notices": [
+            "Workflow engine, skills, and workflow state are excluded.",
+            "AGENTS.md / .gitignore / hooks keep user text and drop workflow blocks.",
+        ],
+    }
+
+
+def apply_export(target_root: Path, destination: Path, plan: dict[str, Any]) -> None:
+    if destination.exists() and (destination.is_file() or any(destination.iterdir())):
+        raise InstallError("Export destination must be an empty directory.")
+    destination.mkdir(parents=True, exist_ok=True)
+    for relative in plan["copy"]:
+        source = target_root / Path(*PurePosixPath(relative).parts)
+        target = destination / Path(*PurePosixPath(relative).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    agents = target_root / "AGENTS.md"
+    if agents.is_file():
+        text, _ = strip_text_block(agents.read_text(encoding="utf-8"), ENTRY_START, ENTRY_END)
+        if text.strip():
+            atomic_write(destination / "AGENTS.md", text.encode("utf-8"))
+    gitignore = target_root / ".gitignore"
+    if gitignore.is_file():
+        text, _ = strip_text_block(gitignore.read_text(encoding="utf-8"), GITIGNORE_V3_START, GITIGNORE_V3_END)
+        if text.strip():
+            atomic_write(destination / ".gitignore", text.encode("utf-8"))
+    hooks_data, hooks_changed = stripped_hooks(target_root)
+    if hooks_changed and hooks_data:
+        atomic_write(destination / HOOKS_PATH, hooks_data)
+    elif (target_root / HOOKS_PATH).is_file() and not hooks_changed:
+        # File has no managed handlers; copy as product-owned.
+        target = destination / HOOKS_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target_root / HOOKS_PATH, target)
 
 
 def main() -> None:
@@ -663,6 +965,54 @@ def main() -> None:
     target_root = Path(args.target).expanduser().resolve()
     if target_root == PACKAGE_ROOT or PACKAGE_ROOT in target_root.parents:
         raise SystemExit("Choose a project directory outside the workflow package.")
+    if args.uninstall and args.export_product:
+        raise SystemExit("Choose only one of --uninstall or --export-product.")
+    if args.uninstall:
+        if not target_root.exists():
+            raise SystemExit("--uninstall requires an existing target.")
+        try:
+            plan = build_uninstall_plan(
+                target_root,
+                purge_state=args.purge_state,
+                purge_runtime=args.purge_runtime,
+                force_package=args.force_package,
+            )
+        except InstallError as exc:
+            raise SystemExit(str(exc)) from exc
+        if plan["conflicts"]:
+            print("Uninstall stopped; package-owned files have user changes:")
+            for relative in plan["conflicts"]:
+                print(f"  - {relative}")
+            print("Review those files, then pass --force-package if you still want to delete the overlay.")
+            print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+            raise SystemExit(2)
+        if not args.apply:
+            print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+            raise SystemExit(0)
+        plan["apply"] = True
+        apply_uninstall(target_root, plan)
+        print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+        print(f"Workflow overlay removed from: {target_root}")
+        print("Product source files were not deleted.")
+        raise SystemExit(0)
+    if args.export_product:
+        if not target_root.exists():
+            raise SystemExit("--export-product requires an existing target.")
+        destination = Path(args.export_product).expanduser().resolve()
+        if destination == target_root or target_root in destination.parents:
+            raise SystemExit("Export destination must be outside the product worktree.")
+        plan = build_export_plan(target_root, destination)
+        if not args.apply:
+            print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+            raise SystemExit(0)
+        try:
+            apply_export(target_root, destination, plan)
+        except InstallError as exc:
+            raise SystemExit(str(exc)) from exc
+        plan["apply"] = True
+        print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+        print(f"Product tree exported to: {destination}")
+        raise SystemExit(0)
     if not target_root.exists() and args.plan_upgrade:
         raise SystemExit("--plan-upgrade requires an existing target.")
 

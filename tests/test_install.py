@@ -199,6 +199,61 @@ class InstallTests(unittest.TestCase):
             )
             self.assertEqual(project.read_text(encoding="utf-8"), customized)
 
+    def test_uninstall_dry_run_is_zero_write_and_apply_keeps_product_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            product = target / "src/app.py"
+            product.parent.mkdir()
+            product.write_text("print('product')\n", encoding="utf-8")
+            agents = target / "AGENTS.md"
+            agents.write_text(agents.read_text(encoding="utf-8") + "\n# Product rules\nKeep me.\n", encoding="utf-8")
+            before = product.read_bytes()
+            dry = install_project(target, extra=["--uninstall"])
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            plan = json.loads(dry.stdout)
+            self.assertEqual(plan["action"], "uninstall")
+            self.assertFalse(plan["apply"])
+            self.assertTrue(plan["product_source_untouched"])
+            self.assertTrue((target / ".codex-workflow/bin/workflow_check.py").is_file())
+            self.assertEqual(product.read_bytes(), before)
+            applied = install_project(target, extra=["--uninstall", "--apply"])
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse((target / ".codex-workflow/bin/workflow_check.py").exists())
+            self.assertTrue((target / ".codex-workflow/governance/PROJECT.md").is_file())
+            self.assertEqual(product.read_bytes(), before)
+            self.assertIn("Keep me.", (target / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertNotIn("BEGIN CODEX WORKFLOW ENTRY", (target / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_uninstall_purge_state_removes_workflow_log_not_product(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            product = target / "README-product.md"
+            product.write_text("product readme\n", encoding="utf-8")
+            purged = install_project(target, extra=["--uninstall", "--apply", "--purge-state"])
+            self.assertEqual(purged.returncode, 0, purged.stderr)
+            self.assertFalse((target / ".codex-workflow").exists())
+            self.assertTrue(product.is_file())
+
+    def test_export_product_excludes_workflow_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            dest = Path(directory) / "export"
+            self.assertEqual(install_project(target).returncode, 0)
+            src = target / "src/app.py"
+            src.parent.mkdir()
+            src.write_text("print('ok')\n", encoding="utf-8")
+            dry = install_project(target, extra=["--export-product", str(dest)])
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertFalse(dest.exists())
+            applied = install_project(target, extra=["--export-product", str(dest), "--apply"])
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertTrue((dest / "src/app.py").is_file())
+            self.assertFalse((dest / ".codex-workflow").exists())
+            self.assertFalse((dest / ".agents/skills").exists())
+            self.assertTrue((target / ".codex-workflow/bin/workflow_check.py").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
