@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from workflow_common import (
     fault_injection,
     git,
     is_ancestor,
+    is_json_integer,
     load_record,
     local_bootstrap_policy_gate,
     require_v4_action,
@@ -252,14 +254,15 @@ def _remote_owner_uuid(value: str, *, label: str) -> str:
         raise LaneError(f"{label} must be a random UUID, not a username or hostname.") from exc
 
 
-def _owner_id(paths: WorkflowPaths, supplied: str | None) -> str:
-    paths.ensure_runtime()
+def _owner_id(paths: WorkflowPaths, supplied: str | None, *, persist: bool = True) -> str:
+    if persist:
+        paths.ensure_runtime()
     identity_path = paths.shared_runtime / "owner-id"
     if supplied:
         owner = _remote_owner_uuid(supplied, label="Owner ID")
         if identity_path.is_file() and identity_path.read_text(encoding="utf-8").strip() != owner:
             raise LaneError("Supplied owner ID differs from this runtime's controlled owner ID.")
-        if not identity_path.is_file():
+        if persist and not identity_path.is_file():
             identity_path.write_text(owner + "\n", encoding="utf-8")
         return owner
     if identity_path.is_file():
@@ -268,14 +271,15 @@ def _owner_id(paths: WorkflowPaths, supplied: str | None) -> str:
         except ValueError as exc:
             raise LaneError("Runtime owner-id is invalid; repair it explicitly.") from exc
     owner = str(uuid.uuid4())
-    identity_path.write_text(owner + "\n", encoding="utf-8")
+    if persist:
+        identity_path.write_text(owner + "\n", encoding="utf-8")
     return owner
 
 
-def _coordinator_lock(paths: WorkflowPaths, action: str, *, apply: bool) -> PersistentRoleLock | AdvisoryLock:
+def _coordinator_lock(paths: WorkflowPaths, action: str, *, apply: bool):
     if not apply:
         validate_role_lock_access(paths.shared_runtime, "coordinator")
-        return AdvisoryLock(role_lock_guard_path(paths.shared_runtime, "coordinator"), timeout=2)
+        return nullcontext()
     return PersistentRoleLock(paths.shared_runtime, "coordinator", action=action)
 
 
@@ -454,7 +458,7 @@ def _assert_claims_available(paths: WorkflowPaths, task_id: str, resources: list
         raise LaneError(f"Task already has a local claim: {task_id}")
     registry_paths = list((paths.shared_runtime / "registry" / "lanes").glob("*.json"))
     maximum = paths.layout.get("parallel", {}).get("max_local_lanes", 1)
-    if not isinstance(maximum, int) or maximum < 1:
+    if not is_json_integer(maximum, minimum=1):
         raise LaneError("parallel.max_local_lanes must be a positive integer.")
     if len(registry_paths) >= maximum:
         raise LaneError(f"Local lane limit reached ({maximum}).")
@@ -623,7 +627,7 @@ def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         raise LaneError("Task record does not match requested task ID.")
     _require_v4_record_for_lane(paths, record)
     allowed, resources = _record_scope(record)
-    owner_id = _owner_id(paths, args.owner_id)
+    owner_id = _owner_id(paths, args.owner_id, persist=args.apply)
     suffix = uuid.uuid4().hex[:8]
     lane_id = f"lane-{_safe_id(args.task_id)}-{suffix}"
     claim_id = str(uuid.uuid4())
@@ -641,7 +645,6 @@ def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         worktree=worktree, record=record_relative, allowed_paths=allowed,
         resources=resources, mode="local_worktree",
     )
-    paths.ensure_runtime()
     with _coordinator_lock(paths, "claim", apply=args.apply):
         _assert_claims_available(paths, args.task_id, resources, branch, worktree)
         if worktree.exists():
@@ -649,6 +652,7 @@ def claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if not args.apply:
             print(json.dumps({"apply": False, **payload}, ensure_ascii=False, sort_keys=True))
             return
+        paths.ensure_runtime()
         journal_path = paths.shared_runtime / "audit" / f"claim-{claim_id}.json"
         atomic_write_json(journal_path, {**payload, "journal_state": "creating_worktree"})
         result = git(paths, "worktree", "add", "-b", branch, str(worktree), base_commit, check=False)
@@ -693,7 +697,7 @@ def adopt(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     _, record = load_record(paths, record_relative)
     _require_v4_record_for_lane(paths, record)
     allowed, resources = _record_scope(record)
-    owner_id = _owner_id(paths, args.owner_id)
+    owner_id = _owner_id(paths, args.owner_id, persist=args.apply)
     suffix = uuid.uuid4().hex[:8]
     lane_id = f"lane-{_safe_id(args.task_id)}-{suffix}"
     payload = _lane_payload(
@@ -703,12 +707,12 @@ def adopt(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         record=record_relative, allowed_paths=allowed, resources=resources,
         mode="local_worktree",
     )
-    paths.ensure_runtime()
     with _coordinator_lock(paths, "adopt", apply=args.apply):
         _assert_claims_available(paths, args.task_id, resources, branch, paths.root)
         if not args.apply:
             print(json.dumps({"apply": False, "dirty_diff_sha256": digest, **payload}, ensure_ascii=False, sort_keys=True))
             return
+        paths.ensure_runtime()
         _assign_record(paths, record_relative, payload, mode="local_worktree")
         _write_runtime_claims(paths, payload, paths)
     print(f"LANE_ADOPTED id={lane_id} branch={branch}")
@@ -730,12 +734,23 @@ def _effective_status(payload: dict[str, Any]) -> str:
     worktree = Path(str(payload.get("worktree", "")))
     record_relative = payload.get("record")
     record = None
+    record_unreadable = False
     if worktree.is_dir() and isinstance(record_relative, str):
         try:
             lane_paths = WorkflowPaths.discover(worktree)
             _, record = load_record(lane_paths, record_relative)
-        except Exception:
-            record = None
+        except (
+            OSError,
+            json.JSONDecodeError,
+            WorkflowDataError,
+            WorkflowPathError,
+            WorkflowJSONResourceError,
+            LaneError,
+            StateError,
+        ):
+            record_unreadable = True
+    if record_unreadable:
+        return "stale"
     if isinstance(record, dict):
         integration = record.get("integration") or {}
         verification = record.get("verification") or {}
@@ -803,7 +818,7 @@ def _queued_lane_snapshot(paths: WorkflowPaths, queue_path: Path, queue: dict[st
         raise LaneError(f"Queue entry has an invalid ID: {queue_path}") from exc
     if queue_path.stem != queue_id:
         raise LaneError(f"Queue entry filename does not match its ID: {queue_path}")
-    if not isinstance(owner_generation, int) or owner_generation < 1:
+    if not is_json_integer(owner_generation, minimum=1):
         raise LaneError(f"Queue entry has an invalid owner generation: {queue_path}")
     if not isinstance(queue.get("queue_priority"), int) or isinstance(queue.get("queue_priority"), bool):
         raise LaneError(f"Queue entry has an invalid priority: {queue_path}")
@@ -1071,7 +1086,6 @@ def _swap_rebuild_runtime(paths: WorkflowPaths, staging: Path, backup: Path) -> 
 def rebuild(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if paths.layout.get("parallel", {}).get("mode") != "local_worktree":
         raise LaneError("rebuild requires local_worktree mode in layout.json.")
-    paths.ensure_runtime()
     with _coordinator_lock(paths, "rebuild", apply=args.apply):
         lanes: list[dict[str, Any]] = []
         queues: list[dict[str, Any]] = []
@@ -1097,6 +1111,7 @@ def rebuild(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 )
             )
             return
+        paths.ensure_runtime()
         rebuild_id = f"rebuild-{uuid.uuid4().hex}"
         staging = paths.shared_runtime / f".{rebuild_id}-staging"
         backup = paths.shared_runtime / "backups" / rebuild_id
@@ -1106,9 +1121,15 @@ def rebuild(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 
 
 def list_lanes(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    paths.ensure_runtime()
     rows = []
-    for registry_path in sorted((paths.shared_runtime / "registry" / "lanes").glob("*.json")):
+    registry = paths.shared_runtime / "registry" / "lanes"
+    if not registry.is_dir():
+        if args.as_json:
+            print(json.dumps([], ensure_ascii=False))
+            return
+        print("No local lanes.")
+        return
+    for registry_path in sorted(registry.glob("*.json")):
         try:
             payload = json.loads(registry_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -1215,6 +1236,8 @@ def expand_resources(paths: WorkflowPaths, args: argparse.Namespace) -> None:
                 raise StateError("Task record lane token/generation mismatch.")
             lane["resource_keys"] = new_resources
             record["lane"] = lane
+            # V4 contract_fingerprint covers scope.resource_keys; extra runtime
+            # claims stay on lane.resource_keys only.
             if record.get("version") != 4:
                 record["scope"]["resource_keys"] = new_resources
 
@@ -1245,7 +1268,7 @@ def queue_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if queued_record.get("version") == 4:
             _require_v4_integration_preflight(lane_paths, payload["record"])
         expected_generation = queued_record.get("generation")
-        if not isinstance(expected_generation, int):
+        if not is_json_integer(expected_generation, minimum=0):
             raise LaneError("Queued task record generation is invalid.")
         lane = queued_record.get("lane") or {}
         if (
@@ -1492,7 +1515,7 @@ def refresh_base(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if dirty:
             raise LaneError("refresh-base requires a clean lane worktree after the manual rebase.")
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
-        if not isinstance(expected_generation, int):
+        if not is_json_integer(expected_generation, minimum=0):
             raise LaneError("Task record generation is invalid.")
         lane = record.get("lane") or {}
         for field in ("lane_id", "claim_id", "owner_generation", "branch", "base_commit"):
@@ -1584,9 +1607,9 @@ def recover_lane(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     if expires is not None and expires >= datetime.now(timezone.utc):
         raise LaneError("Takeover is refused while the current heartbeat lease is live.")
     previous_generation = payload.get("owner_generation")
-    if not isinstance(previous_generation, int):
+    if not is_json_integer(previous_generation, minimum=1):
         raise LaneError("Lane owner generation is invalid.")
-    new_owner = _owner_id(paths, args.owner_id)
+    new_owner = _owner_id(paths, args.owner_id, persist=args.apply)
     if not args.apply:
         print(json.dumps({"apply": False, "lane_id": args.lane_id, "owner_generation": previous_generation + 1, "owner_id": new_owner}, sort_keys=True))
         return
@@ -1773,12 +1796,12 @@ def resume_remote(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         if not isinstance(lane.get(field), str) or not lane[field]:
             raise LaneError(f"Remote task record lane.{field} is invalid.")
     generation = lane.get("owner_generation")
-    if not isinstance(generation, int) or generation < 1:
+    if not is_json_integer(generation, minimum=1):
         raise LaneError("Remote task record lane.owner_generation is invalid.")
     assignment = lane.get("assignment")
     if not isinstance(assignment, dict):
         raise LaneError("Remote task record lane.assignment is invalid.")
-    owner_id = _owner_id(paths, args.owner_id)
+    owner_id = _owner_id(paths, args.owner_id, persist=args.apply)
     if assignment.get("assigned_owner_id") != owner_id:
         raise LaneError("Remote assignment belongs to a different owner ID.")
     if assignment.get("assignment_generation") != generation:
@@ -1833,7 +1856,7 @@ def _remote_lane_pointer(
         if not isinstance(lane.get(field), str) or not lane[field]:
             raise LaneError(f"Remote task record lane.{field} is invalid.")
     generation = lane.get("owner_generation")
-    if not isinstance(generation, int) or generation < 1:
+    if not is_json_integer(generation, minimum=1):
         raise LaneError("Remote task record lane.owner_generation is invalid.")
     return {
         "task_id": task_id,
@@ -1916,7 +1939,7 @@ def _remote_claim_identity(record: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(lane_id, str) or not lane_id:
         raise LaneError("Remote task record lane.lane_id is invalid.")
     generation = lane.get("owner_generation")
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+    if not is_json_integer(generation, minimum=1):
         raise LaneError("Remote task record lane.owner_generation is invalid.")
     assignment = lane.get("assignment")
     if not isinstance(assignment, dict):
@@ -2179,7 +2202,7 @@ def remote_claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     record_path, record = load_record(paths, args.record)
     _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
-    owner_id = _owner_id(paths, identity["owner_id"])
+    owner_id = _owner_id(paths, identity["owner_id"], persist=args.apply)
     if owner_id != identity["owner_id"]:
         raise LaneError("Current runtime owner ID does not match the remote task assignment.")
     if current_branch(paths) != identity["branch"]:
@@ -2190,15 +2213,28 @@ def remote_claim(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     existing = [ref for ref in refs if _remote_ref_oid(paths, remote, ref)]
     if existing:
         raise LaneError("Remote task/claim/resource ref already exists: " + ", ".join(existing))
+    if not args.apply:
+        print(
+            json.dumps(
+                {
+                    "apply": False,
+                    "remote": remote,
+                    "payload": payload,
+                    "task_ref": payload["task_ref"],
+                    "claim_ref": claim_ref,
+                    "resource_refs": payload["resource_refs"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
     commit = _claim_commit(paths, payload)
     refspecs = [
         f"{rev_parse(paths, 'HEAD')}:{payload['task_ref']}",
         f"{commit}:{claim_ref}",
         *[f"{commit}:{ref}" for ref in payload["resource_refs"]],
     ]
-    if not args.apply:
-        print(json.dumps({"apply": False, "remote": remote, "claim_commit": commit, "payload": payload, "refspecs": refspecs}, ensure_ascii=False, sort_keys=True))
-        return
     result = git(paths, "push", "--atomic", remote, *refspecs, check=False)
     if result.returncode != 0:
         raise LaneError("Atomic remote claim failed with no valid lease: " + (result.stderr or result.stdout).strip())
@@ -2216,7 +2252,7 @@ def remote_heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     _, record = load_record(paths, args.record)
     _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
-    owner_id = _owner_id(paths, identity["owner_id"])
+    owner_id = _owner_id(paths, identity["owner_id"], persist=args.apply)
     if owner_id != identity["owner_id"]:
         raise LaneError("Current runtime owner ID does not match the remote task assignment.")
     claim_ref = _remote_claim_ref(identity["task_id"])
@@ -2224,14 +2260,20 @@ def remote_heartbeat(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     _validate_remote_claim_binding(identity, old)
     _require_live_remote_claim(old, action="Remote heartbeat")
     payload = _claim_payload(paths, record, old["lease_revision"] + 1, args.lease_seconds)
-    commit = _claim_commit(paths, payload, old_oid)
     refs = _remote_claim_refs(old, claim_ref)
     _assert_remote_refs_at(paths, remote, refs, old_oid)
+    if not args.apply:
+        print(
+            json.dumps(
+                {"apply": False, "old_oid": old_oid, "payload": payload},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    commit = _claim_commit(paths, payload, old_oid)
     leases = [f"--force-with-lease={ref}:{old_oid}" for ref in refs]
     refspecs = [f"{commit}:{ref}" for ref in refs]
-    if not args.apply:
-        print(json.dumps({"apply": False, "old_oid": old_oid, "new_oid": commit, "payload": payload}, ensure_ascii=False, sort_keys=True))
-        return
     result = git(paths, "push", "--atomic", *leases, remote, *refspecs, check=False)
     if result.returncode != 0:
         raise LaneError("Remote heartbeat CAS failed; freeze this lane: " + (result.stderr or result.stdout).strip())
@@ -2245,8 +2287,10 @@ def _transferred_record(
     transfer_kind: str,
     approval: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if record.get("version") != 3 or not isinstance(record.get("generation"), int):
-        raise LaneError("Remote transfer requires a V3 task record with an integer generation.")
+    version = record.get("version")
+    generation = record.get("generation")
+    if version not in {3, 4} or not isinstance(generation, int) or isinstance(generation, bool):
+        raise LaneError("Remote transfer requires a V3 or V4 task record with an integer generation.")
     if (record.get("integration") or {}).get("status") == "integrated":
         raise LaneError("Remote ownership transfer refuses an integrated task; use remote-release.")
     identity = _remote_claim_identity(record)
@@ -2285,7 +2329,7 @@ def _remote_transfer(
     record_path, record = load_record(paths, args.record)
     _require_v4_record_for_lane(paths, record)
     identity = _remote_claim_identity(record)
-    current_owner_id = _owner_id(paths, args.owner_id)
+    current_owner_id = _owner_id(paths, args.owner_id, persist=args.apply)
     if transfer_kind == "handoff":
         if current_owner_id != identity["owner_id"]:
             raise LaneError("Remote handoff owner does not match the current task assignment.")
@@ -2583,7 +2627,6 @@ def main() -> None:
     args = parser().parse_args()
     try:
         paths = WorkflowPaths.discover(Path.cwd())
-        paths.ensure_runtime()
         if args.command == "claim":
             claim(paths, args)
         elif args.command == "adopt":

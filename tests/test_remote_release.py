@@ -159,7 +159,7 @@ class RemoteReleaseTests(unittest.TestCase):
                 "merge_strategy": "ff",
                 "closeout_commit": None,
                 "pr_url": "https://example.invalid/pull/1",
-                "ci_checks": [{"name": "test", "status": "success"}],
+                "ci_checks": [{"name": "test", "status": "success", "source": "github-actions"}],
                 "evidence": [{"kind": "remote_ff", "verified_at": "2026-07-11T00:00:00Z"}],
             }
         )

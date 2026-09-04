@@ -63,7 +63,7 @@ def _evidence(base: str, delivery: str, **overrides) -> dict:
         "result_commit": delivery,
         "merge_strategy": "ff",
         "pr_url": "https://example.invalid/pull/1",
-        "ci_checks": [{"name": "test", "status": "success"}],
+        "ci_checks": [{"name": "test", "status": "success", "source": "github-actions"}],
     }
     payload.update(overrides)
     return payload
@@ -194,7 +194,7 @@ class PhaseCRemoteCloseoutTests(unittest.TestCase):
                 "result_commit": delivery,
                 "merge_strategy": "ff",
                 "pr_url": "https://example.invalid/pull/1",
-                "ci_checks": [{"name": "test", "status": "success"}],
+                "ci_checks": [{"name": "test", "status": "success", "source": "github-actions"}],
             }
         )
         path = write_record(project, record)
@@ -235,6 +235,31 @@ class PhaseCRemoteCloseoutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("commit=", result.stdout)
 
+    def test_prepare_remote_closeout_dry_run_does_not_create_runtime_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self._pending(Path(directory))
+            project = Path(fixture["project"])
+            commit_all(project, "record pending remote")
+            runtime = project / ".git" / "codex-workflow-v4"
+            before = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            preview = self._closeout(
+                project,
+                fixture["relative"],
+                _evidence(fixture["base"], fixture["delivery"]),
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn('"apply": false', preview.stdout)
+            after = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            self.assertEqual(after, before)
+
     def test_head_not_result_and_non_ff_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = self._pending(Path(directory))
@@ -271,6 +296,14 @@ class PhaseCRemoteCloseoutTests(unittest.TestCase):
                         fixture["delivery"],
                         expected_check_source="github-actions",
                         ci_checks=[{"name": "test", "status": "success", "source": "unknown"}],
+                    ),
+                    "EQ-009",
+                ),
+                (
+                    _evidence(
+                        fixture["base"],
+                        fixture["delivery"],
+                        ci_checks=[{"name": "test", "status": "success"}],
                     ),
                     "EQ-009",
                 ),

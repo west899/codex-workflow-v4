@@ -148,6 +148,54 @@ class WorkflowCheckTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(original)
 
+    def test_stop_is_not_a_workflow_check_mode_and_does_not_run_governance(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+        mode = next(action for action in workflow_check.parser()._actions if action.dest == "mode")
+        self.assertIn("doctor", mode.choices)
+        self.assertNotIn("stop", mode.choices)
+        refused = run(workflow_command(self.target, "workflow_check.py", "stop"), cwd=self.target)
+        self.assertNotEqual(refused.returncode, 0, refused.stderr)
+        self.assertIn("invalid choice: 'stop'", refused.stderr)
+        combined = refused.stdout + refused.stderr
+        self.assertNotIn("[workflow-check] PASS", combined)
+        self.assertNotIn("[workflow-check] FAIL", combined)
+        catalog = (Path(__file__).resolve().parents[1] / "功能.md").read_text(encoding="utf-8")
+        self.assertIn("workflow_check.py: start / manual / doctor / preflight", catalog)
+        self.assertNotIn("start / manual / stop /", catalog)
+        paths = sys.modules[workflow_check.WorkflowPaths.__module__]
+        self.assertFalse(hasattr(paths, "safe_join"))
+        self.assertFalse(hasattr(paths, "LEGACY_PACKAGE_NAME"))
+
+    def test_generation_bool_is_rejected(self) -> None:
+        workflow_check = self.load_payload_workflow_check()
+        checks = workflow_check.Checks()
+        record = {
+            "version": 3,
+            "generation": True,
+            "phase": "developer",
+            "task_id": "MVP-001",
+            "status": "in_progress",
+            "request": "Deliver an observable result",
+            "source": {
+                "type": "user_directive",
+                "reference": "user:test",
+                "priority_reason": "regression",
+            },
+            "scope": {
+                "in": ["behavior"],
+                "out": ["release"],
+                "allowed_paths": ["src/**"],
+                "resource_keys": ["path:src"],
+            },
+        }
+        workflow_check._validate_record_basics(
+            workflow_check.WorkflowPaths.discover(self.target),
+            record,
+            checks,
+            final=False,
+        )
+        self.assertTrue(any("generation" in item for item in checks.errors))
+
     def test_doctor_missing_startup_observation_is_readable_warning_and_success(self) -> None:
         self.assertFalse(self.startup_observation_path().exists())
         result = self.doctor()

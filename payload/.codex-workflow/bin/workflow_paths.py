@@ -19,14 +19,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 
 LAYOUT_RELATIVE = PurePosixPath(".codex-workflow/layout.json")
 RUNTIME_NAME = "codex-workflow-v4"
 LEGACY_RUNTIME_NAME = "codex-workflow-v3"
 PACKAGE_NAME = "codex-workflow-v4"
-LEGACY_PACKAGE_NAME = "codex-workflow-v3"
 MAX_JSON_INTEGER_DIGITS = 640
 MAX_JSON_NESTING = 256
 
@@ -339,19 +338,3 @@ def atomic_write_json(path: Path, payload: Any, *, mode: int | None = None) -> N
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         mode=mode,
     )
-
-
-def safe_join(parent: Path, components: Iterable[str]) -> Path:
-    """Join untrusted single components while preserving parent containment."""
-
-    candidate = parent
-    for component in components:
-        if not component or component in {".", ".."} or any(
-            marker in component for marker in ("/", "\\", ":")
-        ):
-            raise WorkflowPathError(f"Unsafe path component: {component!r}")
-        candidate /= component
-    candidate = resolve_path(candidate, label="runtime path")
-    if not _is_descendant(candidate, parent):
-        raise WorkflowPathError("Joined path escapes its runtime domain.")
-    return candidate

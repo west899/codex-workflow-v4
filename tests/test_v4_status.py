@@ -21,10 +21,13 @@ from support import (
 BIN_PATH = PACKAGE_ROOT / "payload/.codex-workflow/bin"
 sys.path.insert(0, str(BIN_PATH))
 from workflow_common import (  # noqa: E402
+    WorkflowDataError,
+    _backlog_focus_wip_lines,
     _product_card_lines,
     derive_v4_product_summary,
     redact_v4_human_value,
     render_workflow_status,
+    requirements_impact_path,
     v4_stop_hook_next_action,
 )
 
@@ -298,6 +301,34 @@ class V4ProductSummaryTests(unittest.TestCase):
         self.assertIn("exploratory（非正式产品进度）", rendered)
         self.assertNotIn("checks referenced", rendered)
         self.assertIn("live=not_checked", rendered)
+
+
+class JsonIntegerBoundaryTests(unittest.TestCase):
+    def test_requirements_impact_path_rejects_bool_revision(self) -> None:
+        class Paths:
+            def tracked(self, key: str) -> Path:
+                raise AssertionError("invalid revision must fail before path lookup")
+
+        with self.assertRaisesRegex(WorkflowDataError, "impact report identity"):
+            requirements_impact_path(Paths(), "REQ-001", True)  # type: ignore[arg-type]
+
+    def test_backlog_focus_wip_lines_ignore_bool_limit(self) -> None:
+        lines = _backlog_focus_wip_lines(
+            {
+                "status": "ok",
+                "unconfirmed_core_slice_ids": ["MVP-001"],
+                "limit": True,
+            }
+        )
+        self.assertEqual(lines, [])
+        shown = _backlog_focus_wip_lines(
+            {
+                "status": "ok",
+                "unconfirmed_core_slice_ids": ["MVP-001"],
+                "limit": 1,
+            }
+        )
+        self.assertTrue(any("WIP 上限 1" in item for item in shown))
 
 
 class V4StatusRenderTests(unittest.TestCase):

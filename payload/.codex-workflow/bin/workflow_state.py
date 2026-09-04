@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +35,7 @@ from workflow_common import (
     fault_injection,
     git,
     is_ancestor,
+    is_json_integer,
     load_record,
     local_bootstrap_policy_gate,
     prepare_developer_evidence,
@@ -87,7 +88,6 @@ from workflow_lock import (
     PersistentRoleLock,
     PersistentRoleLockError,
     resource_key_digest,
-    role_lock_guard_path,
     validate_role_lock_access,
 )
 from workflow_paths import WorkflowPathError, WorkflowPaths, atomic_write_json, atomic_write_text
@@ -284,7 +284,7 @@ def mutate_record(
     mutation: Mutation,
     *,
     sync_status: bool = True,
-    allowed_versions: tuple[int, ...] = (3,),
+    allowed_versions: tuple[int, ...] = (3, 4),
     v4_live_gate: bool = True,
 ) -> tuple[Path, dict[str, Any]]:
     path, initial = load_record(paths, relative)
@@ -292,7 +292,7 @@ def mutate_record(
         versions = "/".join(f"V{version}" for version in allowed_versions)
         raise StateError(f"This state transition only supports {versions} task records.")
     expected = initial.get("generation") if expected_generation is None else expected_generation
-    if not isinstance(expected, int):
+    if not is_json_integer(expected, minimum=0):
         raise StateError("Task record generation is invalid.")
 
     def project(current: dict[str, Any]) -> dict[str, Any] | None:
@@ -353,7 +353,7 @@ def mutate_record(
             reread = json.loads(path.read_text(encoding="utf-8"))
             if reread != updated:
                 raise StateError("Task record reread did not match the requested mutation.")
-            if sync_status and updated.get("version") == 3 and not _is_lane_worktree(paths):
+            if sync_status and updated.get("version") in {3, 4} and not _is_lane_worktree(paths):
                 sync_workflow_status(paths)
             print(f"STATE_APPLIED generation={updated['generation']}")
             return path, updated
@@ -764,7 +764,7 @@ def record_decision(paths: WorkflowPaths, args: argparse.Namespace) -> None:
 def _require_gate(paths: WorkflowPaths, relative: str) -> int:
     _, record = load_record(paths, relative)
     generation = record.get("generation")
-    if not isinstance(generation, int):
+    if not is_json_integer(generation, minimum=0):
         raise StateError("Task record generation is invalid.")
     result = subprocess.run(
         [
@@ -824,7 +824,7 @@ def _role_lock_context(
         validate_role_lock_access(
             paths.shared_runtime, role, token=token, generation=generation
         )
-        return AdvisoryLock(role_lock_guard_path(paths.shared_runtime, role), timeout=2)
+        return nullcontext()
     return PersistentRoleLock(
         paths.shared_runtime,
         role,
@@ -1517,7 +1517,6 @@ def _prepare_closeout_commit(
     integrator_token: str | None = None,
     integrator_generation: int | None = None,
 ) -> None:
-    paths.ensure_runtime()
     record_path, initial = load_record(paths, relative)
     if initial.get("version") == 2:
         raise StateError("V2 records are read-only history and cannot close out.")
@@ -1526,7 +1525,7 @@ def _prepare_closeout_commit(
             f"Unsupported task record version for closeout: {initial.get('version')!r}."
         )
     expected = initial.get("generation") if expected_generation is None else expected_generation
-    if not isinstance(expected, int):
+    if not is_json_integer(expected, minimum=0):
         raise StateError("Task generation is invalid.")
     backlog_path = paths.tracked("backlog")
     with _role_lock_context(
@@ -1539,7 +1538,8 @@ def _prepare_closeout_commit(
     ) as integrator_lock:
         if isinstance(integrator_lock, PersistentRoleLock):
             integrator_lock.heartbeat()
-        with AdvisoryLock(record_lock_path(paths, record_path), timeout=2):
+        record_lock = AdvisoryLock(record_lock_path(paths, record_path), timeout=2) if apply else nullcontext()
+        with record_lock:
             _, current = load_record(paths, relative)
             if current.get("generation") != expected:
                 raise StateError(f"Generation conflict: expected {expected}, found {current.get('generation')}.")
@@ -1587,6 +1587,7 @@ def _prepare_closeout_commit(
                     )
                 )
                 return
+            paths.ensure_runtime()
             atomic_write_json(record_path, updated)
             atomic_write_text(backlog_path, backlog)
             sync_workflow_status(paths)
@@ -1634,7 +1635,7 @@ def prepare_local_closeout(paths: WorkflowPaths, args: argparse.Namespace) -> No
                 f"Unsupported task record version for closeout: {record.get('version')!r}."
             )
         expected_generation = record.get("generation") if args.expected_generation is None else args.expected_generation
-        if not isinstance(expected_generation, int):
+        if not is_json_integer(expected_generation, minimum=0):
             raise StateError("Task generation is invalid.")
         integration = record.get("integration") or {}
         verification = record.get("verification") or {}
@@ -1792,7 +1793,6 @@ def _require_requirements_gate(paths: WorkflowPaths, brief: Path) -> None:
 
 
 def sync_status(paths: WorkflowPaths, args: argparse.Namespace) -> None:
-    paths.ensure_runtime()
     if not args.apply:
         snapshot = workflow_status_snapshot(paths)
         print(
@@ -1808,6 +1808,7 @@ def sync_status(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         )
         return
     _require_coordinator_worktree(paths, "sync-status")
+    paths.ensure_runtime()
     with _role_lock_context(paths, "coordinator", "sync-status", apply=True):
         snapshot = sync_workflow_status(paths)
     print(f"STATUS_SYNCED fingerprint={snapshot['status_fingerprint']}")
@@ -1858,7 +1859,6 @@ def apply_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) ->
         )
         return analysis, report, next_project, next_backlog, str(report_path), report_path
 
-    paths.ensure_runtime()
     if not args.apply:
         analysis, _, _, _, report_relative, _ = prepare()
         print(
@@ -1878,6 +1878,7 @@ def apply_requirements_impact(paths: WorkflowPaths, args: argparse.Namespace) ->
         )
         return
     _require_coordinator_worktree(paths, "apply-requirements-impact")
+    paths.ensure_runtime()
     with _role_lock_context(paths, "coordinator", "apply-requirements-impact", apply=True):
         analysis, report, next_project, next_backlog, _, report_path = prepare()
         atomic_write_text(paths.tracked("project"), next_project)
@@ -2131,8 +2132,10 @@ def _release_claims(paths: WorkflowPaths, record: dict[str, Any]) -> list[str]:
     if lane_worktree is not None and lane_worktree.is_dir():
         try:
             pointer = WorkflowPaths.discover(lane_worktree).lane_runtime / "lane.json"
-        except (WorkflowPathError, OSError):
-            pass
+        except (WorkflowPathError, OSError) as exc:
+            raise StateError(
+                f"Refusing to confirm closeout; lane worktree pointer cannot be resolved: {exc}"
+            ) from exc
     if pointer.is_file():
         try:
             payload = json.loads(pointer.read_text(encoding="utf-8"))
@@ -2308,6 +2311,27 @@ def pending_queued_recovery(paths: WorkflowPaths, args: argparse.Namespace) -> N
 
 def invalidate(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     def mutation(record: dict[str, Any]) -> None:
+        if record.get("version") == 4:
+            try:
+                reset_v4_snapshot_evidence(
+                    record,
+                    allowed_integration_statuses=(
+                        "not_ready",
+                        "pending",
+                        "queued",
+                        "merged_pending_closeout",
+                        "integrated",
+                        "invalidated",
+                    ),
+                )
+            except WorkflowDataError as exc:
+                raise StateError(str(exc)) from exc
+            record["verification"]["status"] = "invalidated"
+            record["integration"]["status"] = "invalidated"
+            reason = args.reason.strip()
+            if reason:
+                record["remaining_risks"] = [reason]
+            return
         record["status"] = "in_progress"
         record["phase"] = "developer"
         verification = record.get("verification") or {}
@@ -2319,7 +2343,14 @@ def invalidate(paths: WorkflowPaths, args: argparse.Namespace) -> None:
         evidence.append({"kind": "invalidation", "reason": args.reason, "recorded_at": utc_now()})
         record["integration"] = integration
 
-    mutate_record(paths, args.record, args.expected_generation, args.apply, mutation)
+    mutate_record(
+        paths,
+        args.record,
+        args.expected_generation,
+        args.apply,
+        mutation,
+        allowed_versions=(3, 4),
+    )
 
 
 def main() -> None:

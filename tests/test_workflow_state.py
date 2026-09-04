@@ -8,8 +8,11 @@ import unittest
 from pathlib import Path
 
 from support import (
+    approved_requirements,
     basic_v3_record,
+    basic_v4_record,
     commit_all,
+    configure_v4_architecture_baseline,
     create_baseline,
     developer_evidence_v1,
     git,
@@ -17,6 +20,7 @@ from support import (
     record_relative,
     review_evidence_v1,
     run,
+    sync_backlog_focus_from_record,
     workflow_command,
     write_record,
 )
@@ -87,6 +91,94 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(record_path.read_bytes(), before)
             self.assertIn('"apply": false', result.stdout)
+
+    def test_sync_status_dry_run_does_not_create_runtime_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            create_baseline(target)
+            runtime = target / ".git" / "codex-workflow-v4"
+            before = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            preview = run(
+                workflow_command(target, "workflow_state.py", "sync-status"),
+                cwd=target,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn('"apply": false', preview.stdout)
+            after = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            self.assertEqual(after, before)
+
+    def test_v4_invalidate_integration_applies_and_refreshes_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            _, req_fingerprint = approved_requirements(target)
+            architecture = configure_v4_architecture_baseline(target)
+            base = create_baseline(target)
+            record = basic_v4_record(
+                base,
+                requirements_baseline={
+                    "brief_id": "REQ-001",
+                    "revision": 1,
+                    "approval_fingerprint": req_fingerprint,
+                },
+                architecture_fingerprint=architecture,
+            )
+            record["verification"]["status"] = "passed"
+            record["integration"]["status"] = "pending"
+            record_path = write_record(target, record)
+            sync_backlog_focus_from_record(target, record)
+            relative = record_relative(record_path, target)
+            preview = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "invalidate-integration",
+                    relative,
+                    "--reason",
+                    "v4-content-changed",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn('"apply": false', preview.stdout)
+            self.assertEqual(
+                json.loads(record_path.read_text(encoding="utf-8"))["integration"]["status"],
+                "pending",
+            )
+            applied = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "invalidate-integration",
+                    relative,
+                    "--reason",
+                    "v4-content-changed",
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            updated = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["version"], 4)
+            self.assertEqual(updated["verification"]["status"], "invalidated")
+            self.assertEqual(updated["integration"]["status"], "invalidated")
+            self.assertEqual(updated["phase"], "developer")
+            self.assertEqual(updated["remaining_risks"], ["v4-content-changed"])
+            status = run(
+                workflow_command(target, "workflow_check.py", "status"),
+                cwd=target,
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertIn("STATUS_SHA256=", status.stdout)
 
     def test_aggregate_evidence_scopes_fail_without_record_mutation(self) -> None:
         cases = (

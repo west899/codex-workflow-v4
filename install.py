@@ -19,7 +19,6 @@ from typing import Any, Iterable
 
 PACKAGE_VERSION = "4.0.0"
 PACKAGE_NAME = "codex-workflow-v4"
-LEGACY_PACKAGE_NAME = "codex-workflow-v3"
 RUNTIME_DIRNAME = "codex-workflow-v4"
 LEGACY_RUNTIME_DIRNAME = "codex-workflow-v3"
 PROTOCOL_VERSION = 3

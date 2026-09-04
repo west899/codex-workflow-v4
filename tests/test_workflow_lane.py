@@ -20,6 +20,102 @@ from support import (
 
 
 class WorkflowLaneTests(unittest.TestCase):
+    def test_claim_dry_run_does_not_write_owner_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            self.assertEqual(install_project(target, parallel_mode="local_worktree").returncode, 0)
+            base = create_baseline(target)
+            record = write_record(
+                target,
+                basic_v3_record(
+                    base,
+                    task_id="MVP-001",
+                    allowed_paths=["src/first/**"],
+                    resources=["path:src/first"],
+                ),
+            )
+            commit_all(target, "task contract")
+            identity = target / ".git" / "codex-workflow-v4" / "owner-id"
+            runtime = target / ".git" / "codex-workflow-v4"
+            before_runtime = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            self.assertFalse(identity.is_file())
+            preview = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    "MVP-001",
+                    "--base",
+                    "main",
+                    "--record",
+                    record_relative(record, target),
+                    "--worktree",
+                    str(root / "lane-dry"),
+                ),
+                cwd=target,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn('"apply": false', preview.stdout)
+            self.assertFalse(identity.is_file())
+            self.assertFalse((root / "lane-dry").exists())
+            after_runtime = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            self.assertEqual(after_runtime, before_runtime)
+
+    def test_recover_rejects_bool_owner_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "project"
+            self.assertEqual(install_project(target, parallel_mode="local_worktree").returncode, 0)
+            base = create_baseline(target)
+            record = write_record(
+                target,
+                basic_v3_record(
+                    base,
+                    task_id="MVP-001",
+                    allowed_paths=["src/first/**"],
+                    resources=["path:src/first"],
+                ),
+            )
+            commit_all(target, "task contract")
+            claimed = run(
+                workflow_command(
+                    target,
+                    "workflow_lane.py",
+                    "claim",
+                    "MVP-001",
+                    "--base",
+                    "main",
+                    "--record",
+                    record_relative(record, target),
+                    "--worktree",
+                    str(root / "lane-bool"),
+                    "--apply",
+                ),
+                cwd=target,
+            )
+            self.assertEqual(claimed.returncode, 0, claimed.stderr)
+            lane_id = re.search(r"id=(\S+)", claimed.stdout).group(1)
+            registry = target / ".git" / "codex-workflow-v4" / "registry" / "lanes" / f"{lane_id}.json"
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            payload["expires_at"] = "2000-01-01T00:00:00Z"
+            payload["owner_generation"] = True
+            registry.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            refused = run(
+                workflow_command(target, "workflow_lane.py", "recover", lane_id, "--takeover"),
+                cwd=target,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("owner generation is invalid", refused.stderr)
+
     def test_two_local_worktree_lanes_are_isolated_and_conflicts_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

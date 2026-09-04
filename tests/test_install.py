@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -20,6 +21,17 @@ from support import (
 
 
 class InstallTests(unittest.TestCase):
+    def test_install_module_does_not_keep_unused_legacy_package_name(self) -> None:
+        script = PACKAGE_ROOT / "install.py"
+        spec = importlib.util.spec_from_file_location("install_under_test", script)
+        if spec is None or spec.loader is None:
+            raise AssertionError(f"cannot load {script}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.PACKAGE_NAME, "codex-workflow-v4")
+        self.assertEqual(module.LEGACY_RUNTIME_DIRNAME, "codex-workflow-v3")
+        self.assertFalse(hasattr(module, "LEGACY_PACKAGE_NAME"))
+
     def test_fresh_install_uses_v3_layout_and_deterministic_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"

@@ -90,6 +90,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def is_json_integer(value: Any, *, minimum: int | None = None) -> bool:
+    """True for JSON integers. Python bool is a subclass of int and is rejected."""
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        return False
+    if minimum is not None and value < minimum:
+        return False
+    return True
+
+
 def canonical_json_bytes(payload: Any) -> bytes:
     return json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -3266,12 +3276,11 @@ def validate_remote_closeout_evidence(evidence: dict[str, Any], *, schema_path: 
             raise WorkflowDataError("EQ-004: skipped/neutral is not V4 CI success.")
         if status != "success":
             raise WorkflowDataError("Every required remote CI check must be recorded as success.")
-        if "source" in item:
-            source = item.get("source")
-            if not isinstance(source, str) or source.strip().lower() in _UNTRUSTED_CHECK_SOURCES:
-                raise WorkflowDataError("EQ-009: remote CI check source is missing or untrusted.")
-            if isinstance(expected_source, str) and expected_source and source != expected_source:
-                raise WorkflowDataError("EQ-009: remote CI check source differs from expected_check_source.")
+        source = item.get("source")
+        if not isinstance(source, str) or source.strip().lower() in _UNTRUSTED_CHECK_SOURCES:
+            raise WorkflowDataError("EQ-009: remote CI check source is missing or untrusted.")
+        if isinstance(expected_source, str) and expected_source and source != expected_source:
+            raise WorkflowDataError("EQ-009: remote CI check source differs from expected_check_source.")
     receipt = evidence.get("provider_receipt")
     if receipt is not None:
         if schema_path is None:
@@ -4961,7 +4970,7 @@ def phase_b_pending_queued_recovery(command: str, integration_status: str) -> st
         raise WorkflowDataError(
             "Phase B pending/queued recovery is abandon-only; dequeue/reopen is refused."
         )
-    if command in {"mark-done", "forge-done"} and integration_status in {
+    if command == "mark-done" and integration_status in {
         "pending",
         "queued",
         "merged_pending_closeout",
@@ -5250,7 +5259,7 @@ def closeout_state_fingerprint(record: dict[str, Any], backlog_text: str) -> str
 
 
 def requirements_impact_path(paths: WorkflowPaths, brief_id: str, revision: int) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", brief_id) or not isinstance(revision, int) or revision < 1:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", brief_id) or not is_json_integer(revision, minimum=1):
         raise WorkflowDataError("Requirements impact report identity is invalid.")
     return paths.tracked("requirements_impacts") / f"{brief_id}-r{revision}.json"
 
@@ -5928,7 +5937,7 @@ def _backlog_focus_wip_lines(wip: Any) -> list[str]:
         return ["- Backlog focus/WIP 元数据无效，V4 任务在 preflight 前不可授权。", ""]
     ids = wip.get("unconfirmed_core_slice_ids")
     limit = wip.get("limit")
-    if not isinstance(ids, list) or not isinstance(limit, int):
+    if not isinstance(ids, list) or not is_json_integer(limit, minimum=0):
         return []
     shown = ", ".join(f"`{item}`" for item in ids if isinstance(item, str)) or "无"
     return [f"- 未确认方向 core slice：{shown}（WIP 上限 {limit}）", ""]

@@ -295,7 +295,7 @@ class RemoteClaimEndToEndTests(unittest.TestCase):
                     "result_commit": delivery_commit,
                     "merge_strategy": "ff",
                     "pr_url": "https://example.invalid/pull/1",
-                    "ci_checks": [{"name": "test", "status": "success"}],
+                    "ci_checks": [{"name": "test", "status": "success", "source": "github-actions"}],
                 },
             )
             closeout = run(

@@ -10,13 +10,17 @@ import uuid
 from pathlib import Path
 
 from support import (
+    approved_requirements,
     basic_v3_record,
+    basic_v4_record,
     commit_all,
     configure_git,
+    configure_v4_architecture_baseline,
     create_baseline,
     git,
     install_project,
     run,
+    sync_backlog_focus_from_record,
     workflow_command,
     write_record,
 )
@@ -37,13 +41,23 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
             git(clone, "switch", "-c", branch, f"origin/{branch}")
         return clone
 
-    def _prepare_expired_claim(self, root: Path) -> dict[str, object]:
+    def _prepare_expired_claim(self, root: Path, *, version: int = 3) -> dict[str, object]:
         seed = root / "seed"
         self._assert_ok(install_project(seed))
         layout_path = seed / ".codex-workflow/layout.json"
         layout = json.loads(layout_path.read_text(encoding="utf-8"))
         layout["remote"].update({"mode": "remote_claimed", "atomic_claims": True, "remote_name": "origin"})
         layout_path.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        requirements = None
+        architecture_fingerprint = None
+        if version == 4:
+            _, req_fingerprint = approved_requirements(seed)
+            requirements = {
+                "brief_id": "REQ-001",
+                "revision": 1,
+                "approval_fingerprint": req_fingerprint,
+            }
+            architecture_fingerprint = configure_v4_architecture_baseline(seed)
         create_baseline(seed)
         bare = root / "remote.git"
         self._assert_ok(run(["git", "init", "--bare", str(bare)], cwd=root))
@@ -58,12 +72,22 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
         base = git(owner, "rev-parse", "main").stdout.strip()
         owner_id = str(uuid.uuid4())
         claim_id = str(uuid.uuid4())
-        record = basic_v3_record(
-            base,
-            task_id=task_id,
-            allowed_paths=["src/remote/**"],
-            resources=["path:src/remote"],
-        )
+        if version == 4:
+            record = basic_v4_record(
+                base,
+                task_id=task_id,
+                requirements_baseline=requirements,
+                architecture_fingerprint=architecture_fingerprint or ("2" * 64),
+                allowed_paths=["src/remote/**"],
+                resources=["path:src/remote"],
+            )
+        else:
+            record = basic_v3_record(
+                base,
+                task_id=task_id,
+                allowed_paths=["src/remote/**"],
+                resources=["path:src/remote"],
+            )
         record["status"] = "in_progress"
         record["phase"] = "developer"
         record["lane"].update(
@@ -84,6 +108,8 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
             }
         )
         record_path = write_record(owner, record)
+        if version == 4:
+            sync_backlog_focus_from_record(owner, record)
         task_head = commit_all(owner, "prepare remote claimed task")
         relative = record_path.relative_to(owner).as_posix()
         claimed = run(
@@ -259,6 +285,121 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
                 git(root, "--git-dir", str(bare), "show", f"{claim_ref}:claim.json").stdout
             )
             self.assertEqual(final_claim["lease_revision"], 4)
+
+    def test_v4_remote_takeover_and_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = self._prepare_expired_claim(root, version=4)
+            bare = fixture["bare"]
+            branch = fixture["branch"]
+            relative = fixture["relative"]
+            task_id = fixture["task_id"]
+            claim_ref = f"refs/heads/codex/claims/{task_id}"
+            candidate = self._clone_task_branch(root, bare, branch, "v4-candidate")
+            next_owner = str(uuid.uuid4())
+            taken = run(
+                workflow_command(
+                    candidate,
+                    "workflow_lane.py",
+                    "remote-takeover",
+                    relative,
+                    "--owner-id",
+                    next_owner,
+                    "--approved-by",
+                    "test-maintainer",
+                    "--approval-ref",
+                    "incident-v4",
+                    "--apply",
+                ),
+                cwd=candidate,
+            )
+            self._assert_ok(taken)
+            transferred_record = json.loads(
+                git(root, "--git-dir", str(bare), "show", f"refs/heads/{branch}:{relative}").stdout
+            )
+            self.assertEqual(transferred_record["version"], 4)
+            self.assertEqual(transferred_record["lane"]["assignment"]["assigned_owner_id"], next_owner)
+            self.assertEqual(transferred_record["lane"]["owner_generation"], 2)
+            handoff_owner = str(uuid.uuid4())
+            handed = run(
+                workflow_command(
+                    candidate,
+                    "workflow_lane.py",
+                    "remote-handoff",
+                    relative,
+                    "--owner-id",
+                    next_owner,
+                    "--to-owner-id",
+                    handoff_owner,
+                    "--apply",
+                ),
+                cwd=candidate,
+            )
+            self._assert_ok(handed)
+            claim = json.loads(
+                git(root, "--git-dir", str(bare), "show", f"{claim_ref}:claim.json").stdout
+            )
+            self.assertEqual(claim["owner_id"], handoff_owner)
+            self.assertEqual(claim["transfer"]["kind"], "handoff")
+
+    def test_remote_claim_dry_run_does_not_write_git_objects_or_owner_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed = root / "seed"
+            self._assert_ok(install_project(seed))
+            layout_path = seed / ".codex-workflow/layout.json"
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            layout["remote"].update({"mode": "remote_claimed", "atomic_claims": True, "remote_name": "origin"})
+            layout_path.write_text(json.dumps(layout, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            create_baseline(seed)
+            bare = root / "remote.git"
+            self._assert_ok(run(["git", "init", "--bare", str(bare)], cwd=root))
+            git(seed, "remote", "add", "origin", str(bare))
+            git(seed, "push", "-u", "origin", "main")
+            owner = self._clone_task_branch(root, bare, "main", "dry-owner")
+            branch = "codex/task/MVP-REMOTE-dry"
+            git(owner, "switch", "-c", branch, "main")
+            base = git(owner, "rev-parse", "main").stdout.strip()
+            record = basic_v3_record(
+                base,
+                task_id="MVP-REMOTE",
+                allowed_paths=["src/remote/**"],
+                resources=["path:src/remote"],
+            )
+            record["status"] = "in_progress"
+            record["phase"] = "developer"
+            record["lane"].update(
+                {
+                    "lane_id": "lane-MVP-REMOTE-dry",
+                    "mode": "remote_claimed",
+                    "branch": branch,
+                    "base_ref": "main",
+                    "base_commit": base,
+                    "claim_id": str(uuid.uuid4()),
+                    "owner_generation": 1,
+                    "assignment": {
+                        "assigned_owner_id": str(uuid.uuid4()),
+                        "assignment_generation": 1,
+                        "assigned_at": "2026-07-11T00:00:00Z",
+                        "assigned_by": "test-owner",
+                    },
+                }
+            )
+            relative = write_record(owner, record).relative_to(owner).as_posix()
+            commit_all(owner, "prepare dry-run remote claim")
+            objects = owner / ".git" / "objects"
+            before = {path.relative_to(objects).as_posix() for path in objects.rglob("*") if path.is_file()}
+            identity = owner / ".git" / "codex-workflow-v4" / "owner-id"
+            self.assertFalse(identity.is_file())
+            preview = run(
+                workflow_command(owner, "workflow_lane.py", "remote-claim", relative),
+                cwd=owner,
+            )
+            self._assert_ok(preview)
+            self.assertIn('"apply": false', preview.stdout.lower())
+            after = {path.relative_to(objects).as_posix() for path in objects.rglob("*") if path.is_file()}
+            self.assertEqual(after, before)
+            self.assertFalse(identity.is_file())
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from workflow_common import (
     derive_v4_decision_blocking,
     git,
     is_ancestor,
+    is_json_integer,
     is_mutable_control_path,
     load_record,
     local_bootstrap_policy_gate,
@@ -131,7 +132,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "mode",
         choices=(
-            "start", "manual", "doctor", "stop", "preflight", "snapshot", "gate",
+            "start", "manual", "doctor", "preflight", "snapshot", "gate",
             "requirements-snapshot", "requirements-gate", "requirements-impact",
             "rolling-promotion",
             "status", "integration-preflight", "closeout-gate", "provider-receipt",
@@ -621,7 +622,8 @@ def _validate_record_basics(
         return
     if version == 4:
         _v4_contract_gate(paths, record, checks, action=action or ("gate" if final else "preflight"))
-    if not isinstance(record.get("generation"), int) or record.get("generation", -1) < 0:
+    generation = record.get("generation")
+    if not is_json_integer(generation, minimum=0):
         checks.error("Task record generation must be a non-negative integer.")
     if record.get("phase") not in {"coordinator", "developer", "review", "integration"}:
         checks.error("Task record phase is invalid.")

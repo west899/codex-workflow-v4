@@ -64,6 +64,42 @@ class RequirementsImpactTests(unittest.TestCase):
         )
         return fingerprint
 
+    def test_apply_requirements_impact_dry_run_does_not_create_runtime_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self._assert_ok(install_project(target))
+            brief, _original = approved_requirements(target)
+            create_baseline(target)
+            revised = self._rewrite_brief(brief, revision=2)
+            runtime = target / ".git" / "codex-workflow-v4"
+            before = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            preview = run(
+                workflow_command(
+                    target,
+                    "workflow_state.py",
+                    "apply-requirements-impact",
+                    str(brief.relative_to(target)),
+                    "--expected-fingerprint",
+                    revised,
+                ),
+                cwd=target,
+            )
+            self._assert_ok(preview)
+            self.assertIn('"apply": false', preview.stdout)
+            self.assertFalse(
+                (target / ".codex-workflow/state/requirements-impacts/REQ-001-r2.json").exists()
+            )
+            after = (
+                {path.relative_to(runtime).as_posix() for path in runtime.rglob("*")}
+                if runtime.exists()
+                else set()
+            )
+            self.assertEqual(after, before)
+
     def test_revision_impact_blocks_unstarted_work_and_requires_human_continuation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "project"

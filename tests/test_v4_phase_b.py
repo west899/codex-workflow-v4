@@ -487,6 +487,8 @@ class PhaseBArchitectureDecisionQueueTests(unittest.TestCase):
                 phase_b_pending_queued_recovery("reopen", status)
             with self.assertRaisesRegex(WorkflowDataError, "cannot forge done"):
                 phase_b_pending_queued_recovery("mark-done", status)
+            with self.assertRaisesRegex(WorkflowDataError, "Unsupported pending/queued recovery command"):
+                phase_b_pending_queued_recovery("forge-done", status)
             self.assertEqual(
                 phase_b_pending_queued_recovery("abandon", status), "abandon_only"
             )
