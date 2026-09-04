@@ -1077,7 +1077,7 @@ def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
         return DoctorFinding("FAIL", *drift, boundary)
     return DoctorFinding(
         "PASS",
-        f"{package_files} package-owned files match the install manifest.",
+        f"{manifest.get('package')} {version}; {package_files} package-owned files match the install manifest.",
         boundary,
     )
 

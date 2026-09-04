@@ -1,10 +1,10 @@
 # Codex Workflow V4
 
-可移植的 Codex 项目工作流包。新任务默认 `task-record-v4`：先做一个可观察的 focus core slice，人类通过 STATUS / 决策卡片确认方向，再进入独立 Review 和集成。
+可移植的 Codex 项目工作流包。当前可安装产品是 **4.1.0**（tag `v4.1.0`）。新任务默认 `task-record-v4`：先做一个可观察的 focus core slice，人类通过 STATUS / 决策卡片确认方向，再进入独立 Review 和集成。
 
 交付安全外环沿用 V3：Requirements fingerprint、allowed paths、lane 隔离、canonical delivery、独立 Reviewer、gate、CAS、串行 integration 和 two-phase closeout。已有 V3 任务按原算法收尾。
 
-产品版本是 V4；安装布局里的 `layout_version` / `protocol_version` 仍为 `3`，表示此外环协议代次，不是产品名。
+产品版本是 V4；安装布局里的 `layout_version` / `protocol_version` 仍为 `3`，表示此外环协议代次，不是产品名。GitHub 默认分支是 `v4`。安装请钉住 `v4.1.0`（或只接收 V4 补丁的 `v4` 分支），不要从后续 V5 开发分支安装。
 
 完整已实现能力与测试依据见 [功能.md](功能.md)。版本记录见 [CHANGELOG.md](CHANGELOG.md)。许可证为 [MIT](LICENSE)。
 
@@ -24,6 +24,14 @@
 
 Windows / Python 3.12 / 3.13 **未验证**。
 
+## V4 产品线
+
+- `v4` 分支和 `v4.*` tag 是 V4 产品线。4.1.0 之后只接受 V4 缺陷修复，不把 V5 功能合进 `v4`。
+- 已安装项目以 `.codex-workflow/install/manifest.json` 的 `package` / `version` 为准；`doctor` 会打印这两项。
+- 已有 V3 task record 继续按 V3 算法收尾；V4 record 继续按 V4 算法收尾。
+- 以后若升级 V5：新包必须仍能发现 `codex-workflow-v4` runtime；不得改写 `v4` 历史、移动已发布 tag，也不得把未完成的 V4 任务强制改写成 V5。
+- 历史 tag `v4.0.0` 保留，但缺少 runtime 改名与随后的 fail-closed 修复；新安装使用 `v4.1.0`。
+
 ## 明确不做
 
 - 不自动 push、开 PR、合并、force-update、删除 branch/worktree、发布或部署
@@ -35,9 +43,23 @@ Windows / Python 3.12 / 3.13 **未验证**。
 
 需要 Git 和 Python 3.9+。Windows 上推荐 `py -3`；脚本使用当前 `sys.executable`。
 
+从冻结的产品 tag 取得安装器，再写入目标项目：
+
 ```text
+git clone --branch v4.1.0 --depth 1 https://github.com/west899/codex-workflow-v4.git
+cd codex-workflow-v4
 python install.py <project-root> --project-name <name>
 ```
+
+已有 clone 时：
+
+```text
+git fetch origin --tags
+git checkout v4.1.0
+python install.py <project-root> --project-name <name>
+```
+
+不要用历史 `main` 上的 phase-0 提交安装。`main` 已与 `v4` 对齐到同一产品提交；V5 开始后仍以 `v4` / `v4.*` 为 V4 产品线。
 
 默认 `parallel.mode=single`。同机多线：
 

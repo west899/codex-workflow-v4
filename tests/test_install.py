@@ -20,17 +20,27 @@ from support import (
 )
 
 
+def load_install_module():
+    script = PACKAGE_ROOT / "install.py"
+    spec = importlib.util.spec_from_file_location("install_under_test", script)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"cannot load {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class InstallTests(unittest.TestCase):
     def test_install_module_does_not_keep_unused_legacy_package_name(self) -> None:
-        script = PACKAGE_ROOT / "install.py"
-        spec = importlib.util.spec_from_file_location("install_under_test", script)
-        if spec is None or spec.loader is None:
-            raise AssertionError(f"cannot load {script}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = load_install_module()
         self.assertEqual(module.PACKAGE_NAME, "codex-workflow-v4")
+        self.assertEqual(module.PACKAGE_VERSION, "4.1.0")
         self.assertEqual(module.LEGACY_RUNTIME_DIRNAME, "codex-workflow-v3")
         self.assertFalse(hasattr(module, "LEGACY_PACKAGE_NAME"))
+        changelog = (PACKAGE_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(f"## {module.PACKAGE_VERSION}", changelog.splitlines())
+        readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"v{module.PACKAGE_VERSION}", readme)
 
     def test_fresh_install_uses_v3_layout_and_deterministic_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -190,7 +200,7 @@ class InstallTests(unittest.TestCase):
             planned = install_project(target, extra=["--plan-upgrade"])
             self.assertEqual(planned.returncode, 0, planned.stderr)
             payload = json.loads(planned.stdout)
-            self.assertEqual(payload["version"], "4.0.0")
+            self.assertEqual(payload["version"], load_install_module().PACKAGE_VERSION)
             self.assertEqual(payload["supported_task_record_versions"], [3, 4])
             self.assertEqual(payload["default_new_task_record_version"], 4)
             inventory = payload["v4_inventory"]
@@ -213,7 +223,7 @@ class InstallTests(unittest.TestCase):
             layout = json.loads((target / ".codex-workflow/layout.json").read_text(encoding="utf-8"))
             self.assertEqual(layout["default_new_task_version"], 4)
             manifest = json.loads((target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "4.0.0")
+            self.assertEqual(manifest["version"], load_install_module().PACKAGE_VERSION)
             self.assertEqual(manifest["supported_task_record_versions"], [3, 4])
             project = target / ".codex-workflow/governance/PROJECT.md"
             customized = project.read_text(encoding="utf-8") + "\nConfirmed custom fact.\n"

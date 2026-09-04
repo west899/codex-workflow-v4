@@ -202,6 +202,10 @@ class WorkflowCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_doctor_shape(result.stdout)
         self.assertIn("PACKAGE: PASS", result.stdout)
+        manifest = json.loads(
+            (self.target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(f"{manifest['package']} {manifest['version']};", result.stdout)
         self.assertIn("GOVERNANCE: PASS", result.stdout)
         self.assertIn("HOOK CONFIG: PASS", result.stdout)
         self.assertIn("STARTUP OBSERVATION: WARN", result.stdout)

@@ -126,6 +126,29 @@ def main() -> None:
             + "\n".join(str(path.relative_to(ROOT)) for path in generated)
         )
 
+    install_text = (ROOT / "install.py").read_text(encoding="utf-8")
+    version_match = re.search(r'^PACKAGE_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', install_text, re.MULTILINE)
+    if version_match is None:
+        raise SystemExit("install.py PACKAGE_VERSION is missing.")
+    package_version = version_match.group(1)
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    if f"## {package_version}" not in changelog.splitlines():
+        raise SystemExit(f"CHANGELOG.md must include ## {package_version}.")
+    released_headings = [
+        line
+        for line in changelog.splitlines()
+        if line.startswith("## ") and line not in {"## Unreleased", "## Changelog"}
+    ]
+    if not released_headings or released_headings[0] != f"## {package_version}":
+        raise SystemExit("CHANGELOG.md latest release heading must match install.py PACKAGE_VERSION.")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    if f"v{package_version}" not in readme:
+        raise SystemExit("README.md must pin the current product tag.")
+    if "不要从后续 V5 开发分支安装" not in readme:
+        raise SystemExit("README.md must tell installers not to follow a future V5 branch.")
+    if "仍能发现 `codex-workflow-v4` runtime" not in readme:
+        raise SystemExit("README.md must require future V5 packages to keep discovering the V4 runtime.")
+
     layout = json.loads((ROOT / "payload/.codex-workflow/layout.json").read_text(encoding="utf-8"))
     for field in ("layout_version", "protocol_version", "workflow_schema_version"):
         if layout.get(field) != 3:

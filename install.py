@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 
-PACKAGE_VERSION = "4.0.0"
+PACKAGE_VERSION = "4.1.0"
 PACKAGE_NAME = "codex-workflow-v4"
 RUNTIME_DIRNAME = "codex-workflow-v4"
 LEGACY_RUNTIME_DIRNAME = "codex-workflow-v3"

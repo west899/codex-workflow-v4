@@ -2,7 +2,7 @@
 
 ## 1. 这套工作流解决什么
 
-V4 在 V3 交付安全外环上增加可观察产品反馈内环：新任务默认 `task-record-v4`，先做出 focus core slice，人类确认方向后再独立 Review 和集成。外环仍把工作流主体放在 `.codex-workflow/`，覆盖需求校准、`verified → done` 收尾、同机多 worktree lane，以及可选的跨机器预分配/原子 claim。它仍是合作式控制面，不替代 Git 分支保护、受保护 CI 和人工发布审批。产品版本是 V4；`layout.json` 的 protocol/layout 代次仍为 3。
+V4 在 V3 交付安全外环上增加可观察产品反馈内环：新任务默认 `task-record-v4`，先做出 focus core slice，人类确认方向后再独立 Review 和集成。外环仍把工作流主体放在 `.codex-workflow/`，覆盖需求校准、`verified → done` 收尾、同机多 worktree lane，以及可选的跨机器预分配/原子 claim。它仍是合作式控制面，不替代 Git 分支保护、受保护 CI 和人工发布审批。产品版本是 V4（已安装包版本见 `.codex-workflow/install/manifest.json`）；`layout.json` 的 protocol/layout 代次仍为 3。后续若升级到更新的产品代次，未完成的 V4 task record 仍按本文件与当时算法收尾，不得原地改写协议版本。
 
 ## 2. 第一次使用
 

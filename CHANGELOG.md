@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+V4 产品线已冻结为 4.1.0。此后 `v4` 分支只接受 V4 缺陷修复；V5 不得合入本线。
+
+## 4.1.0
+
+这是可安装的 V4 产品。请钉住 tag `v4.1.0`（或跟踪 `v4` 分支的补丁），不要从后续 V5 开发分支安装。已有 V3 record 仍按 V3 算法收尾。以后若升级 V5，新包必须继续发现 `codex-workflow-v4` runtime，且不得改写 `v4` 历史或已发布 tag。
+
+- 包名与 Git common-dir runtime 为 `codex-workflow-v4`；仍能发现已有的 `codex-workflow-v3` runtime。
+- `install.py --uninstall`：默认打印清理清单；`--apply` 移除工作流叠加层，不删除产品源码。`--purge-state` / `--purge-runtime` 分别删除工作流档案和 Git common-dir runtime。
+- `install.py --export-product <dir>`：导出不含 `.codex-workflow` 引擎与状态的产品树。
+- `doctor` 报告已安装的 package 与 version。
 - 从随包文件中移除已完成的阶段 0–C 规划、清单、收口和内部 ExecPlan；EQ 矩阵写入 `功能.md`。
 - `requirements_impact_path` 与 Backlog WIP `limit` 拒绝 bool 冒充 integer。
 - closeout dry-run 不再 `ensure_runtime()`，也不再创建 advisory lock 文件；`_role_lock_context` dry-run 与 lane 一样用空上下文。
@@ -20,9 +30,6 @@
 - `list` 在 worktree 存在但 record 不可读时标 stale；`confirm-closeout` 在 lane worktree 无法解析时 fail closed。
 - 删除未使用的 `workflow_check.py stop`：Stop 只走 `codex_stop_hook.py`，check 不再接受会白跑 `check_governance` 的 `stop` 模式。`doctor` 写入 `功能.md` 命令表。
 - 删除未引用的 `safe_join`、`LEGACY_PACKAGE_NAME`，以及 `pending-queued-recovery` 中不可达的 `forge-done` 别名。
-- `install.py --uninstall`：默认打印清理清单；`--apply` 移除工作流叠加层，不删除产品源码。`--purge-state` / `--purge-runtime` 分别删除工作流档案和 Git common-dir runtime。
-- `install.py --export-product <dir>`：导出不含 `.codex-workflow` 引擎与状态的产品树。
-- 包名与运行时目录改为 `codex-workflow-v4`；仍能发现已有的 `codex-workflow-v3` runtime。
 
 ## 4.0.0
 
