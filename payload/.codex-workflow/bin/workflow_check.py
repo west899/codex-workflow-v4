@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic read-side gates for Workflow V3 and Phase A V4."""
+"""Deterministic read-side gates for Codex Workflow V4 (V3 records still close out)."""
 
 from __future__ import annotations
 
@@ -1005,21 +1005,21 @@ def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
     try:
         raw = manifest_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
-        return DoctorFinding("FAIL", "The V3 install manifest is missing.", boundary)
+        return DoctorFinding("FAIL", "The install manifest is missing.", boundary)
     except UnicodeDecodeError as exc:
-        return DoctorFinding("INVALID", f"The V3 install manifest is not valid UTF-8: {exc}", boundary)
+        return DoctorFinding("INVALID", f"The install manifest is not valid UTF-8: {exc}", boundary)
     except OSError as exc:
-        return DoctorFinding("UNKNOWN", f"The V3 install manifest could not be read: {exc}", boundary)
+        return DoctorFinding("UNKNOWN", f"The install manifest could not be read: {exc}", boundary)
     try:
-        manifest = parse_json_resource(raw, label="The V3 install manifest")
+        manifest = parse_json_resource(raw, label="The install manifest")
     except WorkflowJSONError as exc:
         return DoctorFinding("INVALID", str(exc), boundary)
     if not isinstance(manifest, dict):
-        return DoctorFinding("INVALID", "The V3 install manifest root must be an object.", boundary)
+        return DoctorFinding("INVALID", "The install manifest root must be an object.", boundary)
 
     invalid: list[str] = []
-    if manifest.get("package") != "codex-workflow-v3":
-        invalid.append("manifest package is not codex-workflow-v3")
+    if manifest.get("package") not in {"codex-workflow-v4", "codex-workflow-v3"}:
+        invalid.append("manifest package is not codex-workflow-v4")
     if manifest.get("protocol_version") != 3:
         invalid.append("manifest protocol_version is not 3")
     version = manifest.get("version")
@@ -1075,7 +1075,7 @@ def _doctor_package(paths: WorkflowPaths) -> DoctorFinding:
         return DoctorFinding("FAIL", *drift, boundary)
     return DoctorFinding(
         "PASS",
-        f"{package_files} package-owned files match the V3 install manifest.",
+        f"{package_files} package-owned files match the install manifest.",
         boundary,
     )
 

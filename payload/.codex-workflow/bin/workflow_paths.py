@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve Codex Workflow V3 paths without assuming ``.git`` is a directory.
+"""Resolve Codex Workflow V4 paths without assuming ``.git`` is a directory.
 
 The resolver deliberately separates three containment domains:
 
@@ -7,7 +7,7 @@ The resolver deliberately separates three containment domains:
 * shared runtime lives below ``git rev-parse --git-common-dir``;
 * lane-private runtime lives below ``git rev-parse --git-dir``.
 
-Every other V3 command imports this module instead of rebuilding paths itself.
+Every other workflow command imports this module instead of rebuilding paths itself.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ from typing import Any, Iterable
 
 
 LAYOUT_RELATIVE = PurePosixPath(".codex-workflow/layout.json")
-RUNTIME_NAME = "codex-workflow-v3"
+RUNTIME_NAME = "codex-workflow-v4"
+LEGACY_RUNTIME_NAME = "codex-workflow-v3"
+PACKAGE_NAME = "codex-workflow-v4"
+LEGACY_PACKAGE_NAME = "codex-workflow-v3"
 MAX_JSON_INTEGER_DIGITS = 640
 MAX_JSON_NESTING = 256
 
@@ -192,6 +195,16 @@ def normalize_repo_path(value: str | PurePosixPath) -> str:
     return PurePosixPath(*parts).as_posix()
 
 
+def resolve_runtime_dir(parent: Path) -> Path:
+    """Prefer the V4 runtime directory; keep reading an existing V3 runtime."""
+
+    preferred = parent / RUNTIME_NAME
+    legacy = parent / LEGACY_RUNTIME_NAME
+    if preferred.exists() or not legacy.exists():
+        return preferred
+    return legacy
+
+
 def _load_layout(root: Path) -> dict[str, Any]:
     layout_path = root / Path(*LAYOUT_RELATIVE.parts)
     try:
@@ -260,14 +273,14 @@ class WorkflowPaths:
 
     @property
     def shared_runtime(self) -> Path:
-        candidate = resolve_path(self.common_dir / RUNTIME_NAME, label="shared runtime")
+        candidate = resolve_path(resolve_runtime_dir(self.common_dir), label="shared runtime")
         if not _is_descendant(candidate, self.common_dir):
             raise WorkflowPathError("Shared runtime escapes git common directory.")
         return candidate
 
     @property
     def lane_runtime(self) -> Path:
-        candidate = resolve_path(self.git_dir / RUNTIME_NAME, label="lane runtime")
+        candidate = resolve_path(resolve_runtime_dir(self.git_dir), label="lane runtime")
         if not _is_descendant(candidate, self.git_dir):
             raise WorkflowPathError("Lane runtime escapes worktree Git directory.")
         return candidate

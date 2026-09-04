@@ -19,7 +19,7 @@ from support import (
 
 
 def _write_lane_pointer(target: Path, record: dict) -> None:
-    pointer = target / ".git/codex-workflow-v3/lane.json"
+    pointer = target / ".git/codex-workflow-v4/lane.json"
     pointer.parent.mkdir(parents=True, exist_ok=True)
     lane = record["lane"]
     pointer.write_text(
@@ -57,7 +57,7 @@ class StopHookTests(unittest.TestCase):
             clean = run(workflow_command(target, "codex_stop_hook.py"), cwd=target, input_text=event)
             self.assertEqual(json.loads(clean.stdout), {"continue": True})
 
-            pointer = target / ".git/codex-workflow-v3/lane.json"
+            pointer = target / ".git/codex-workflow-v4/lane.json"
             pointer.parent.mkdir(parents=True, exist_ok=True)
             pointer.write_text("{broken", encoding="utf-8")
             broken = run(workflow_command(target, "codex_stop_hook.py"), cwd=target, input_text=event)

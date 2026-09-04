@@ -220,7 +220,7 @@ class RequirementsImpactTests(unittest.TestCase):
                 lane_record.write_text(json.dumps(active, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 common = git(target, "rev-parse", "--git-common-dir").stdout.strip()
                 common_path = (target / common).resolve() if not Path(common).is_absolute() else Path(common)
-                registry_path = common_path / "codex-workflow-v3/registry/lanes/lane-MVP-001.json"
+                registry_path = common_path / "codex-workflow-v4/registry/lanes/lane-MVP-001.json"
                 registry_path.parent.mkdir(parents=True, exist_ok=True)
                 registry_path.write_text(
                     json.dumps(

@@ -178,7 +178,7 @@ class WorkflowLaneTests(unittest.TestCase):
             queued_rows = json.loads(run(workflow_command(target, "workflow_lane.py", "list", "--all", "--json"), cwd=target).stdout)
             self.assertEqual({row["effective_status"] for row in queued_rows}, {"queued"})
 
-            registry_path = target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_a}.json"
+            registry_path = target / ".git/codex-workflow-v4/registry/lanes" / f"{lane_a}.json"
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
             previous_generation = registry["owner_generation"]
             registry["expires_at"] = "2000-01-01T00:00:00Z"
@@ -198,12 +198,12 @@ class WorkflowLaneTests(unittest.TestCase):
             lane_git_dir = Path(git(lane_a_path, "rev-parse", "--git-dir").stdout.strip())
             if not lane_git_dir.is_absolute():
                 lane_git_dir = lane_a_path / lane_git_dir
-            pointer = json.loads((lane_git_dir / "codex-workflow-v3/lane.json").read_text(encoding="utf-8"))
+            pointer = json.loads((lane_git_dir / "codex-workflow-v4/lane.json").read_text(encoding="utf-8"))
             self.assertEqual(pointer["owner_generation"], previous_generation + 1)
-            queue_payload = json.loads((target / ".git/codex-workflow-v3/queue" / f"{queue_a}.json").read_text(encoding="utf-8"))
+            queue_payload = json.loads((target / ".git/codex-workflow-v4/queue" / f"{queue_a}.json").read_text(encoding="utf-8"))
             self.assertEqual(queue_payload["owner_generation"], previous_generation + 1)
 
-            runtime_root = target / ".git/codex-workflow-v3"
+            runtime_root = target / ".git/codex-workflow-v4"
             registry_before_rebuild = registry_path.read_bytes()
             dry_rebuild = run(workflow_command(target, "workflow_lane.py", "rebuild"), cwd=target)
             self.assertEqual(dry_rebuild.returncode, 0, dry_rebuild.stderr)
@@ -409,7 +409,7 @@ class WorkflowLaneTests(unittest.TestCase):
             )
             self.assertEqual(queued_a.returncode, 0, queued_a.stderr)
             second_record_path = lane_b_path / second_relative
-            runtime = target / ".git/codex-workflow-v3"
+            runtime = target / ".git/codex-workflow-v4"
             second_registry = runtime / "registry/lanes" / f"{lane_b}.json"
             before_record = second_record_path.read_bytes()
             before_registry = second_registry.read_bytes()

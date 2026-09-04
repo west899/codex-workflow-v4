@@ -4,6 +4,7 @@
 
 - `install.py --uninstall`：默认打印清理清单；`--apply` 移除工作流叠加层，不删除产品源码。`--purge-state` / `--purge-runtime` 分别删除工作流档案和 Git common-dir runtime。
 - `install.py --export-product <dir>`：导出不含 `.codex-workflow` 引擎与状态的产品树。
+- 包名与运行时目录改为 `codex-workflow-v4`；仍能发现已有的 `codex-workflow-v3` runtime。
 
 ## 4.0.0
 

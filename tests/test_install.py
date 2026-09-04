@@ -14,6 +14,7 @@ from support import (
     create_baseline,
     install_project,
     run,
+    workflow_command,
     write_record,
 )
 
@@ -31,7 +32,9 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(layout["parallel"]["mode"], "local_worktree")
             manifest_text = (target / ".codex-workflow/install/manifest.json").read_text(encoding="utf-8")
             manifest = json.loads(manifest_text)
-            self.assertEqual(manifest["package"], "codex-workflow-v3")
+            self.assertEqual(manifest["package"], "codex-workflow-v4")
+            self.assertTrue((target / ".git/codex-workflow-v4").exists())
+            self.assertFalse((target / ".git/codex-workflow-v3").exists())
             self.assertNotIn("installed_at", manifest)
             self.assertEqual(manifest["files"][".codex-workflow/governance/PROJECT.md"]["ownership"], "project")
             self.assertEqual(manifest["files"][".codex-workflow/bin/workflow_check.py"]["ownership"], "package")
@@ -41,6 +44,19 @@ class InstallTests(unittest.TestCase):
             self.assertNotIn("/scripts/workflow_check.py", serialized)
             status = (target / ".codex-workflow/state/STATUS.md").read_text(encoding="utf-8")
             self.assertLess(status.index("## 产品状态"), status.index("CODEX_WORKFLOW_STATUS_JSON_START"))
+
+    def test_existing_v3_runtime_directory_is_still_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "project"
+            self.assertEqual(install_project(target).returncode, 0)
+            v4 = target / ".git/codex-workflow-v4"
+            v3 = target / ".git/codex-workflow-v3"
+            self.assertTrue(v4.exists())
+            v4.rename(v3)
+            started = run(workflow_command(target, "workflow_check.py", "start"), cwd=target)
+            self.assertEqual(started.returncode, 0, started.stderr)
+            self.assertTrue((v3 / "audit" / "last-session-check.json").is_file())
+            self.assertFalse(v4.exists())
 
     def test_reinstall_is_content_idempotent_and_preserves_project_governance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CAS-protected V3 state plus Phase A V4 decision and evidence transitions."""
+"""CAS-protected Codex Workflow V4 state (V3 records keep original closeout)."""
 
 from __future__ import annotations
 

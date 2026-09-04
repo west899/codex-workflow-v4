@@ -49,7 +49,7 @@ class WorkflowCheckTests(unittest.TestCase):
         common = Path(git(self.target, "rev-parse", "--git-common-dir").stdout.strip())
         if not common.is_absolute():
             common = self.target / common
-        return common.resolve() / "codex-workflow-v3" / "audit" / "last-session-check.json"
+        return common.resolve() / "codex-workflow-v4" / "audit" / "last-session-check.json"
 
     def write_startup_observation(
         self,
@@ -243,7 +243,7 @@ class WorkflowCheckTests(unittest.TestCase):
 
     def test_doctor_invalid_utf8_manifest_remains_structured(self) -> None:
         manifest = self.target / ".codex-workflow/install/manifest.json"
-        manifest.write_bytes(b"{\"package\": \"codex-workflow-v3\", \"bad\": \xff}")
+        manifest.write_bytes(b"{\"package\": \"codex-workflow-v4\", \"bad\": \xff}")
         self.assert_doctor_decode_failure(self.doctor(), "PACKAGE")
 
     def test_doctor_invalid_utf8_governance_remains_structured(self) -> None:

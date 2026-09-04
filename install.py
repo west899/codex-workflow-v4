@@ -18,6 +18,10 @@ from typing import Any, Iterable
 
 
 PACKAGE_VERSION = "4.0.0"
+PACKAGE_NAME = "codex-workflow-v4"
+LEGACY_PACKAGE_NAME = "codex-workflow-v3"
+RUNTIME_DIRNAME = "codex-workflow-v4"
+LEGACY_RUNTIME_DIRNAME = "codex-workflow-v3"
 PROTOCOL_VERSION = 3
 SUPPORTED_TASK_RECORD_VERSIONS = [3, 4]
 DEFAULT_NEW_TASK_RECORD_VERSION = 4
@@ -80,6 +84,14 @@ def parse_args() -> argparse.Namespace:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def workflow_runtime_dir(parent: Path) -> Path:
+    preferred = parent / RUNTIME_DIRNAME
+    legacy = parent / LEGACY_RUNTIME_DIRNAME
+    if preferred.exists() or not legacy.exists():
+        return preferred
+    return legacy
 
 
 def posix(path: Path | str) -> str:
@@ -330,7 +342,7 @@ def collect_upgrade_inventory(target_root: Path) -> dict[str, Any]:
         common = git_common_dir(target_root)
     except (OSError, subprocess.CalledProcessError, InstallError):
         return inventory
-    runtime = common / "codex-workflow-v3"
+    runtime = workflow_runtime_dir(common)
     lanes = runtime / "registry" / "lanes"
     if lanes.is_dir():
         for path in sorted(lanes.glob("*.json")):
@@ -796,7 +808,7 @@ def build_uninstall_plan(target_root: Path, *, purge_state: bool, purge_runtime:
 
     runtime = None
     try:
-        runtime = str(git_common_dir(target_root) / "codex-workflow-v3")
+        runtime = str(workflow_runtime_dir(git_common_dir(target_root)))
     except (OSError, subprocess.CalledProcessError, InstallError):
         runtime = None
 
@@ -880,10 +892,16 @@ def apply_uninstall(target_root: Path, plan: dict[str, Any]) -> None:
             if directory.is_dir() and not any(directory.iterdir()):
                 directory.rmdir()
 
-        if plan.get("purge_runtime") and plan.get("runtime_dir"):
-            runtime = Path(plan["runtime_dir"])
-            if runtime.is_dir():
-                shutil.rmtree(runtime)
+        if plan.get("purge_runtime"):
+            try:
+                common = git_common_dir(target_root)
+            except (OSError, subprocess.CalledProcessError, InstallError):
+                common = None
+            if common is not None:
+                for name in (RUNTIME_DIRNAME, LEGACY_RUNTIME_DIRNAME):
+                    runtime = common / name
+                    if runtime.is_dir():
+                        shutil.rmtree(runtime)
     except (InstallError, OSError) as exc:
         restore(originals)
         raise SystemExit(f"Uninstall failed and tracked file changes were restored: {exc}") from exc
@@ -1082,7 +1100,7 @@ def main() -> None:
             planned_writes.append(relative)
 
     plan = {
-        "package": "codex-workflow-v3",
+        "package": PACKAGE_NAME,
         "version": PACKAGE_VERSION,
         "protocol_version": PROTOCOL_VERSION,
         "supported_task_record_versions": list(SUPPORTED_TASK_RECORD_VERSIONS),
@@ -1114,7 +1132,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    runtime = common_dir / "codex-workflow-v3"
+    runtime = workflow_runtime_dir(common_dir)
     backup_root = runtime / "backups" / stamp
     audit_root = runtime / "audit"
     audit_root.mkdir(parents=True, exist_ok=True)
@@ -1173,7 +1191,7 @@ def main() -> None:
         failpoint("after-legacy-cleanup")
 
         manifest = {
-            "package": "codex-workflow-v3",
+            "package": PACKAGE_NAME,
             "version": PACKAGE_VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "supported_task_record_versions": list(SUPPORTED_TASK_RECORD_VERSIONS),

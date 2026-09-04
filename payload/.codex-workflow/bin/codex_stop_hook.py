@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lane-local Codex Stop hook for Workflow V3/V4."""
+"""Lane-local Codex Stop hook for Codex Workflow V4."""
 
 from __future__ import annotations
 

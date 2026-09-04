@@ -27,13 +27,13 @@ class LocalFaultRecoveryTests(unittest.TestCase):
         common = Path(git(target, "rev-parse", "--git-common-dir").stdout.strip())
         if not common.is_absolute():
             common = target / common
-        return common / "codex-workflow-v3"
+        return common / "codex-workflow-v4"
 
     def _pointer(self, lane_path: Path) -> Path:
         git_dir = Path(git(lane_path, "rev-parse", "--git-dir").stdout.strip())
         if not git_dir.is_absolute():
             git_dir = lane_path / git_dir
-        return git_dir / "codex-workflow-v3" / "lane.json"
+        return git_dir / "codex-workflow-v4" / "lane.json"
 
     def _create_verified_lane(
         self,

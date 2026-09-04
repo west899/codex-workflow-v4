@@ -99,7 +99,7 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
             cwd=owner,
         )
         self._assert_ok(claimed)
-        self.assertTrue((owner / ".git" / "codex-workflow-v3" / "lane.json").is_file())
+        self.assertTrue((owner / ".git" / "codex-workflow-v4" / "lane.json").is_file())
 
         unpublished_path = owner / "src" / "remote" / "unpublished.txt"
         unpublished_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +231,7 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
             self.assertEqual(handoff_claim["owner_generation"], 3)
             self.assertEqual(handoff_claim["lease_revision"], 3)
             self.assertEqual(handoff_claim["transfer"]["kind"], "handoff")
-            self.assertFalse((winner / ".git" / "codex-workflow-v3" / "lane.json").exists())
+            self.assertFalse((winner / ".git" / "codex-workflow-v4" / "lane.json").exists())
 
             recipient = self._clone_task_branch(root, bare, branch, "recipient")
             resumed = run(
@@ -247,7 +247,7 @@ class RemoteClaimRecoveryTests(unittest.TestCase):
                 cwd=recipient,
             )
             self._assert_ok(resumed)
-            pointer = json.loads((recipient / ".git" / "codex-workflow-v3" / "lane.json").read_text(encoding="utf-8"))
+            pointer = json.loads((recipient / ".git" / "codex-workflow-v4" / "lane.json").read_text(encoding="utf-8"))
             self.assertEqual(pointer["owner_id"], handoff_owner)
             self.assertEqual(pointer["owner_generation"], 3)
             refreshed = run(

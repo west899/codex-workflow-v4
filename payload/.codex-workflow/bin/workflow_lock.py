@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Short-lived cross-platform advisory locks for Codex Workflow V3."""
+"""Short-lived cross-platform advisory locks for Codex Workflow V4."""
 
 from __future__ import annotations
 

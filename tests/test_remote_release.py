@@ -266,8 +266,8 @@ class RemoteReleaseTests(unittest.TestCase):
                 "--format=%(refname)",
             ).stdout.strip()
             self.assertEqual(remaining, "")
-            self.assertFalse((owner / ".git/codex-workflow-v3/lane.json").exists())
-            audit = owner / ".git/codex-workflow-v3/audit/remote-release-MVP-001.json"
+            self.assertFalse((owner / ".git/codex-workflow-v4/lane.json").exists())
+            audit = owner / ".git/codex-workflow-v4/audit/remote-release-MVP-001.json"
             self.assertTrue(audit.is_file())
             audit_payload = json.loads(audit.read_text(encoding="utf-8"))
             self.assertEqual(audit_payload["expected_claim_oid"], expected_oid)

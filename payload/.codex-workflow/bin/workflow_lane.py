@@ -101,7 +101,7 @@ def _require_v4_integration_preflight(
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Manage Codex Workflow V3 lanes.")
+    result = argparse.ArgumentParser(description="Manage Codex Workflow V4 lanes.")
     sub = result.add_subparsers(dest="command", required=True)
 
     claim = sub.add_parser("claim")

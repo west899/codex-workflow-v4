@@ -4545,7 +4545,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 }
             )
             self._write_json(record_path, record)
-            runtime = target / ".git/codex-workflow-v3"
+            runtime = target / ".git/codex-workflow-v4"
             registry_path = runtime / "registry/lanes" / f"{lane_id}.json"
             claim_path = runtime / "claims" / f"{record['task_id']}.json"
             queue_path = runtime / "queue" / f"{queue_id}.json"
@@ -4879,7 +4879,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
 
     def _expire_lane(self, target: Path, lane_id: str) -> None:
         path = (
-            target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_id}.json"
+            target / ".git/codex-workflow-v4/registry/lanes" / f"{lane_id}.json"
         )
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload["expires_at"] = "2000-01-01T00:00:00Z"
@@ -5139,7 +5139,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             )
             if not git_dir.is_absolute():
                 git_dir = adopt_stale / git_dir
-            self.assertFalse((git_dir / "codex-workflow-v3" / "lane.json").exists())
+            self.assertFalse((git_dir / "codex-workflow-v4" / "lane.json").exists())
 
             lane_path, lane_id = self._claim_authorized_v4(
                 root, target, recover_record, name="lane-recover"
@@ -5168,9 +5168,9 @@ class V4WorkflowM2Tests(unittest.TestCase):
             original_brief = brief.read_bytes()
             self._revise_requirements(brief)
             registry_path = (
-                target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_id}.json"
+                target / ".git/codex-workflow-v4/registry/lanes" / f"{lane_id}.json"
             )
-            owner_path = target / ".git/codex-workflow-v3/owner-id"
+            owner_path = target / ".git/codex-workflow-v4/owner-id"
             lane_record = lane_path / record_relative(recover_record, target)
             registry_before = registry_path.read_bytes()
             owner_before = owner_path.read_bytes()
@@ -5460,10 +5460,10 @@ class V4WorkflowM2Tests(unittest.TestCase):
                 root, target, record_path, name="lane-heartbeat"
             )
             registry_path = (
-                target / ".git/codex-workflow-v3/registry/lanes" / f"{lane_id}.json"
+                target / ".git/codex-workflow-v4/registry/lanes" / f"{lane_id}.json"
             )
             heartbeat_path = (
-                target / ".git/codex-workflow-v3/heartbeats" / f"{lane_id}.json"
+                target / ".git/codex-workflow-v4/heartbeats" / f"{lane_id}.json"
             )
             registry_before = registry_path.read_bytes()
             brief = lane_path / ".codex-workflow/governance/requirements/REQ-001.md"
@@ -5634,7 +5634,7 @@ class V4WorkflowM2Tests(unittest.TestCase):
             relative = record_relative(record_path, target)
             brief = target / ".codex-workflow/governance/requirements/REQ-001.md"
             self._revise_requirements(brief)
-            owner_path = target / ".git/codex-workflow-v3/owner-id"
+            owner_path = target / ".git/codex-workflow-v4/owner-id"
             self.assertFalse(owner_path.exists())
             owner = str(uuid.uuid4())
             resumed = run(

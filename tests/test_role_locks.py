@@ -28,7 +28,7 @@ class PersistentRoleLockTests(unittest.TestCase):
         common = Path(git(target, "rev-parse", "--git-common-dir").stdout.strip())
         if not common.is_absolute():
             common = target / common
-        return common / "codex-workflow-v3"
+        return common / "codex-workflow-v4"
 
     def _lock_path(self, target: Path, role: str) -> Path:
         return self._runtime(target) / "locks" / f"{role}.lock.json"

@@ -202,7 +202,7 @@ class RemoteClaimEndToEndTests(unittest.TestCase):
             )
             self.assertNotEqual(wrong_branch.returncode, 0)
             self.assertIn("does not match remote assignment branch", wrong_branch.stderr)
-            self.assertFalse((developer / ".git/codex-workflow-v3/lane.json").exists())
+            self.assertFalse((developer / ".git/codex-workflow-v4/lane.json").exists())
             git(developer, "switch", "-c", branch, "origin/main")
             resumed = run(
                 workflow_command(developer, "workflow_lane.py", "resume-remote", relative, "--owner-id", owner_id, "--apply"),
