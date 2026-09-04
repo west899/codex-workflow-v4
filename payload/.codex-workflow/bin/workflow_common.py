@@ -866,6 +866,13 @@ _V4_TOKEN_PREFIX = re.compile(
     r"(?<![A-Za-z0-9])(?:ghp_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|glpat-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|sk-[A-Za-z0-9_-]{8,})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+_V4_HEX_IDENTITY = re.compile(r"^(?:git:)?(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _v4_is_hex_identity(value: str) -> bool:
+    """Git commit and SHA-256 identity strings are not phone numbers or tokens."""
+
+    return bool(_V4_HEX_IDENTITY.fullmatch(value.strip()))
 
 
 def validate_v4_external_source(value: Any, *, label: str) -> str:
@@ -1081,6 +1088,8 @@ def v4_text_contains_sensitive_evidence(value: str) -> bool:
 
     if not isinstance(value, str):
         return False
+    if _v4_is_hex_identity(value):
+        return False
     if any(ord(character) < 32 and character not in "\t" for character in value):
         return True
     if (
@@ -1136,6 +1145,8 @@ def _validate_v4_redacted_receipt(receipt: dict[str, Any]) -> None:
                     f"$.normalized_result.stable_output[{index}].name."
                 )
     for path, value in _v4_walk_strings(receipt):
+        if _v4_is_hex_identity(value):
+            continue
         if any(ord(character) < 32 and character not in "\t" for character in value):
             raise WorkflowDataError(f"Observation receipt contains control characters at {path}.")
         if (

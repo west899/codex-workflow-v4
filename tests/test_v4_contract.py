@@ -27,6 +27,7 @@ from workflow_common import (  # noqa: E402
     observation_fingerprint,
     validate_v4_observation_receipt,
     validate_json_schema,
+    v4_text_contains_sensitive_evidence,
 )
 
 
@@ -854,6 +855,18 @@ class V4TaskContractTests(unittest.TestCase):
             self.assertNotIn("task-record-v3.schema.json", result.stderr)
             self.assertIn("V4 architecture baseline", result.stderr)
             self.assertIn("explicit implementation authorization", result.stderr)
+
+
+class HexIdentitySensitiveScanTests(unittest.TestCase):
+    def test_git_commit_and_sha256_are_not_phone_false_positives(self) -> None:
+        commit = "aa" + "13800138000" + ("b" * 27)
+        self.assertEqual(len(commit), 40)
+        self.assertFalse(v4_text_contains_sensitive_evidence(commit))
+        self.assertFalse(v4_text_contains_sensitive_evidence("git:" + commit))
+        digest = "cc" + "13800138000" + ("d" * 51)
+        self.assertEqual(len(digest), 64)
+        self.assertFalse(v4_text_contains_sensitive_evidence(digest))
+        self.assertTrue(v4_text_contains_sensitive_evidence("13800138000"))
 
 
 if __name__ == "__main__":
