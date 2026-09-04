@@ -29,8 +29,7 @@ from workflow_common import (  # noqa: E402
 
 
 SCHEMA = PACKAGE_ROOT / "payload/.codex-workflow/schemas" / PROVIDER_RECEIPT_SCHEMA
-EQUIVALENCE = PACKAGE_ROOT / "docs/history/V4_PHASEC_EQUIVALENCE.md"
-PLAN = PACKAGE_ROOT / "docs/history/V4_PHASEC_PLAN.md"
+FEATURE = PACKAGE_ROOT / "功能.md"
 
 
 def _receipt(commit: str = "abc123", snapshot_id: str = "a" * 64, **overrides) -> dict:
@@ -398,11 +397,9 @@ class PhaseCRemoteCloseoutTests(unittest.TestCase):
 
 
 class PhaseCMatrixDocsTests(unittest.TestCase):
-    def test_prefilled_matrix_dispositions_are_no(self) -> None:
-        text = EQUIVALENCE.read_text(encoding="utf-8")
+    def test_product_matrix_dispositions_are_no(self) -> None:
+        text = FEATURE.read_text(encoding="utf-8")
         for matrix_id in [f"EQ-00{i}" for i in range(1, 10)]:
             self.assertIn(matrix_id, text)
         self.assertIn("附加 receipt ≠ 替代证明", text)
-        plan = PLAN.read_text(encoding="utf-8")
-        self.assertIn("phase_c_authorized_complete", plan)
-        self.assertNotIn("PENDING_COMPUTE", plan)
+        self.assertIn("不可当成 Reviewer", text)

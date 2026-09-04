@@ -88,18 +88,6 @@ REQUIRED = {
     "tests/test_v4_lifecycle.py",
     "tests/test_v4_phase_b.py",
     "tests/test_v4_phase_c.py",
-    "docs/history/V4_PHASEC_PLAN.md",
-    "docs/history/V4_PHASEC_INVENTORY.md",
-    "docs/history/V4_PHASEC_EQUIVALENCE.md",
-    "docs/history/V4_PHASEC_KEEP_STRICT_FF.md",
-    "docs/history/V4_PHASEC_CLOSEOUT.md",
-    "docs/history/V4_PHASEA_PLAN.md",
-    "docs/history/V4_PHASE0_PILOT.md",
-    "docs/history/V4_PHASEA_CORE_SLICE.md",
-    "docs/history/V4_PHASEA_CLOSEOUT.md",
-    "docs/history/V4_PHASEB_PLAN.md",
-    "docs/history/V4_PHASEB_CLOSEOUT.md",
-    "docs/history/PA-008-EXEC_PLAN.md",
 }
 FORBIDDEN_FILES = {
     "payload/PROJECT.md",

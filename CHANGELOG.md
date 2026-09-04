@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 从随包文件中移除已完成的阶段 0–C 规划、清单、收口和内部 ExecPlan；EQ 矩阵写入 `功能.md`。
 - `requirements_impact_path` 与 Backlog WIP `limit` 拒绝 bool 冒充 integer。
 - closeout dry-run 不再 `ensure_runtime()`，也不再创建 advisory lock 文件；`_role_lock_context` dry-run 与 lane 一样用空上下文。
 - generation / owner_generation 等 JSON 整数统一拒绝 bool。
@@ -33,4 +34,4 @@ Codex Workflow V4 正式产品源码包。安装：`python install.py <project-r
 - 只读 GitHub provider receipt 可附加，不能替代 Independent Reviewer 或 ff/CI 证明。
 - 已验证范围：macOS / CPython 3.9（`python3 -B verify_package.py`）。Windows / 3.12 / 3.13 未验证。
 
-能力与测试依据见 [功能.md](功能.md)。形成过程见 [docs/history/](docs/history/)。
+能力与测试依据见 [功能.md](功能.md)。
