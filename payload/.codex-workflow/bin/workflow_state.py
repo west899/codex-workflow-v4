@@ -56,6 +56,15 @@ from workflow_common import (
     unlock_ready_dependencies,
     update_backlog_status,
     utc_now,
+    current_branch,
+    current_requirements_baseline,
+    architecture_baseline_fingerprint,
+    LITE_AUTHORIZE_SOURCE,
+    LITE_LOCAL_BRIEF_ID,
+    BACKLOG_FOCUS_MARKER,
+    v4_lite_no_trigger,
+    v4_lite_allowed_path,
+    parse_backlog_focus_metadata,
     validate_developer_evidence,
     mark_backlog_focus_direction_confirmed,
     maybe_load_guardrail_registry,
@@ -194,6 +203,19 @@ def parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("sync-status")
     status.add_argument("--apply", action="store_true")
+
+    lite = sub.add_parser("lite-authorize")
+    lite.add_argument("--card-json")
+    lite.add_argument("--task-id")
+    lite.add_argument("--request")
+    lite.add_argument("--acceptance")
+    lite.add_argument("--authorized-by")
+    lite.add_argument("--source")
+    lite.add_argument("--allowed-path", action="append", dest="allowed_paths")
+    lite.add_argument("--scope-in", action="append")
+    lite.add_argument("--scope-out", action="append")
+    lite.add_argument("--requirement-id", action="append", dest="requirement_ids")
+    lite.add_argument("--apply", action="store_true")
     return result
 
 
@@ -2274,6 +2296,518 @@ def reconcile(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     )
 
 
+def _lite_split_values(values: list[str] | None) -> list[str]:
+    parts: list[str] = []
+    for value in values or []:
+        if not isinstance(value, str):
+            raise StateError("Lite flag values must be text.")
+        for item in value.split(","):
+            item = item.strip()
+            if item:
+                parts.append(item)
+    return parts
+
+
+def _lite_card_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    flag_used = any(
+        [
+            args.task_id,
+            args.request,
+            args.acceptance,
+            args.authorized_by,
+            args.source,
+            args.allowed_paths,
+            args.scope_in,
+            args.scope_out,
+            args.requirement_ids,
+        ]
+    )
+    if args.card_json and flag_used:
+        raise StateError("lite-authorize accepts either --card-json or flags, not both.")
+    if args.card_json:
+        return read_json(args.card_json, name="lite authorization card")
+    if not flag_used:
+        raise StateError(
+            "lite-authorize requires flags (--task-id, --request, --acceptance, "
+            "--allowed-path, --authorized-by) or --card-json."
+        )
+    allowed_paths = _lite_split_values(args.allowed_paths)
+    missing = [
+        name
+        for name, value in (
+            ("--task-id", args.task_id),
+            ("--request", args.request),
+            ("--acceptance", args.acceptance),
+            ("--authorized-by", args.authorized_by),
+        )
+        if not (isinstance(value, str) and value.strip())
+    ]
+    if not allowed_paths:
+        missing.append("--allowed-path")
+    if missing:
+        raise StateError("lite-authorize flags missing: " + ", ".join(missing) + ".")
+    card: dict[str, Any] = {
+        "task_id": args.task_id.strip(),
+        "request": args.request.strip(),
+        "scope_in": _lite_split_values(args.scope_in)
+        or [f"Changes limited to {', '.join(allowed_paths)}."],
+        "scope_out": _lite_split_values(args.scope_out)
+        or ["Production release", "Unrelated behavior change"],
+        "allowed_paths": allowed_paths,
+        "acceptance": args.acceptance.strip(),
+        "authorized_by": args.authorized_by.strip(),
+        "source": (args.source or "user:lite-authorize").strip(),
+    }
+    requirement_ids = _lite_split_values(args.requirement_ids)
+    if requirement_ids:
+        card["requirement_ids"] = requirement_ids
+    return card
+
+
+def _lite_card_text_list(card: dict[str, Any], key: str) -> list[str]:
+    value = card.get(key)
+    if not isinstance(value, list) or not value or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise StateError(f"Lite card {key} must be a non-empty array of text.")
+    return [item.strip() for item in value]
+
+
+def _lite_resource_keys(allowed_paths: list[str]) -> list[str]:
+    keys: list[str] = []
+    for path in allowed_paths:
+        token = f"path:{path.strip().replace(chr(92), '/')}"
+        if token not in keys:
+            keys.append(token)
+    if not keys:
+        raise StateError("Lite authorize requires at least one concrete allowed path.")
+    return keys
+
+
+def _lite_validate_allowed_paths(allowed_paths: list[str]) -> None:
+    for path in allowed_paths:
+        try:
+            v4_lite_allowed_path(path)
+        except WorkflowDataError as exc:
+            raise StateError(str(exc)) from exc
+
+
+def _lite_assert_clean_worktree(paths: WorkflowPaths) -> None:
+    result = git(paths, "status", "--porcelain=v1", "--untracked-files=all")
+    if result.stdout.strip():
+        raise StateError("lite-authorize requires a clean worktree in single mode.")
+
+
+def _lite_assert_occupancy(
+    paths: WorkflowPaths, *, task_id: str, branch: str
+) -> None:
+    runs = paths.tracked("runs")
+    if not runs.is_dir():
+        return
+    for candidate in sorted(runs.glob("*.json")):
+        try:
+            record = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict) or record.get("task_id") == task_id:
+            continue
+        status = record.get("status")
+        integration = (
+            record.get("integration") if isinstance(record.get("integration"), dict) else {}
+        )
+        live = status in {"authorized", "in_progress"} or (
+            status == "completed"
+            and integration.get("status") not in {"integrated", "invalidated"}
+        )
+        if not live:
+            continue
+        lane = record.get("lane") if isinstance(record.get("lane"), dict) else {}
+        if lane.get("branch") == branch:
+            raise StateError(
+                f"lite-authorize: {record.get('task_id')} already occupies branch {branch}."
+            )
+
+
+def _lite_assert_backlog_id_free(paths: WorkflowPaths, task_id: str) -> None:
+    text = paths.tracked("backlog").read_text(encoding="utf-8")
+    payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise StateError("Backlog focus metadata items must be an array.")
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == task_id:
+            raise StateError(
+                f"lite-authorize refuses to replace existing Backlog focus item {task_id}."
+            )
+
+
+def _lite_upsert_backlog_focus(paths: WorkflowPaths, record: dict[str, Any]) -> None:
+    backlog = paths.tracked("backlog")
+    text = backlog.read_text(encoding="utf-8")
+    payload = read_embedded_json(text, BACKLOG_FOCUS_MARKER)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise StateError("Backlog focus metadata items must be an array.")
+    task_id = record["task_id"]
+    contract = record["delivery_contract"]
+    entry = {
+        "id": task_id,
+        "kind": contract["kind"],
+        "focus_slice_id": contract["focus_slice_id"],
+        "supports_task_id": contract.get("supports_task_id"),
+        "direction_confirmed": True,
+    }
+    replaced = False
+    next_items: list[Any] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == task_id:
+            raise StateError(
+                f"lite-authorize refuses to replace existing Backlog focus item {task_id}."
+            )
+        next_items.append(item)
+    next_items.append(entry)
+    payload["items"] = next_items
+    updated = replace_embedded_json(text, BACKLOG_FOCUS_MARKER, payload)
+    parse_backlog_focus_metadata(updated)
+    if f"| {task_id} |" not in updated:
+        safe_request = (
+            str(record["request"]).replace("|", "/").replace("\n", " ").strip()[:80]
+        )
+        row = (
+            f"| {task_id} | Could | {safe_request} | 无 | "
+            f"{contract['acceptance_ids'][0]} | 无 | ready | none | "
+            f"state/runs/{task_id}.json | - | - |"
+        )
+        marker = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        if marker not in updated:
+            raise StateError("Backlog is missing the fixed column separator row.")
+        updated = updated.replace(marker, marker + "\n" + row, 1)
+    atomic_write_text(backlog, updated)
+
+
+def lite_authorize(paths: WorkflowPaths, args: argparse.Namespace) -> None:
+    """Derive and authorize a small/no-trigger V4 record from a short card."""
+
+    _require_coordinator_worktree(paths, "lite-authorize")
+    card = _lite_card_from_args(args)
+    allowed = {
+        "task_id",
+        "request",
+        "scope_in",
+        "scope_out",
+        "allowed_paths",
+        "acceptance",
+        "authorized_by",
+        "source",
+        "requirement_ids",
+    }
+    extra = sorted(set(card) - allowed)
+    if extra:
+        raise StateError("Lite card has unsupported fields: " + ", ".join(extra) + ".")
+    task_id = card.get("task_id")
+    if not isinstance(task_id, str) or not re.fullmatch(r"(?:MVP|OPS)-[A-Za-z0-9._-]+", task_id):
+        raise StateError("Lite card task_id must match MVP-* or OPS-*.")
+    request = card.get("request")
+    acceptance = card.get("acceptance")
+    authorized_by = card.get("authorized_by")
+    source_ref = card.get("source")
+    for label, value in (
+        ("request", request),
+        ("acceptance", acceptance),
+        ("authorized_by", authorized_by),
+        ("source", source_ref),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise StateError(f"Lite card {label} must be non-empty text.")
+    scope_in = _lite_card_text_list(card, "scope_in")
+    scope_out = _lite_card_text_list(card, "scope_out")
+    allowed_paths = _lite_card_text_list(card, "allowed_paths")
+    _lite_validate_allowed_paths(allowed_paths)
+    resource_keys = _lite_resource_keys(allowed_paths)
+    branch = current_branch(paths)
+    if not branch:
+        raise StateError("lite-authorize requires a named current branch.")
+    base_commit = rev_parse(paths, "HEAD")
+    parallel_mode = (paths.layout.get("parallel") or {}).get("mode") or "single"
+    implicit_lane = parallel_mode == "single"
+    _lite_assert_backlog_id_free(paths, task_id)
+    if implicit_lane:
+        _lite_assert_clean_worktree(paths)
+        _lite_assert_occupancy(paths, task_id=task_id, branch=branch)
+    managed, _current, _brief_path = current_requirements_baseline(paths)
+    if all(value is None for value in managed.values()):
+        material = {
+            "task_id": task_id,
+            "request": request.strip(),
+            "scope_in": scope_in,
+            "scope_out": scope_out,
+            "acceptance": acceptance.strip(),
+        }
+        local_fingerprint = hashlib.sha256(
+            json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        requirements_baseline = {
+            "brief_id": LITE_LOCAL_BRIEF_ID,
+            "revision": 1,
+            "approval_fingerprint": local_fingerprint,
+        }
+        requirement_ids = card.get("requirement_ids") or ["REQ-LITE-001"]
+    else:
+        requirements_baseline = {
+            "brief_id": managed["brief_id"],
+            "revision": managed["revision"],
+            "approval_fingerprint": managed["approval_fingerprint"],
+        }
+        requirement_ids = card.get("requirement_ids")
+        if not isinstance(requirement_ids, list) or not requirement_ids:
+            raise StateError(
+                "lite-authorize requires --requirement-id / requirement_ids when a live Brief exists."
+            )
+    if not isinstance(requirement_ids, list) or any(
+        not isinstance(item, str) or not re.fullmatch(r"REQ-[A-Za-z0-9._-]+", item)
+        for item in requirement_ids
+    ):
+        raise StateError("Lite card requirement_ids must be REQ-* identifiers.")
+    if not all(value is None for value in managed.values()):
+        brief = read_requirements_brief(
+            paths.tracked("requirements") / f"{requirements_baseline['brief_id']}.md",
+            schema_path=paths.tracked("schemas") / "requirements-v1.schema.json",
+        )
+        known: set[str] = set()
+        requirements = brief.metadata.get("requirements")
+        if isinstance(requirements, dict):
+            for section in requirements.values():
+                if not isinstance(section, list):
+                    continue
+                for item in section:
+                    if isinstance(item, dict) and isinstance(item.get("id"), str):
+                        known.add(item["id"])
+        missing = [item for item in requirement_ids if item not in known]
+        if missing:
+            raise StateError(
+                "lite-authorize requirement_ids are absent from the live Brief: "
+                + ", ".join(missing)
+                + "."
+            )
+    decisions = paths.tracked("decisions")
+    baseline = read_embedded_json(
+        decisions.read_text(encoding="utf-8"), "CODEX_ARCHITECTURE_BASELINE"
+    )
+    if baseline.get("status") != "approved":
+        raise StateError("lite-authorize requires an approved project architecture baseline.")
+    architecture_fingerprint = architecture_baseline_fingerprint(baseline)
+    now = utc_now()
+    claim_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    lane = {
+        "lane_id": f"lane-{task_id}-single" if implicit_lane else None,
+        "mode": "single" if implicit_lane else parallel_mode,
+        "branch": branch if implicit_lane else None,
+        "base_ref": branch if implicit_lane else None,
+        "base_commit": base_commit if implicit_lane else None,
+        "claim_id": claim_id if implicit_lane else None,
+        "owner_generation": 1 if implicit_lane else 0,
+        "assignment": (
+            {
+                "assigned_owner_id": owner_id,
+                "assignment_generation": 1,
+                "assigned_at": now,
+                "assigned_by": authorized_by.strip(),
+            }
+            if implicit_lane
+            else None
+        ),
+        "allowed_paths": list(allowed_paths),
+        "resource_keys": list(resource_keys),
+        "dependency_snapshot": {"backlog_commit": base_commit, "dependencies": []},
+    }
+    record: dict[str, Any] = {
+        "version": 4,
+        "generation": 0,
+        "phase": "developer" if implicit_lane else "coordinator",
+        "task_id": task_id,
+        "status": "in_progress" if implicit_lane else "authorized",
+        "source": {
+            "type": "user_directive",
+            "reference": source_ref.strip(),
+            "priority_reason": "lite-authorize small/no-trigger",
+            "requirements_baseline": requirements_baseline,
+        },
+        "requirements_impact": None,
+        "request": request.strip(),
+        "scope": {
+            "in": scope_in,
+            "out": scope_out,
+            "allowed_paths": allowed_paths,
+            "resource_keys": resource_keys,
+        },
+        "planning": {
+            "level": "small",
+            "exec_plan": None,
+            "steps": ["Implement the authorized small change.", "Verify the named acceptance criterion."],
+        },
+        "implementation_authorization": {
+            "authorized": True,
+            "authorized_by": authorized_by.strip(),
+            "authorized_at": now,
+            "source": source_ref.strip(),
+        },
+        "risk": {
+            "product_scope": False,
+            "sensitive_data": False,
+            "destructive_change": False,
+            "irreversible_architecture": False,
+            "production_release": False,
+        },
+        "base_commit": base_commit,
+        "acceptance": [
+            {
+                "id": "AC-001",
+                "criterion": acceptance.strip(),
+                "status": "pending",
+                "evidence": [],
+            }
+        ],
+        "delivery_contract": {
+            "kind": "governance",
+            "focus_slice_id": task_id,
+            "supports_task_id": None,
+            "supporting": None,
+            "requirement_ids": requirement_ids,
+            "acceptance_ids": ["AC-001"],
+            "checkpoint": {
+                "mode": "not_required",
+                "reason": "lite-authorize: small/no-trigger; product checkpoint is not required.",
+                "source": LITE_AUTHORIZE_SOURCE,
+            },
+            "observation": {
+                "method": "cli",
+                "entrypoint_ref": "project-script:not-required",
+                "fixture_ref": "fixture:not-required",
+                "healthcheck_ref": None,
+                "steps": ["No separate observation runner; verify the named acceptance."],
+                "cleanup_ref": None,
+            },
+            "known_placeholders": [],
+            "decision_refs": [],
+            "dependency_refs": [],
+            "execution_mode": "formal",
+            "architecture": {
+                "baseline": {
+                    "source": ".codex-workflow/governance/DECISIONS.md",
+                    "revision": baseline.get("revision"),
+                    "fingerprint": architecture_fingerprint,
+                },
+                "declared_impact": "none",
+                "guardrails": [],
+            },
+        },
+        "decision_log": [],
+        "lane": lane,
+        "verification": {
+            "status": "pending",
+            "delivery_commit": None,
+            "delivery_hash": None,
+            "patch_hash": None,
+            "snapshot_id": None,
+            "changed_paths": [],
+        },
+        "developer": {
+            "evidence_contract_version": None,
+            "agent_id": None,
+            "snapshot_id": None,
+            "scopes": [],
+            "commands": [],
+            "claims": [],
+            "handoff": None,
+        },
+        "review": {
+            "evidence_contract_version": None,
+            "agent_id": None,
+            "snapshot_id": None,
+            "status": "pending",
+            "findings": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+            "requirement_checklist": [],
+            "accepted_findings": [],
+            "claim_assessments": [],
+            "summary": None,
+        },
+        "human_approvals": [],
+        "integration": {
+            "status": "not_ready",
+            "mode": None,
+            "policy_id": None,
+            "source_ref": None,
+            "target_ref": None,
+            "target_parent": None,
+            "pr_head_commit": None,
+            "result_commit": None,
+            "merge_strategy": None,
+            "queue_id": None,
+            "queued_at": None,
+            "queue_priority": None,
+            "closeout_commit": None,
+            "closeout_state_fingerprint": None,
+            "pr_url": None,
+            "ci_checks": [],
+            "evidence": [],
+        },
+        "process_retrospective": {
+            "completed": False,
+            "completed_by": None,
+            "completed_at": None,
+            "questions": {
+                "repeated_problem_found": False,
+                "guidance_gap_found": False,
+                "deterministic_check_candidate_found": False,
+            },
+            "summary": None,
+        },
+        "rule_proposals": [],
+        "remaining_risks": [],
+    }
+    record["contract_fingerprint"] = contract_fingerprint(record)
+    if not v4_lite_no_trigger(record):
+        raise StateError("Derived lite record is not small/no-trigger.")
+    validate_workflow_schema(
+        paths, task_record_schema_name(record), record, label="Lite task record"
+    )
+    relative = f".codex-workflow/state/runs/{task_id}.json"
+    path = paths.root / Path(*relative.replace("\\", "/").split("/"))
+    if path.is_file():
+        raise StateError(f"Lite authorize refuses to overwrite existing record {relative}.")
+    payload = {
+        "apply": bool(args.apply),
+        "task_id": task_id,
+        "record": relative,
+        "implicit_lane": implicit_lane,
+        "checkpoint_mode": "not_required",
+        "next": (
+            "preflight"
+            if implicit_lane
+            else "workflow_lane.py claim"
+        ),
+    }
+    if not args.apply:
+        validate_role_lock_access(paths.shared_runtime, "coordinator")
+        print("LITE_AUTHORIZE_DRY_RUN " + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    paths.ensure_runtime()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with PersistentRoleLock(paths.shared_runtime, "coordinator", action="lite-authorize"):
+        if path.is_file():
+            raise StateError(f"Lite authorize refuses to overwrite existing record {relative}.")
+        _lite_assert_backlog_id_free(paths, task_id)
+        if implicit_lane:
+            _lite_assert_clean_worktree(paths)
+            _lite_assert_occupancy(paths, task_id=task_id, branch=branch)
+        atomic_write_json(path, record)
+        _lite_upsert_backlog_focus(paths, record)
+        if not _is_lane_worktree(paths):
+            sync_workflow_status(paths)
+    print(f"LITE_AUTHORIZED task={task_id} record={relative} implicit_lane={str(implicit_lane).lower()}")
+
+
 def pending_queued_recovery(paths: WorkflowPaths, args: argparse.Namespace) -> None:
     """Sealed Phase B policy: pending/queued recovery is abandon-only and never mutates."""
 
@@ -2392,6 +2926,8 @@ def main() -> None:
             resolve_requirements_impact(paths, args)
         elif command == "sync-status":
             sync_status(paths, args)
+        elif command == "lite-authorize":
+            lite_authorize(paths, args)
     except (
         StateError, PersistentRoleLockError, WorkflowDataError, WorkflowJSONResourceError,
         WorkflowPathError,

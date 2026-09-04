@@ -9,7 +9,7 @@ Build the smallest observable core result first. If a V4 trigger appears—uncle
 
 ## 1. Verify lane identity before editing
 
-Read root/protocol/project governance, active Requirements baseline, Backlog item, task record and ExecPlan. Run preflight from the assigned worktree. Refuse to edit unless:
+Read the assigned task record, lane identity, active Requirements baseline and ExecPlan. Do not start by reading `.codex-workflow/docs/WORKFLOW.md` or the full protocol handbook. Before `record-developer`, open [developer-evidence.md](references/developer-evidence.md) and that same WORKFLOW.md Evidence Contract. Run preflight from the assigned worktree. Refuse to edit unless:
 
 - task authorization, scope in/out, acceptance and exact base exist;
 - branch, lane pointer, claim ID and owner generation match the record;
@@ -35,22 +35,7 @@ Heartbeat at meaningful long-task boundaries. A heartbeat only renews a token/ge
 
 Run focused tests, broader regression checks proportional to impact, formatter/lint/type/build where applicable, a real user/API path, and relevant secret/security checks. Inspect final diff for scope leaks.
 
-Create a clean exact delivery commit on the lane branch. The task record and permitted mutable workflow state are excluded from product delivery delta, but uncommitted product files are forbidden. Run snapshot, then submit evidence through:
-
-```text
-py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery-commit HEAD --evidence-json <file>
-py -3 .codex-workflow/bin/workflow_state.py record-developer <record> --delivery-commit HEAD --evidence-json <file> --apply
-```
-
-Evidence must follow Evidence Contract v1 in `.codex-workflow/docs/WORKFLOW.md`:
-
-- give every command a unique `id`, normalized repository-relative `cwd`, exact command, exit code, expected-failure flag, result and non-empty `scope_ids`;
-- declare only `canonical_delivery_paths`, `declared_path_call_graph`, `explicit_command_set`, `explicit_test_set`, `explicit_runtime_surfaces` or `repository_tree` scopes with exact targets; enumerate non-empty `observed_surfaces` for runtime scopes and make canonical-delivery targets exactly match changed paths;
-- never use `all`, `*`, `repository_wide` or `all_dry_runs` as an aggregate target; a full canonical product-tree scope uses `repository_tree` target `.`, explicitly excludes `mutable_workflow_control`, and runs supporting commands from `cwd="."`;
-- bind every claim to one declared scope and actual supporting commands; do not submit a fingerprint because `record-developer` binds the normalized closure to the sealed snapshot and generates `evidence_fingerprint`;
-- keep `handoff` to exactly `claim_ids`, `remaining_risks` and `review_focus`.
-
-Command success does not justify a broader claim than its referenced scope. Do not write review fields, verification passed, integration or Backlog state.
+Create a clean exact delivery commit on the lane branch. The task record and permitted mutable workflow state are excluded from product delivery delta, but uncommitted product files are forbidden. Run snapshot. Before `record-developer`, follow [developer-evidence.md](references/developer-evidence.md) and the Evidence Contract in `.codex-workflow/docs/WORKFLOW.md`.
 
 When Coordinator has advanced the target and instructed a local lane to rebase, complete the rebase first and wait for `workflow_lane.py refresh-base` to reset the old state. Then create a new clean delivery commit and repeat the full Developer evidence flow; the prior snapshot, review and approval no longer bind to the refreshed base.
 

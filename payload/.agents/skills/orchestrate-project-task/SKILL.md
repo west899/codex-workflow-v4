@@ -11,10 +11,10 @@ Own scope, state and integration; do not impersonate Developer or Reviewer.
 
 ## 1. Establish ground truth
 
-1. Read root AGENTS and every file it points to, then the active Requirements Brief, Backlog, relevant task records, code, tests and Git state.
-2. Run `py -3 .codex-workflow/bin/workflow_check.py start`, `manual`, and `status`.
+1. Read the root AGENTS entry block and `.codex-workflow/state/STATUS.md`. Do not read `.codex-workflow/docs/WORKFLOW.md` or the full protocol handbook before the current phase needs them.
+2. Run `py -3 .codex-workflow/bin/workflow_check.py start`. Run `manual` and `status` when coordinating or authorizing, not as a session-start handbook dump.
 3. Preserve unrelated changes. If the current directory has a lane pointer, resume that exact lane; do not silently claim another task.
-4. Before the first implementation, require a human-approved Git baseline. Never infer project facts from the template.
+4. Before the first implementation, require a human-approved Git baseline. Never infer project facts from the template. Load PROJECT / PLAN / DECISIONS only when authorizing or checking architecture. For small/no-trigger user-directive work, use `$orchestrate-lite` / `lite-authorize` instead of Brief 2A.
 
 ## 2. Run the Requirements 2A feedback loop
 
@@ -60,22 +60,13 @@ Run preflight before delegation. `requirements-v1`、`task-record-v3`、`task-re
 
 ## 4. Choose single or isolated lane
 
-`parallel.mode=single` preserves the simple path. For approved local parallelism, `parallel.mode=local_worktree` must pass the manual lock probe. Claim one task per branch/worktree:
+Before `claim` / `adopt` / `resume-remote`, follow [claim-lane.md](references/claim-lane.md). Do not load `.codex-workflow/docs/WORKFLOW.md` or protocol lane invariants until that claim step.
 
-```text
-py -3 .codex-workflow/bin/workflow_lane.py claim <task-id> --base main
-py -3 .codex-workflow/bin/workflow_lane.py claim <task-id> --base main --apply
-```
-
-Review the dry-run paths and claims first. Do not claim conflicting task/resource/path/branch/worktree or exceed max lanes. Use `adopt` only for an intentional existing branch; dirty adoption requires the printed diff token. Give each Developer only its lane worktree, record, allowed paths and resource keys. Multiple Developers may run concurrently only in separate worktrees.
-
-When local registry/claims/queue state is missing or unreadable, run `workflow_lane.py rebuild` first. It reconstructs only pointer-and-record-backed local lanes, marks every reconstructed owner stale, and requires an explicit `recover --takeover` before work resumes. The same recovery applies when queue or `refresh-base` has updated its task record but has not finished runtime writes: use `rebuild --apply`, inspect the reconstructed state, then use `recover <lane-id> --takeover --apply`. When a target ref already contains closeout state and confirm stops while releasing runtime claims, run `workflow_state.py reconcile <record> --target-ref <ref> --apply` instead.
-
-For different machines, prefer `remote_preassigned`: Coordinator writes random owner UUID, generation, claim and unique branch, then explicitly commits/pushes assignment. The assigned machine fetches, checks out that exact branch, then runs `workflow_lane.py resume-remote <record> --owner-id <assigned-uuid> --apply`; branch, owner, claim and generation mismatches must stop work. Optional `remote_claimed` requires atomic multi-ref support. Its heartbeat refuses an expired lease. Stale takeover requires a clean checkout of the exact remote task ref, a new owner UUID, `--approved-by`, and `--approval-ref`; it atomically advances the task ref, claim and resource refs. An active owner can run `remote-handoff` with a target owner UUID; the recipient fetches the updated task branch and runs `resume-remote`. Every failed CAS freezes that lane and preserves local commits. These commands do not grant product push/merge permission.
+`parallel.mode=single` preserves the simple path. For approved local parallelism, `parallel.mode=local_worktree` must pass the manual lock probe. Give each Developer only its lane worktree, record, allowed paths and resource keys. Recovery, remote claim, and rebuild steps stay in [claim-lane.md](references/claim-lane.md).
 
 ## 5. Delegate Developer and Reviewer
 
-Spawn the project `developer` in the assigned worktree with the raw request, record, requirements/acceptance IDs, constraints and ExecPlan. Require `$implement-project-task`. It must create one clean delivery commit, then use `record-developer` with Evidence Contract v1 commands, finite scopes, command-bound claims, and a handoff containing only `claim_ids`, `remaining_risks` and `review_focus`; the workflow generates each sealed `evidence_fingerprint`.
+Spawn the project `developer` in the assigned worktree with the raw request, record, requirements/acceptance IDs, constraints and ExecPlan. Require `$implement-project-task`. It must create one clean delivery commit, then `record-developer` using [developer-evidence.md](../implement-project-task/references/developer-evidence.md); open `.codex-workflow/docs/WORKFLOW.md` only at that evidence step.
 
 For a V4 task with `checkpoint.mode=required`, do not start independent Review until the current snapshot has a matching observation receipt and a human product-direction decision. Show STATUS / the decision card, not raw JSON. `changes_requested` returns the lane to Developer; a new snapshot needs a new observation.
 
@@ -115,19 +106,7 @@ py -3 .codex-workflow/bin/workflow_lane.py refresh-base <lane-id> --base main --
 
 ## 8. Two-phase closeout
 
-- Local bootstrap: external ff-only product integration, then `prepare-local-closeout` from a clean target worktree.
-- Remote: external push/PR/CI/human merge, fetch, validate strict-ff evidence JSON, then `prepare-remote-closeout` from the latest target baseline; its closeout-only commit goes through an external PR/CI/human merge. Optional `provider-receipt` is additive only and cannot replace Independent Reviewer or ff/CI proofs. Do not treat branch protection or merge queue as Reviewer equivalence. Closeout is not `released`.
-
-Prepare writes done/integration evidence/dependency unlock into one closeout commit and records a canonical state fingerprint. The prepared SHA is printed and kept in local audit because a Git-tracked record cannot contain its own commit SHA. It does not release claims. After the configured target ref contains that exact commit:
-
-```text
-py -3 .codex-workflow/bin/workflow_state.py confirm-closeout <record> --target-ref <ref> --closeout-commit <sha>
-py -3 .codex-workflow/bin/workflow_state.py confirm-closeout <record> --target-ref <ref> --closeout-commit <sha> --apply
-```
-
-Use `reconcile` after an interrupted closeout. Only confirm releases matching runtime claims. It never deletes branch/worktree. Output next-ready candidates, but do not auto-claim them.
-
-For `remote_claimed`, fetch the latest remote target after closeout confirmation, run `remote-release <record>` as a dry-run, then apply only with its exact `--expected-claim-oid`. Release must prove the remote target contains the integrated task/Backlog fingerprint and atomically delete the task claim plus every resource claim. OID drift is a zero-delete CAS failure; preserve the task branch.
+After verified, follow [closeout.md](references/closeout.md). Load the two-phase closeout chapters in `.codex-workflow/docs/WORKFLOW.md` only at this closeout step. Closeout is not `released` and must not treat GitHub review as Independent Reviewer.
 
 ## 9. Report exact distinctions
 

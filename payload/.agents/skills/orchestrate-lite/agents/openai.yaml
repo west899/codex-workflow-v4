@@ -1,0 +1,6 @@
+interface:
+  display_name: "Lite Task Orchestrator"
+  short_description: "Authorize a small/no-trigger change from a short card"
+  default_prompt: "Use $orchestrate-lite to authorize this small no-trigger change without a full Brief 2A."
+policy:
+  allow_implicit_invocation: false

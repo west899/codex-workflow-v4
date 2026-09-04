@@ -34,7 +34,7 @@ class InstallTests(unittest.TestCase):
     def test_install_module_does_not_keep_unused_legacy_package_name(self) -> None:
         module = load_install_module()
         self.assertEqual(module.PACKAGE_NAME, "codex-workflow-v4")
-        self.assertEqual(module.PACKAGE_VERSION, "4.1.0")
+        self.assertEqual(module.PACKAGE_VERSION, "4.2.0")
         self.assertEqual(module.LEGACY_RUNTIME_DIRNAME, "codex-workflow-v3")
         self.assertFalse(hasattr(module, "LEGACY_PACKAGE_NAME"))
         changelog = (PACKAGE_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

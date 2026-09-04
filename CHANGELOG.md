@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-V4 产品线已冻结为 4.1.0。此后 `v4` 分支只接受 V4 缺陷修复；V5 不得合入本线。
+## 4.2.0
+
+当前可安装产品。请钉住 tag `v4.2.0`（或跟踪只接收 V4 补丁的 `v4` 分支）。包名与 runtime 仍为 `codex-workflow-v4`。已有 V3/V4 record 按原算法收尾。
+
+- 会话 always-on 入口不再强制通读协议全文与 `WORKFLOW.md`；claim / Developer evidence / closeout 按需打开。
+- `lite-authorize`：small/no-trigger 用 flags（或可选 JSON 卡片）派生 governance record，`checkpoint.mode=not_required`；single 模式在干净且未被占用的当前 worktree 隐式占用。
+- lite 拒绝 glob、产品代码路径、脏树、同分支 live 任务、覆盖已有 Backlog focus；有 Brief 时必须显式 `--requirement-id`。
+- STATUS 对 lite 不把占位 observation 显示成可打开入口。
+- Coordinator 写入 lite record + Backlog 时持有 Coordinator 持久租约。
 
 ## 4.1.0
 

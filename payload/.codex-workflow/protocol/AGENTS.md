@@ -4,12 +4,13 @@
 
 ## 1. 开始顺序
 
-每次任务依次读取根 `AGENTS.md`、本协议、governance 下的 AGENTS/PROJECT/PLAN/DECISIONS、`../docs/WORKFLOW.md`、当前 Requirements Brief、Backlog、task record、相关代码和测试。运行：
+每次任务从根 `AGENTS.md` 的入口块开始，并运行：
 
 ```text
 py -3 .codex-workflow/bin/workflow_check.py start
-py -3 .codex-workflow/bin/workflow_check.py manual
 ```
+
+不要在动手前通读本协议全文或 `../docs/WORKFLOW.md`。本协议其余章节与 WORKFLOW 是按需参考：claim / 隔离 lane 时读本文件 lane 不变量；`record-developer` 时读 WORKFLOW Evidence Contract；closeout 时读 WORKFLOW 集成与收尾。治理文件（PROJECT / PLAN / DECISIONS）和 `manual` 在授权、架构核对或规划时再打开。
 
 在任意项目子目录运行时，脚本必须仍解析到当前 Git worktree、git-common-dir 和 git-dir；不得假设 `.git` 是目录。
 

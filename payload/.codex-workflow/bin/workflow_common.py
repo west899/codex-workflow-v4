@@ -1709,6 +1709,33 @@ def v4_continuation_path_class(path: str) -> str:
     return "internal_implementation"
 
 
+def v4_lite_allowed_path(path: str) -> str:
+    """Classify a lite allowlist path as documentation or test, else fail closed."""
+
+    if not isinstance(path, str) or not path.strip():
+        raise WorkflowDataError("Lite allowed path must be non-empty text.")
+    normalized = path.strip().replace("\\", "/")
+    if normalized.startswith("/") or ".." in normalized.split("/"):
+        raise WorkflowDataError(f"Lite allowed path is unsafe: {path}.")
+    if any(character in normalized for character in "*?[]"):
+        raise WorkflowDataError(f"Lite allowed path must not use globs: {path}.")
+    try:
+        v4_continuation_path_class(normalized)
+    except WorkflowDataError as exc:
+        raise WorkflowDataError(f"Lite allowed path is architecture-sensitive: {path}.") from exc
+    parts = [item for item in normalized.split("/") if item and item != "."]
+    name = parts[-1] if parts else normalized
+    if parts and parts[0] == "tests":
+        return "test"
+    if name.endswith((".md", ".rst")) and "src" not in parts and "lib" not in parts:
+        return "documentation"
+    raise WorkflowDataError(
+        "Lite allowed path must be a concrete docs/test file "
+        "(.md/.rst outside src/lib, or under tests/): "
+        f"{path}."
+    )
+
+
 def v4_architecture_sensitive_paths(changed_paths: Iterable[str]) -> list[str]:
     sensitive: list[str] = []
     for path in changed_paths:
@@ -3924,6 +3951,12 @@ def validate_v4_live_requirements_baseline(
         raise WorkflowDataError("Live V4 Requirements validation requires a V4 task record.")
     task_baseline = _v4_requirements_baseline(record)
     local_managed, local_current, local_brief_path = current_requirements_baseline(paths)
+    if (
+        v4_lite_no_trigger(record)
+        and all(value is None for value in local_managed.values())
+        and task_baseline.get("brief_id") == LITE_LOCAL_BRIEF_ID
+    ):
+        return dict(task_baseline)
     if task_baseline != local_managed:
         raise WorkflowDataError(
             "V4 task Requirements baseline is stale relative to PROJECT/Backlog."
@@ -4024,6 +4057,13 @@ def validate_v4_live_focus_relationship(
             raise WorkflowDataError(
                 "V4 core slice focus_slice_id must equal its task_id."
             )
+        return
+    if (
+        v4_lite_no_trigger(record)
+        and kind == "governance"
+        and focus_id == task_id
+        and contract.get("supports_task_id") is None
+    ):
         return
     if kind not in {"supporting", "hardening", "governance"}:
         raise WorkflowDataError(f"Unsupported V4 focus relationship kind: {kind!r}.")
@@ -4786,6 +4826,46 @@ def v4_effective_risk_tier(record: dict[str, Any]) -> str:
     return {1: "small", 2: "medium", 3: "high"}[tier]
 
 
+LITE_AUTHORIZE_SOURCE = "workflow:lite-authorize"
+LITE_LOCAL_BRIEF_ID = "REQ-LITE-LOCAL"
+
+
+def v4_lite_no_trigger(record: dict[str, Any]) -> bool:
+    """True for the V5 lite-authorize path: small, no risk flags, no product checkpoint."""
+
+    if record.get("version") != 4:
+        return False
+    source = record.get("source") if isinstance(record.get("source"), dict) else {}
+    if source.get("type") not in {"user_directive", "incident", "maintenance"}:
+        return False
+    checkpoint = ((record.get("delivery_contract") or {}).get("checkpoint") or {})
+    if checkpoint.get("mode") != "not_required":
+        return False
+    if checkpoint.get("source") != LITE_AUTHORIZE_SOURCE:
+        return False
+    kind = ((record.get("delivery_contract") or {}).get("kind"))
+    if kind != "governance":
+        return False
+    try:
+        if v4_effective_risk_tier(record) != "small":
+            return False
+    except WorkflowDataError:
+        return False
+    risk = record.get("risk") if isinstance(record.get("risk"), dict) else {}
+    if any(
+        risk.get(flag) is True
+        for flag in (
+            "product_scope",
+            "sensitive_data",
+            "destructive_change",
+            "irreversible_architecture",
+            "production_release",
+        )
+    ):
+        return False
+    return True
+
+
 def v4_retrospective_not_required_allowed(record: dict[str, Any], retrospective: dict[str, Any]) -> bool:
     if v4_effective_risk_tier(record) != "small":
         return False
@@ -4877,6 +4957,13 @@ def validate_independent_architecture_impact(
     project_root: Path | None = None,
 ) -> str:
     independent = classify_independent_architecture_impact(changed_paths)
+    path_list = [path for path in changed_paths if isinstance(path, str) and path]
+    if v4_lite_no_trigger(record) and path_list:
+        try:
+            if all(v4_lite_allowed_path(path) in {"documentation", "test"} for path in path_list):
+                independent = "none"
+        except WorkflowDataError:
+            pass
     contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
     architecture = contract.get("architecture") if isinstance(contract.get("architecture"), dict) else {}
     declared = architecture.get("declared_impact")
@@ -5308,6 +5395,25 @@ def _v4_receipt_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
 def _v4_observation_view(record: dict[str, Any]) -> dict[str, Any]:
     contract = record.get("delivery_contract") if isinstance(record.get("delivery_contract"), dict) else {}
     recipe = contract.get("observation") if isinstance(contract.get("observation"), dict) else {}
+    if v4_lite_no_trigger(record):
+        placeholders = (
+            list(contract.get("known_placeholders") or [])
+            if isinstance(contract.get("known_placeholders"), list)
+            else []
+        )
+        return {
+            "surface": "cli",
+            "surface_label": _V4_HUMAN_SURFACE_LABELS.get("cli", "cli"),
+            "entrypoint_ref": None,
+            "steps": ["No separate observation runner; verify the named acceptance."],
+            "health": "not_required",
+            "from_receipt": False,
+            "missing_current_receipt": False,
+            "real": [],
+            "temporary": [item for item in placeholders if isinstance(item, str) and item.strip()],
+            "material_changes": [],
+            "reversible_assumptions": [],
+        }
     current_snapshot = (record.get("verification") or {}).get("snapshot_id")
     has_snapshot = isinstance(current_snapshot, str) and bool(current_snapshot)
     receipt = _v4_receipt_from_record(record)
@@ -5704,6 +5810,9 @@ def _product_card_lines(task_id: str, summary: dict[str, Any]) -> list[str]:
     entry = observation.get("entrypoint_ref") or "none"
     steps = observation.get("steps") or []
     step_text = " → ".join(str(item) for item in steps) if steps else "none"
+    if observation.get("health") == "not_required":
+        entry = "none"
+        step_text = "无独立观察 runner；按验收自验"
     real = [str(item) for item in (real_tmp.get("real") or [])]
     temporary = [str(item) for item in (real_tmp.get("temporary") or [])]
     material = [str(item) for item in (summary.get("material_changes") or [])]

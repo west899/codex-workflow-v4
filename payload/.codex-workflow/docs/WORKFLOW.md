@@ -6,13 +6,22 @@ V4 在 V3 交付安全外环上增加可观察产品反馈内环：新任务默�
 
 ## 2. 第一次使用
 
-1. 阅读根 AGENTS 指向的协议与 governance 文件。
-2. 回答 PROJECT 的目标发现问题。
-3. 从 Requirements Brief 模板创建 `governance/requirements/<brief-id>.md`。
-4. 让 AI 复述“已确认 / 假设 / 未确认”，请用户纠偏，补齐正常、边界/失败和非目标场景。
-5. 运行 `requirements-snapshot`，让用户批准精确 brief/revision/release/fingerprint；把批准信息写回 Brief。
-6. 运行 `requirements-gate`，再把同一基线写入 PROJECT 与 Backlog；随后运行 `sync-status --apply` 生成第一份状态快照。
-7. 将 Backlog 从 draft 审批为 ready 项；任务才可进入实现。
+1. 从根 AGENTS 入口块开始。不要在动手前通读本文件或完整协议；claim、Developer evidence 与 closeout 时再打开对应章节。
+2. 小改（文档/测试、无产品与架构风险）用 `lite-authorize` flags 授权，不必先做完整 Brief 2A：
+
+```text
+py -3 .codex-workflow/bin/workflow_state.py lite-authorize --task-id MVP-LITE-001 --request "Fix the README typo." --acceptance "README.md no longer contains the typo." --allowed-path README.md --authorized-by <human>
+py -3 .codex-workflow/bin/workflow_state.py lite-authorize --task-id MVP-LITE-001 --request "Fix the README typo." --acceptance "README.md no longer contains the typo." --allowed-path README.md --authorized-by <human> --apply
+py -3 .codex-workflow/bin/workflow_check.py preflight .codex-workflow/state/runs/MVP-LITE-001.json
+```
+
+目标版本功能继续下面步骤。
+3. 回答 PROJECT 的目标发现问题。
+4. 从 Requirements Brief 模板创建 `governance/requirements/<brief-id>.md`。
+5. 让 AI 复述“已确认 / 假设 / 未确认”，请用户纠偏，补齐正常、边界/失败和非目标场景。
+6. 运行 `requirements-snapshot`，让用户批准精确 brief/revision/release/fingerprint；把批准信息写回 Brief。
+7. 运行 `requirements-gate`，再把同一基线写入 PROJECT 与 Backlog；随后运行 `sync-status --apply` 生成第一份状态快照。
+8. 将 Backlog 从 draft 审批为 ready 项；任务才可进入实现。
 
 ```text
 py -3 .codex-workflow/bin/workflow_check.py requirements-snapshot .codex-workflow/governance/requirements/REQ-001.md
@@ -22,7 +31,7 @@ py -3 .codex-workflow/bin/workflow_state.py sync-status --apply
 
 ## 3. 建立 task contract
 
-新任务使用 V4 core/supporting 模板创建 `.codex-workflow/state/runs/<task-id>.json`。Coordinator 先和人类确认 `focus_slice_id`、观察入口、真实/临时部分和架构基线，再填写来源、需求基线、请求、范围、非目标、allowed paths、resource keys、验收、风险、`delivery_contract`、授权和 exact base commit。已在进行中的 V3 record 继续走 V3 closeout，不要改写其 pending fingerprint。task record 的后续写入只经 state/lane 命令；不要手改 JSON 来跳过 generation 或角色边界。
+small/no-trigger 用 `lite-authorize` 派生 governance record。其他新任务使用 V4 core/supporting 模板创建 `.codex-workflow/state/runs/<task-id>.json`。Coordinator 先和人类确认 `focus_slice_id`、观察入口、真实/临时部分和架构基线，再填写来源、需求基线、请求、范围、非目标、allowed paths、resource keys、验收、风险、`delivery_contract`、授权和 exact base commit。已在进行中的 V3 record 继续走 V3 closeout，不要改写其 pending fingerprint。task record 的后续写入只经 state/lane 命令；不要手改 JSON 来跳过 generation 或角色边界。
 
 `checkpoint.mode=required` 时，独立 Review 前必须有当前 snapshot 的 observation receipt 和人类产品方向确认。使用 `request-decision` / `record-decision`，不要新增另一套 checkpoint 命令。冲突答复必须显式 `supersede`。`workflow_lane.py` 不承载产品语义。STATUS 和 Stop Hook 只派生下一动作，不批准、不改状态。Backlog focus metadata 与 task contract 必须一致；默认 WIP 为 1 个未确认方向的 core slice。`horizon=future_candidate` 不能进入已批准 Must 合同。small/no-trigger 可将 retrospective 标为 `not_required`。V4 任务必须有 Backlog focus metadata。产品方向 `accepted` 后，core slice 的 `direction_confirmed` 会写入 Backlog。`rolling-promotion` 列出须晋升出 Must 合同的 future candidate。pending/queued 后用 `pending-queued-recovery` 核验：只允许 abandon-only，`dequeue`/`reopen` 失败，且不伪造 done；真正清理 runtime 仍走 `workflow_lane.py release --abandon`。
 
